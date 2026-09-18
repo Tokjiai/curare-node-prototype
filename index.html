@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>オーナー管理画面 - ダッシュボード</title>
+<style>
+  /* ============================================================
+     実際のGAS版 owner_ui.html のカラートークン・サイドバー構成を移植。
+     （:root の値は owner_ui.html の :root 定義と同一）
+     ============================================================ */
+  :root{
+    --bg:#F5F4EF; --panel:#ffffff; --ink:#2B2B27; --ink-soft:#75746C; --ink-faint:#A9A79C;
+    --line:#E4E2D9; --accent:#3D6B5C; --accent-soft:#E7EFE9; --warn:#B3542E; --warn-soft:#F7E9E2;
+    --radius:14px;
+  }
+  *{box-sizing:border-box; margin:0; padding:0; font-family:'Hiragino Sans','Yu Gothic',sans-serif;}
+  body{background:var(--bg); color:var(--ink);}
+  .shell{display:none; min-height:100vh;}
+  .shell.ready{display:grid; grid-template-columns:220px 1fr;}
+
+  .sidebar{background:var(--panel); border-right:1px solid var(--line); padding:20px 14px; display:flex; flex-direction:column; gap:16px;}
+  .brand{font-size:14px; font-weight:600; padding:0 8px;}
+  .store-name{background:var(--accent-soft); color:var(--accent); border-radius:8px; padding:9px 10px; font-size:13px; font-weight:700; text-align:center;}
+  .proto-badge{font-size:10.5px; color:var(--warn); background:var(--warn-soft); border-radius:8px; padding:6px 8px; text-align:center; font-weight:700;}
+  .nav{display:flex; flex-direction:column; gap:2px;}
+  .nav-item{display:flex; align-items:center; gap:10px; padding:10px 10px; border-radius:8px; text-decoration:none; font-size:13.5px; color:var(--ink-soft); font-weight:500;}
+  .nav-item.active{background:var(--accent-soft); color:var(--accent);}
+  .nav-item.warn{color:var(--warn); margin-top:auto;}
+
+  .main{padding:28px 32px; max-width:900px;}
+  .page-head{margin-bottom:20px;}
+  .page-head h1{font-size:19px; font-weight:600; margin-bottom:4px;}
+  .page-head p{font-size:13px; color:var(--ink-soft);}
+
+  .panel{background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:18px 20px; margin-bottom:16px;}
+  .panel h2{font-size:14px; font-weight:600; margin-bottom:14px; color:var(--ink);}
+
+  .stat-grid{display:grid; grid-template-columns:repeat(2,1fr); gap:12px;}
+  .tile{background:var(--accent-soft); border:1px solid var(--line); border-radius:var(--radius); padding:16px 14px; text-align:center;}
+  .tile .num{font-size:26px; font-weight:700; color:var(--accent);}
+  .tile .label{font-size:12px; color:var(--ink-soft); margin-top:4px;}
+
+  .day-list{list-style:none; font-size:13.5px;}
+  .day-list li{display:flex; justify-content:space-between; padding:9px 6px; border-bottom:1px solid #F1ECE9;}
+  .day-list li:last-child{border-bottom:none;}
+  .day-list li .cnt{font-weight:700; color:var(--accent);}
+
+  .err{color:var(--warn); font-size:13px; margin-top:8px;}
+  .hint{font-size:11px; color:var(--ink-soft); margin-top:10px;}
+  #loadingMsg{text-align:center; color:var(--ink-soft); font-size:13px; padding:60px 0;}
+
+  @media (max-width:760px){
+    .shell.ready{grid-template-columns:1fr;}
+    .sidebar{flex-direction:row; flex-wrap:wrap; align-items:center; padding:12px 14px;}
+    .brand{display:none;}
+    .nav{flex-direction:row; flex-wrap:wrap; gap:6px;}
+    .nav-item.warn{margin-top:0;}
+    .main{padding:18px 16px;}
+  }
+</style>
+</head>
+<body>
+  <div id="loadingMsg">読み込み中...</div>
+
+  <div class="shell" id="shell">
+    <div class="sidebar">
+      <div class="brand">クラーレ寿 ／ オーナー管理</div>
+      <div class="store-name">クラーレ寿</div>
+      <div class="proto-badge">PROTOTYPE</div>
+      <div class="nav">
+        <a href="index.html" class="nav-item active">📊 ダッシュボード</a>
+        <a href="customers.html" class="nav-item">👥 顧客マスタ</a>
+        <a href="reservations.html" class="nav-item">📅 予約データ</a>
+        <a href="../index.html" class="nav-item">🔗 予約画面へ</a>
+        <a href="#" id="logoutLink" class="nav-item warn">🚪 ログアウト</a>
+      </div>
+    </div>
+
+    <div class="main">
+      <div class="page-head">
+        <h1>ダッシュボード</h1>
+        <p>本日 (<span id="todayLabel"></span>)</p>
+      </div>
+
+      <div class="panel">
+        <h2>予約状況サマリー</h2>
+        <div class="stat-grid">
+          <div class="tile"><div class="num" id="todayCount">-</div><div class="label">本日の予約件数</div></div>
+          <div class="tile"><div class="num" id="weekCount">-</div><div class="label">今週の予約件数</div></div>
+          <div class="tile"><div class="num" id="totalCustomers">-</div><div class="label">総顧客数</div></div>
+          <div class="tile"><div class="num" id="totalReservations">-</div><div class="label">累計予約件数（有効分）</div></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>直近7日間の予約数</h2>
+        <ul class="day-list" id="dayList"></ul>
+      </div>
+    </div>
+  </div>
+
+<script>
+(function(){
+  const loadingMsg = document.getElementById('loadingMsg');
+  const shell = document.getElementById('shell');
+
+  // ★セッションcookieはブラウザが自動送信するため、追加ヘッダーは不要。
+  //   （fetchのデフォルトcredentials: 'same-origin'で十分）
+  async function adminFetch(url) {
+    const res = await fetch(url);
+    if (res.status === 401) throw new Error('UNAUTHORIZED');
+    if (!res.ok) throw new Error('サーバーエラー: ' + res.status);
+    return res.json();
+  }
+
+  async function init() {
+    try {
+      await adminFetch('/api/auth/me'); // ログイン状態確認。401なら下でリダイレクト
+      const data = await adminFetch('/api/admin/dashboard');
+      loadingMsg.style.display = 'none';
+      shell.classList.add('ready');
+      renderDashboard(data);
+    } catch (e) {
+      window.location.href = '/admin/login.html';
+    }
+  }
+
+  document.getElementById('logoutLink').addEventListener('click', async (e) => {
+    e.preventDefault();
+    try { await fetch('/api/auth/logout', { method: 'POST' }); } catch (_) {}
+    window.location.href = '/admin/login.html';
+  });
+
+  function renderDashboard(data) {
+    document.getElementById('todayLabel').textContent = data.today;
+    document.getElementById('todayCount').textContent = data.todayCount;
+    document.getElementById('weekCount').textContent = data.weekCount;
+    document.getElementById('totalCustomers').textContent = data.totalCustomers;
+    document.getElementById('totalReservations').textContent = data.totalReservations;
+
+    const list = document.getElementById('dayList');
+    list.innerHTML = '';
+    data.upcoming7Days.forEach((d) => {
+      const li = document.createElement('li');
+      li.innerHTML = `<span>${d.date}</span><span class="cnt">${d.count}件</span>`;
+      list.appendChild(li);
+    });
+  }
+
+  init();
+})();
+</script>
+</body>
+</html>

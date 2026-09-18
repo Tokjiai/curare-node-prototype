@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>オーナー管理画面 - 予約データ</title>
+<style>
+  :root{
+    --bg:#F5F4EF; --panel:#ffffff; --ink:#2B2B27; --ink-soft:#75746C; --ink-faint:#A9A79C;
+    --line:#E4E2D9; --accent:#3D6B5C; --accent-soft:#E7EFE9; --warn:#B3542E; --warn-soft:#F7E9E2;
+    --radius:14px;
+  }
+  *{box-sizing:border-box; margin:0; padding:0; font-family:'Hiragino Sans','Yu Gothic',sans-serif;}
+  body{background:var(--bg); color:var(--ink);}
+  .shell{display:none; min-height:100vh;}
+  .shell.ready{display:grid; grid-template-columns:220px 1fr;}
+
+  .sidebar{background:var(--panel); border-right:1px solid var(--line); padding:20px 14px; display:flex; flex-direction:column; gap:16px;}
+  .brand{font-size:14px; font-weight:600; padding:0 8px;}
+  .store-name{background:var(--accent-soft); color:var(--accent); border-radius:8px; padding:9px 10px; font-size:13px; font-weight:700; text-align:center;}
+  .proto-badge{font-size:10.5px; color:var(--warn); background:var(--warn-soft); border-radius:8px; padding:6px 8px; text-align:center; font-weight:700;}
+  .nav{display:flex; flex-direction:column; gap:2px;}
+  .nav-item{display:flex; align-items:center; gap:10px; padding:10px 10px; border-radius:8px; text-decoration:none; font-size:13.5px; color:var(--ink-soft); font-weight:500;}
+  .nav-item.active{background:var(--accent-soft); color:var(--accent);}
+  .nav-item.warn{color:var(--warn); margin-top:auto;}
+
+  .main{padding:28px 32px; max-width:1080px;}
+  .page-head{margin-bottom:20px;}
+  .page-head h1{font-size:19px; font-weight:600; margin-bottom:4px;}
+  .page-head p{font-size:13px; color:var(--ink-soft);}
+
+  .panel{background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:18px 20px; margin-bottom:16px;}
+  .panel h2{font-size:14px; font-weight:600; margin-bottom:14px; color:var(--ink);}
+
+  .filter-grid{display:grid; grid-template-columns:repeat(2,1fr); gap:12px; margin-bottom:12px;}
+  .filter-grid label{display:block; font-size:11px; color:var(--ink-soft); font-weight:600; margin-bottom:4px;}
+  .filter-grid input, .filter-grid select{border:1px solid var(--line); border-radius:8px; padding:9px 10px; font-size:13.5px; width:100%; font-family:inherit; background:#fff;}
+  .search-row{margin-top:4px;}
+  .btn-save{background:var(--accent); color:#fff; border:none; border-radius:9px; padding:10px 20px; font-size:13px; font-weight:600; cursor:pointer;}
+
+  table{width:100%; border-collapse:collapse; margin-top:14px; font-size:13px;}
+  th{text-align:left; font-size:11px; color:var(--ink-soft); font-weight:600; padding:8px 6px; border-bottom:1px solid var(--line); white-space:nowrap;}
+  td{padding:9px 6px; border-bottom:1px solid #F1ECE9; vertical-align:middle; white-space:nowrap;}
+  tr:last-child td{border-bottom:none;}
+  .status-キャンセル{color:var(--warn); font-weight:600;}
+
+  .pager{display:flex; justify-content:space-between; align-items:center; margin-top:12px; font-size:13px;}
+  .pager button{padding:7px 14px; border:1px solid var(--line); border-radius:8px; background:#fff; cursor:pointer; font-family:inherit;}
+  .pager button:disabled{opacity:0.4; cursor:not-allowed;}
+
+  .err{color:var(--warn); font-size:13px; margin-top:8px;}
+  .hint{font-size:11px; color:var(--ink-soft); margin-top:10px;}
+  #loadingMsg{text-align:center; color:var(--ink-soft); font-size:13px; padding:60px 0;}
+  .empty{color:var(--ink-soft); font-size:13px; padding:14px 0; text-align:center;}
+
+  @media (max-width:760px){
+    .shell.ready{grid-template-columns:1fr;}
+    .sidebar{flex-direction:row; flex-wrap:wrap; align-items:center; padding:12px 14px;}
+    .brand{display:none;}
+    .nav{flex-direction:row; flex-wrap:wrap; gap:6px;}
+    .nav-item.warn{margin-top:0;}
+    .main{padding:18px 16px;}
+    .filter-grid{grid-template-columns:1fr;}
+  }
+</style>
+</head>
+<body>
+  <div id="loadingMsg">読み込み中...</div>
+
+  <div class="shell" id="shell">
+    <div class="sidebar">
+      <div class="brand">クラーレ寿 ／ オーナー管理</div>
+      <div class="store-name">クラーレ寿</div>
+      <div class="proto-badge">PROTOTYPE</div>
+      <div class="nav">
+        <a href="index.html" class="nav-item">📊 ダッシュボード</a>
+        <a href="customers.html" class="nav-item">👥 顧客マスタ</a>
+        <a href="reservations.html" class="nav-item active">📅 予約データ</a>
+        <a href="../index.html" class="nav-item">🔗 予約画面へ</a>
+        <a href="#" id="logoutLink" class="nav-item warn">🚪 ログアウト</a>
+      </div>
+    </div>
+
+    <div class="main">
+      <div class="page-head">
+        <h1>予約データ</h1>
+        <p>日付範囲・担当・氏名で絞り込みできます</p>
+      </div>
+
+      <div class="panel">
+        <h2>絞り込み</h2>
+        <div class="filter-grid">
+          <div>
+            <label>開始日</label>
+            <input type="date" id="fromInput">
+          </div>
+          <div>
+            <label>終了日</label>
+            <input type="date" id="toInput">
+          </div>
+          <div>
+            <label>担当スタッフ（本名）</label>
+            <input type="text" id="staffInput" placeholder="例：花子">
+          </div>
+          <div>
+            <label>お客様氏名（部分一致）</label>
+            <input type="text" id="qInput" placeholder="例：田中">
+          </div>
+        </div>
+        <div class="search-row">
+          <button class="btn-save" id="searchBtn" type="button">検索</button>
+        </div>
+
+        <table>
+          <thead>
+            <tr><th>日付</th><th>時刻</th><th>担当</th><th>氏名</th><th>メニュー</th><th>ステータス</th></tr>
+          </thead>
+          <tbody id="tbody"></tbody>
+        </table>
+        <div class="empty" id="emptyMsg" style="display:none;">該当する予約がありません</div>
+
+        <div class="pager">
+          <button id="prevBtn" type="button">← 前へ</button>
+          <span id="pageLabel"></span>
+          <button id="nextBtn" type="button">次へ →</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+(function(){
+  const limit = 50;
+  let offset = 0;
+  let total = 0;
+
+  const loadingMsg = document.getElementById('loadingMsg');
+  const shell = document.getElementById('shell');
+
+  async function adminFetch(url) {
+    const res = await fetch(url);
+    if (res.status === 401) throw new Error('UNAUTHORIZED');
+    if (!res.ok) throw new Error('サーバーエラー: ' + res.status);
+    return res.json();
+  }
+
+  async function init() {
+    try {
+      await adminFetch('/api/auth/me');
+      await load();
+      loadingMsg.style.display = 'none';
+      shell.classList.add('ready');
+    } catch (e) {
+      window.location.href = '/admin/login.html';
+    }
+  }
+
+  document.getElementById('logoutLink').addEventListener('click', async (e) => {
+    e.preventDefault();
+    try { await fetch('/api/auth/logout', { method: 'POST' }); } catch (_) {}
+    window.location.href = '/admin/login.html';
+  });
+
+  async function load() {
+    // ★storeパラメータは廃止：サーバー側でセッションの店舗に固定される
+    const params = new URLSearchParams({ limit, offset });
+    const from = document.getElementById('fromInput').value;
+    const to = document.getElementById('toInput').value;
+    const staffName = document.getElementById('staffInput').value.trim();
+    const q = document.getElementById('qInput').value.trim();
+    if (from) params.set('from', from);
+    if (to) params.set('to', to);
+    if (staffName) params.set('staffName', staffName);
+    if (q) params.set('q', q);
+
+    const data = await adminFetch('/api/admin/reservations?' + params.toString());
+    total = data.total;
+    render(data.reservations);
+  }
+
+  function render(rows) {
+    const tbody = document.getElementById('tbody');
+    tbody.innerHTML = '';
+    document.getElementById('emptyMsg').style.display = rows.length === 0 ? 'block' : 'none';
+    rows.forEach((r) => {
+      const isCancel = r.realname === 'キャンセル';
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${esc(r.reservation_date)}</td>
+        <td>${esc(r.reservation_time)}</td>
+        <td>${esc(r.staff_name)}</td>
+        <td>${esc(r.realname)}</td>
+        <td>${esc(r.menu || '')}</td>
+        <td class="${isCancel ? 'status-キャンセル' : ''}">${isCancel ? 'キャンセル' : esc(r.status || '確定')}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+    const page = Math.floor(offset / limit) + 1;
+    const maxPage = Math.max(1, Math.ceil(total / limit));
+    document.getElementById('pageLabel').textContent = `${page} / ${maxPage} ページ（全${total}件）`;
+    document.getElementById('prevBtn').disabled = offset <= 0;
+    document.getElementById('nextBtn').disabled = offset + limit >= total;
+  }
+
+  function esc(v) {
+    return String(v == null ? '' : v).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  }
+
+  document.getElementById('searchBtn').addEventListener('click', () => { offset = 0; load(); });
+  document.getElementById('prevBtn').addEventListener('click', () => { offset = Math.max(0, offset - limit); load(); });
+  document.getElementById('nextBtn').addEventListener('click', () => { offset = offset + limit; load(); });
+
+  init();
+})();
+</script>
+</body>
+</html>

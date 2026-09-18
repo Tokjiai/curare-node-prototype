@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>オーナー管理画面 - ログイン</title>
+<style>
+  /* ============================================================
+     実際のGAS版 login_modal_partial.html のログインカード
+     （白いカード・角丸14px・淡いローズ系アクセント・グラデーションボタン）
+     の配色・質感を移植。背景は owner_ui.html のクリーム系トーンに合わせる。
+     ============================================================ */
+  :root{
+    --bg:#F5F4EF; --ink:#333; --ink-soft:#75746C; --line:#ddd;
+    --rose:#d4a5a5; --rose-dark:#c99aa4;
+  }
+  *{box-sizing:border-box; margin:0; padding:0; font-family:'Hiragino Sans','Yu Gothic',sans-serif;}
+  body{
+    background:var(--bg); min-height:100vh; color:var(--ink);
+    display:flex; align-items:center; justify-content:center; padding:20px;
+  }
+  .login-box{
+    background:#fff; border-radius:14px; padding:28px 24px; width:100%; max-width:360px;
+    box-shadow:0 8px 24px rgba(0,0,0,0.12);
+  }
+  .login-badge{display:block; text-align:center; font-size:10.5px; font-weight:700; color:#B3542E; background:#F7E9E2; border-radius:8px; padding:5px 8px; margin-bottom:14px;}
+  .login-title{font-size:18px; font-weight:700; color:#333; margin-bottom:6px; text-align:center;}
+  .login-sub{font-size:13px; color:var(--ink-soft); text-align:center; margin-bottom:22px; line-height:1.6;}
+
+  label{display:block; text-align:left; font-size:12px; color:var(--ink-soft); font-weight:600; margin:14px 0 5px;}
+  input{
+    width:100%; padding:12px; border:1px solid var(--line); border-radius:8px; font-size:15px;
+    font-family:inherit; outline:none;
+  }
+  input:focus{border-color:var(--rose);}
+  #pinInput{font-size:22px; letter-spacing:8px; text-align:center;}
+
+  button#loginBtn{
+    width:100%; padding:12px; border:none; border-radius:8px; font-size:15px; font-weight:600;
+    cursor:pointer; color:#fff; margin-top:20px;
+    background:linear-gradient(135deg, var(--rose) 0%, var(--rose-dark) 100%);
+  }
+
+  .err{display:block; color:#c0392b; font-size:13px; text-align:center; margin-top:12px;}
+  .note{font-size:12px; color:var(--ink-faint,#999); margin-top:16px; line-height:1.6; text-align:center;}
+</style>
+</head>
+<body>
+  <div class="login-box">
+    <div class="login-badge">PROTOTYPE</div>
+    <div class="login-title">👤 オーナー管理画面</div>
+    <div class="login-sub">店舗識別子とPIN（4桁）を入力してください</div>
+
+    <label for="storeInput">店舗（slugまたはID）</label>
+    <input type="text" id="storeInput" placeholder="例：1 または kurare-kotobuki">
+
+    <label for="pinInput">PIN（4桁）</label>
+    <input type="password" id="pinInput" placeholder="例：5678" maxlength="4" inputmode="numeric" pattern="[0-9]*">
+
+    <button id="loginBtn" type="button">ログイン</button>
+    <div class="err" id="loginErr" style="display:none;"></div>
+    <div class="note">スタッフの電話番号の下4桁がPINです（実運用と同じ方式）。<br>このプロトタイプ段階ではオーナー権限のスタッフのみログインできます。</div>
+  </div>
+
+<script>
+(function(){
+  const storeInput = document.getElementById('storeInput');
+  const pinInput = document.getElementById('pinInput');
+  const loginErr = document.getElementById('loginErr');
+
+  async function doLogin() {
+    loginErr.style.display = 'none';
+    const store = storeInput.value.trim();
+    const pin = pinInput.value.trim();
+    if (!store || !pin) {
+      loginErr.textContent = '店舗とPINを入力してください';
+      loginErr.style.display = 'block';
+      return;
+    }
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ store, pin })
+      });
+      const data = await res.json();
+      if (data.success) {
+        window.location.href = '/admin/index.html';
+      } else {
+        loginErr.textContent = data.message || 'ログインに失敗しました';
+        loginErr.style.display = 'block';
+      }
+    } catch (e) {
+      loginErr.textContent = 'サーバーエラー: ' + e.message;
+      loginErr.style.display = 'block';
+    }
+  }
+
+  document.getElementById('loginBtn').addEventListener('click', doLogin);
+  pinInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
+  storeInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') pinInput.focus(); });
+})();
+</script>
+</body>
+</html>

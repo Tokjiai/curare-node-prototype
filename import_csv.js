@@ -32,33 +32,35 @@ const db = require('./lib/db');
 //   キー   = CSVのヘッダー行に出てくる列名（実際のGoogleスプレッドシートの表記そのまま）
 //   値     = 対応するDBカラム名（customers / reservations テーブルの列名）
 // ============================================================================
+// ★2026-09-19更新：実際のcurare-storeB-db_TEST（テストB店）スプレッドシートの
+//   実表記に合わせてマッピングを更新。当初の想定見出し（氏名／LINE userId等）から
+//   実物は「本名」「LINE_USER_ID」等の表記だったため、ここだけを直して追従した。
+//   これがこのファイルの設計意図どおりの使い方＝マッピング欄だけの修正で済む例。
 const CUSTOMER_COLUMN_MAP = {
   '顧客ID': 'customer_id',
-  '氏名': 'realname',
+  '本名': 'realname',
   'フリガナ': 'kana',
   '電話番号': 'phone',
   'LINE名': 'line_name',
-  'LINE userId': 'user_id',
-  '生年月日': 'birthday',
-  '初回来店日': 'first_visit_date',
-  '最終来店日': 'last_visit_date',
+  'LINE_USER_ID': 'user_id',
+  '登録日': 'first_visit_date',
   '来店回数': 'total_visits',
-  'メモ': 'memo'
+  '備考': 'memo'
 };
 
 const RESERVATION_COLUMN_MAP = {
-  '氏名': 'realname',
+  '本名': 'realname',
   'フリガナ': 'kana',
   'LINE名': 'line_name',
-  'LINE userId': 'user_id',
-  '担当': 'staff_name',
+  'LINE_USER_ID': 'user_id',
+  '担当スタッフ': 'staff_name',
   'メニュー': 'menu',
   '予約日': 'reservation_date',
-  '予約時刻': 'reservation_time',
+  '時間': 'reservation_time',
   '備考': 'note',
   '登録者': 'editor',
-  '顧客ID': 'customer_id',
-  'ステータス': 'status'
+  'CID参考列': 'customer_id',
+  '予約ステータス': 'status'
 };
 
 // customersテーブルで数値として扱うカラム（CSVは文字列で来るため変換する）
@@ -156,18 +158,16 @@ function importCustomers(objects, storeId) {
 
   const upsert = db.prepare(`
     INSERT INTO customers
-      (store_id, customer_id, realname, kana, phone, line_name, user_id, birthday, first_visit_date, last_visit_date, total_visits, memo, updated_at)
+      (store_id, customer_id, realname, kana, phone, line_name, user_id, first_visit_date, total_visits, memo, updated_at)
     VALUES
-      (@store_id, @customer_id, @realname, @kana, @phone, @line_name, @user_id, @birthday, @first_visit_date, @last_visit_date, @total_visits, @memo, CURRENT_TIMESTAMP)
+      (@store_id, @customer_id, @realname, @kana, @phone, @line_name, @user_id, @first_visit_date, @total_visits, @memo, CURRENT_TIMESTAMP)
     ON CONFLICT(store_id, customer_id) DO UPDATE SET
       realname          = excluded.realname,
       kana              = excluded.kana,
       phone             = excluded.phone,
       line_name         = excluded.line_name,
       user_id           = excluded.user_id,
-      birthday          = excluded.birthday,
       first_visit_date  = excluded.first_visit_date,
-      last_visit_date   = excluded.last_visit_date,
       total_visits      = excluded.total_visits,
       memo              = excluded.memo,
       updated_at        = CURRENT_TIMESTAMP
