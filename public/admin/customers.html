@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>オーナー管理画面 - 顧客マスタ</title>
+<style>
+  :root{
+    --pink-header:#C8A0B4; --pink-accent:#6B3050;
+    --pink-light:#FAF0F5; --pink-border:#E8C8D8;
+  }
+  *{box-sizing:border-box;}
+  body{
+    font-family:'Helvetica Neue',Arial,'Hiragino Sans','Yu Gothic',sans-serif;
+    font-size:16px; background:#f7f3f5; margin:0; min-height:100vh; color:#333;
+  }
+  .page-header{background:var(--pink-header); color:#fff; padding:22px 16px; text-align:center;}
+  .page-header h1{margin:0; font-size:20px; font-weight:600; letter-spacing:0.03em;}
+  .page-header p{margin:6px 0 0; font-size:12px; opacity:0.9;}
+  .proto-badge{display:inline-block; background:#fff3; padding:3px 8px; border-radius:12px; font-size:11px; margin-top:6px;}
+  .container{max-width:900px; margin:0 auto; padding:16px;}
+  nav{display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap;}
+  nav a{flex:1; text-align:center; padding:10px; background:#fff; border:1.5px solid var(--pink-border); border-radius:8px; color:var(--pink-accent); text-decoration:none; font-size:13px; font-weight:600;}
+  nav a.active{background:var(--pink-accent); color:#fff; border-color:var(--pink-accent);}
+  .card{background:#fff; border:1px solid var(--pink-border); border-radius:10px; padding:16px; margin-bottom:14px;}
+  .card h2{font-size:15px; color:var(--pink-accent); margin:0 0 10px; font-weight:600;}
+  .search-row{display:flex; gap:8px;}
+  .search-row input{flex:1; padding:10px; border:1.5px solid var(--pink-border); border-radius:8px; font-size:15px;}
+  .search-row button{padding:10px 16px; background:var(--pink-accent); color:#fff; border:none; border-radius:8px; font-size:14px; font-weight:600; cursor:pointer;}
+  table{width:100%; border-collapse:collapse; margin-top:14px; font-size:13px;}
+  th, td{padding:8px 6px; text-align:left; border-bottom:1px solid #eee; white-space:nowrap;}
+  th{color:#888; font-weight:600; font-size:12px;}
+  td.memo{white-space:normal; max-width:220px; color:#666;}
+  .pager{display:flex; justify-content:space-between; align-items:center; margin-top:10px; font-size:13px;}
+  .pager button{padding:6px 12px; border:1.5px solid var(--pink-border); border-radius:6px; background:#fff; cursor:pointer;}
+  .pager button:disabled{opacity:0.4; cursor:not-allowed;}
+  .login-box{max-width:320px; margin:60px auto; background:#fff; border:1px solid var(--pink-border); border-radius:10px; padding:20px; text-align:center;}
+  .login-box input{width:100%; padding:10px; border:1.5px solid var(--pink-border); border-radius:8px; font-size:15px; margin:10px 0;}
+  .login-box button{width:100%; padding:11px; background:var(--pink-accent); color:#fff; border:none; border-radius:8px; font-size:15px; font-weight:600; cursor:pointer;}
+  .err{color:#a12727; font-size:13px; margin-top:8px;}
+  .note{font-size:12px; color:#999; margin-top:10px;}
+  #mainArea{display:none;}
+  .empty{color:#999; font-size:13px; padding:14px 0; text-align:center;}
+</style>
+</head>
+<body>
+  <div class="page-header">
+    <h1>オーナー管理画面</h1>
+    <p>顧客マスタ閲覧</p>
+    <div class="proto-badge">PROTOTYPE - パスワードは仮の共有パスワードです</div>
+  </div>
+
+  <div class="container">
+    <div class="login-box" id="loginBox">
+      <p>管理者パスワードを入力してください</p>
+      <input type="password" id="pwInput" placeholder="パスワード">
+      <button id="loginBtn" type="button">入室</button>
+      <div class="err" id="loginErr" style="display:none;"></div>
+      <div class="note">初期パスワード（未設定時）: demo1234</div>
+    </div>
+
+    <div id="mainArea">
+      <nav>
+        <a href="index.html">ダッシュボード</a>
+        <a href="customers.html" class="active">顧客マスタ</a>
+        <a href="reservations.html">予約データ</a>
+        <a href="../index.html">予約画面へ</a>
+      </nav>
+
+      <div class="card">
+        <h2>検索（氏名・フリガナ・電話番号）</h2>
+        <div class="search-row">
+          <input type="text" id="qInput" placeholder="例：田中 / タナカ / 090">
+          <button id="searchBtn" type="button">検索</button>
+        </div>
+
+        <table>
+          <thead>
+            <tr>
+              <th>顧客ID</th><th>氏名</th><th>フリガナ</th><th>電話番号</th>
+              <th>最終来店日</th><th>来店回数</th><th>メモ</th>
+            </tr>
+          </thead>
+          <tbody id="tbody"></tbody>
+        </table>
+        <div class="empty" id="emptyMsg" style="display:none;">該当する顧客がいません</div>
+
+        <div class="pager">
+          <button id="prevBtn" type="button">← 前へ</button>
+          <span id="pageLabel"></span>
+          <button id="nextBtn" type="button">次へ →</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+(function(){
+  let adminPassword = null; // メモリのみ保持（localStorage不使用）
+  const limit = 50;
+  let offset = 0;
+  let total = 0;
+
+  const loginBox = document.getElementById('loginBox');
+  const mainArea = document.getElementById('mainArea');
+  const loginErr = document.getElementById('loginErr');
+
+  async function adminFetch(url) {
+    const res = await fetch(url, { headers: { 'X-Admin-Password': adminPassword } });
+    if (res.status === 401) throw new Error('UNAUTHORIZED');
+    if (!res.ok) throw new Error('サーバーエラー: ' + res.status);
+    return res.json();
+  }
+
+  async function tryLogin(pw) {
+    adminPassword = pw;
+    try {
+      await load();
+      loginBox.style.display = 'none';
+      mainArea.style.display = 'block';
+    } catch (e) {
+      adminPassword = null;
+      loginErr.textContent = e.message === 'UNAUTHORIZED' ? 'パスワードが違います' : e.message;
+      loginErr.style.display = 'block';
+    }
+  }
+
+  async function load() {
+    const q = document.getElementById('qInput') ? document.getElementById('qInput').value.trim() : '';
+    const params = new URLSearchParams({ store: '1', limit, offset });
+    if (q) params.set('q', q);
+    const data = await adminFetch('/api/admin/customers?' + params.toString());
+    total = data.total;
+    render(data.customers);
+  }
+
+  function render(rows) {
+    const tbody = document.getElementById('tbody');
+    tbody.innerHTML = '';
+    document.getElementById('emptyMsg').style.display = rows.length === 0 ? 'block' : 'none';
+    rows.forEach((c) => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${esc(c.customer_id)}</td>
+        <td>${esc(c.realname)}</td>
+        <td>${esc(c.kana || '')}</td>
+        <td>${esc(c.phone || '')}</td>
+        <td>${esc(c.last_visit_date || '')}</td>
+        <td>${esc(c.total_visits)}</td>
+        <td class="memo">${esc(c.memo || '')}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+    const page = Math.floor(offset / limit) + 1;
+    const maxPage = Math.max(1, Math.ceil(total / limit));
+    document.getElementById('pageLabel').textContent = `${page} / ${maxPage} ページ（全${total}件）`;
+    document.getElementById('prevBtn').disabled = offset <= 0;
+    document.getElementById('nextBtn').disabled = offset + limit >= total;
+  }
+
+  function esc(v) {
+    return String(v == null ? '' : v).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  }
+
+  document.getElementById('loginBtn').addEventListener('click', () => {
+    const pw = document.getElementById('pwInput').value;
+    if (!pw) return;
+    tryLogin(pw);
+  });
+  document.getElementById('pwInput').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') document.getElementById('loginBtn').click();
+  });
+  document.getElementById('searchBtn').addEventListener('click', () => { offset = 0; load(); });
+  document.getElementById('qInput').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { offset = 0; load(); }
+  });
+  document.getElementById('prevBtn').addEventListener('click', () => { offset = Math.max(0, offset - limit); load(); });
+  document.getElementById('nextBtn').addEventListener('click', () => { offset = offset + limit; load(); });
+})();
+</script>
+</body>
+</html>

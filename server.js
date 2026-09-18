@@ -8,6 +8,9 @@
 //   GET  /api/timeslots          ゾーン内の具体的な予約可能時刻一覧（GAS版 getTimeSlotsByZone ベース）
 //   POST /api/reservations       予約作成
 //   GET  /api/reservations       予約一覧取得
+//   GET  /api/admin/customers    【オーナー管理画面】顧客マスタ検索（要X-Admin-Password）
+//   GET  /api/admin/reservations 【オーナー管理画面】予約データ検索（要X-Admin-Password）
+//   GET  /api/admin/dashboard    【オーナー管理画面】ダッシュボード集計（要X-Admin-Password）
 //
 // これは商用のVPS＋MySQL本番システムではなく、
 // 「予約エンジンのコアロジックがNode.jsで正しく動くこと」を実証するプロトタイプです。
@@ -207,6 +210,154 @@ app.delete('/api/reservations/:id', (req, res) => {
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ============================================================================
+// オーナー用管理画面 API（/api/admin/*）
+//
+// 【認証について】
+//   ここでの認証は「共有パスワード1個をヘッダーで送る」だけの簡易実装であり、
+//   将来ちゃんとしたログイン機構（アカウント別ログイン・セッション・権限管理）に
+//   置き換える前提のプレースホルダーです。プロトタイプの範囲を超えるセッション/
+//   クッキー管理はあえて入れていません。
+//   クライアントは全リクエストに `X-Admin-Password` ヘッダーを付与する。
+// ============================================================================
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'demo1234';
+if (!process.env.ADMIN_PASSWORD) {
+  console.warn('⚠️  ADMIN_PASSWORD 環境変数が未設定のため、デフォルトパスワード "demo1234" を使用しています。本番運用前に必ず変更してください。');
+}
+
+function requireAdminPassword(req, res, next) {
+  const supplied = req.get('X-Admin-Password');
+  if (supplied !== ADMIN_PASSWORD) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  next();
+}
+
+// ----------------------------------------------------------------------------
+// GET /api/admin/customers?store=&q=&limit=&offset=
+//   顧客マスタの一覧・検索（氏名／フリガナ／電話番号の部分一致）
+// ----------------------------------------------------------------------------
+app.get('/api/admin/customers', requireAdminPassword, (req, res) => {
+  try {
+    const storeId = resolveStoreId(req.query.store);
+    const limit = Math.min(Number(req.query.limit) || 50, 200);
+    const offset = Number(req.query.offset) || 0;
+    const q = (req.query.q || '').trim();
+
+    let where = 'store_id = ?';
+    const params = [storeId];
+    if (q) {
+      where += ' AND (realname LIKE ? OR kana LIKE ? OR phone LIKE ?)';
+      const like = `%${q}%`;
+      params.push(like, like, like);
+    }
+
+    const total = db.prepare(`SELECT COUNT(*) AS c FROM customers WHERE ${where}`).get(...params).c;
+    const rows = db.prepare(`
+      SELECT * FROM customers WHERE ${where}
+      ORDER BY realname ASC
+      LIMIT ? OFFSET ?
+    `).all(...params, limit, offset);
+
+    res.json({ total, limit, offset, customers: rows });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// GET /api/admin/reservations?store=&from=&to=&staffName=&q=&limit=&offset=
+//   予約データの一覧・検索（日付範囲＋担当者＋氏名部分一致）。新しい日付順。
+// ----------------------------------------------------------------------------
+app.get('/api/admin/reservations', requireAdminPassword, (req, res) => {
+  try {
+    const storeId = resolveStoreId(req.query.store);
+    const limit = Math.min(Number(req.query.limit) || 50, 200);
+    const offset = Number(req.query.offset) || 0;
+
+    let where = 'store_id = ?';
+    const params = [storeId];
+    if (req.query.from) { where += ' AND reservation_date >= ?'; params.push(req.query.from); }
+    if (req.query.to)   { where += ' AND reservation_date <= ?'; params.push(req.query.to); }
+    if (req.query.staffName) { where += ' AND staff_name = ?'; params.push(req.query.staffName); }
+    if (req.query.q) {
+      where += ' AND (realname LIKE ? OR kana LIKE ?)';
+      const like = `%${req.query.q}%`;
+      params.push(like, like);
+    }
+
+    const total = db.prepare(`SELECT COUNT(*) AS c FROM reservations WHERE ${where}`).get(...params).c;
+    const rows = db.prepare(`
+      SELECT * FROM reservations WHERE ${where}
+      ORDER BY reservation_date DESC, reservation_time DESC
+      LIMIT ? OFFSET ?
+    `).all(...params, limit, offset);
+
+    res.json({ total, limit, offset, reservations: rows });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// GET /api/admin/dashboard?store=
+//   オーナー向けダッシュボード用のサマリー数値をまとめて返す。
+// ----------------------------------------------------------------------------
+app.get('/api/admin/dashboard', requireAdminPassword, (req, res) => {
+  try {
+    const storeId = resolveStoreId(req.query.store);
+
+    const fmt = (d) => {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    };
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const todayStr = fmt(today);
+
+    // 今週：月曜始まりで today を含む週
+    const dow = (today.getDay() + 6) % 7; // 0=月曜
+    const weekStart = new Date(today); weekStart.setDate(today.getDate() - dow);
+    const weekEnd = new Date(weekStart); weekEnd.setDate(weekStart.getDate() + 6);
+
+    const countActive = (whereExtra, params) => db.prepare(`
+      SELECT COUNT(*) AS c FROM reservations
+      WHERE store_id = ? AND realname != 'キャンセル' ${whereExtra}
+    `).get(storeId, ...params).c;
+
+    const todayCount = countActive('AND reservation_date = ?', [todayStr]);
+    const weekCount = countActive('AND reservation_date >= ? AND reservation_date <= ?', [fmt(weekStart), fmt(weekEnd)]);
+
+    const upcoming7Days = [];
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(today); d.setDate(today.getDate() + i);
+      const dateStr = fmt(d);
+      const c = countActive('AND reservation_date = ?', [dateStr]);
+      upcoming7Days.push({ date: dateStr, count: c });
+    }
+
+    const totalCustomers = db.prepare('SELECT COUNT(*) AS c FROM customers WHERE store_id = ?').get(storeId).c;
+    const totalReservations = db.prepare(`
+      SELECT COUNT(*) AS c FROM reservations WHERE store_id = ? AND realname != 'キャンセル'
+    `).get(storeId).c;
+
+    res.json({
+      today: todayStr,
+      todayCount,
+      weekCount,
+      upcoming7Days,
+      totalCustomers,
+      totalReservations
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
   }
 });
 

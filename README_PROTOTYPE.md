@@ -49,6 +49,7 @@ node-prototype/
 ├── package.json          # 依存関係・起動スクリプト
 ├── server.js              # Expressサーバー本体（APIエンドポイント）
 ├── render.yaml             # Render Blueprint設定（無料Webサービス）
+├── import_csv.js           # GASスプレッドシートCSVエクスポートの取込スクリプト（顧客マスタ・予約データ）
 ├── db/
 │   ├── schema.sql          # テーブル定義（MySQL移行を見据えた標準SQL）
 │   └── init.js             # スキーマ作成＋ダミーデータ投入スクリプト
@@ -57,7 +58,11 @@ node-prototype/
 │   └── reservationEngine.js # ★GAS版予約エンジンの移植本体
 └── public/
     ├── index.html           # 簡易フロントエンド（1ページ）
-    └── app.js               # フロント側のfetch API呼び出し
+    ├── app.js               # フロント側のfetch API呼び出し
+    └── admin/                # オーナー用管理画面（ダッシュボード・顧客マスタ・予約データ閲覧）
+        ├── index.html
+        ├── customers.html
+        └── reservations.html
 ```
 
 ---
@@ -165,7 +170,111 @@ git push -u origin main
 
 ---
 
-## 5. 本番（VPS＋MySQL）移行時に注意すべき点
+## 5. 顧客マスタ・CSV取込・オーナー管理画面（追加機能）
+
+このプロトタイプにはその後、以下の3つを追加しています。
+
+### 5-1. 顧客マスタ（customers テーブル）
+
+GASの「顧客マスタ」シートに相当するテーブルを `db/schema.sql` に追加しました。
+`store_id` でスコープされ、`(store_id, customer_id)` に一意制約とインデックス、
+`(store_id, realname)` にもインデックスを張っています。
+
+主なカラム：`customer_id`（シート発行の顧客ID）, `realname`, `kana`, `phone`,
+`line_name`, `user_id`（LINE userId）, `birthday`, `first_visit_date`,
+`last_visit_date`, `total_visits`, `memo`。
+
+`npm run seed`（＝`node db/init.js`）実行時にダミー顧客5名が自動投入されます。
+
+### 5-2. CSV取込スクリプト（import_csv.js）
+
+GASスプレッドシートをCSVエクスポートしたものを定期的に取り込むためのスクリプトです。
+**GASが引き続き本番として稼働している間、並行運用でこのスクリプトを定期実行する**
+ことを想定しています。実行するたびに同じ行は上書き更新されるだけなので、
+**何度実行しても重複登録されません（冪等）**。
+
+```bash
+# 顧客マスタの取込
+node import_csv.js customers ./顧客マスタ.csv --store=1
+
+# 予約データの取込
+node import_csv.js reservations ./予約データ.csv --store=1
+```
+
+- `--store=<slugまたはstore_id>` は省略可（省略時は store_id=1）。
+- 顧客マスタは `store_id + customer_id` の一致で upsert。
+- 予約データは `store_id + 担当 + 予約日 + 予約時刻` の一致で upsert
+  （キャンセル済み予約は一意制約の対象外のため上書きされません）。
+- 実行結果として「読み込み行数／新規登録／更新／スキップ（理由付き）」を表示します。
+
+**列マッピングについて（★重要）**：実際のスプレッドシート側の列見出しや列順が
+将来少し変わっても、直す場所を1箇所に集約するため、`import_csv.js` 冒頭の
+`CUSTOMER_COLUMN_MAP` / `RESERVATION_COLUMN_MAP` というオブジェクトだけが
+「CSVの列見出し（日本語）→ DBカラム名」の対応関係を持っています。
+シート側の見出し表記が変わった場合は、この2つのオブジェクトのキー（左辺）を
+直すだけで済み、パース処理・upsert処理のコードには手を入れる必要がありません。
+
+顧客マスタCSVのヘッダー行の例（`CUSTOMER_COLUMN_MAP` のキーと一致させる）：
+
+```
+顧客ID,氏名,フリガナ,電話番号,LINE名,LINE userId,生年月日,初回来店日,最終来店日,来店回数,メモ
+C0001,山田 花子,ヤマダ ハナコ,090-1234-5678,はなちゃん,U1234567890,1992-05-10,2025-01-10,2026-09-01,8,常連
+```
+
+予約データCSVのヘッダー行の例（`RESERVATION_COLUMN_MAP` のキーと一致させる）：
+
+```
+氏名,フリガナ,LINE名,LINE userId,担当,メニュー,予約日,予約時刻,備考,登録者,顧客ID,ステータス
+山田 花子,ヤマダ ハナコ,はなちゃん,U1234567890,花子,フェイシャル(60分),2026-09-30,10:00,,寿子,C0001,確定
+```
+
+CSVパーサーは外部ライブラリを使わず自前実装（RFC4180相当のダブルクォート
+エスケープに対応、UTF-8日本語もそのまま扱えます）なので、**依存パッケージの
+追加はありません**。
+
+### 5-3. オーナー用管理画面（/admin/*）
+
+3つのAPIエンドポイントと、3つの管理画面ページを追加しました。
+
+**APIエンドポイント（すべて `X-Admin-Password` ヘッダーによる認証が必要）**
+
+| メソッド・パス | 内容 |
+|---|---|
+| `GET /api/admin/customers?store=&q=&limit=&offset=` | 顧客マスタの検索（氏名／フリガナ／電話番号の部分一致）、ページング対応 |
+| `GET /api/admin/reservations?store=&from=&to=&staffName=&q=&limit=&offset=` | 予約データの検索（日付範囲・担当・氏名部分一致）、新しい日付順、ページング対応 |
+| `GET /api/admin/dashboard?store=` | 本日/今週の予約件数、直近7日間の日別件数、総顧客数、累計予約件数（キャンセル除く） |
+
+認証は環境変数 `ADMIN_PASSWORD`（未設定時は `demo1234` をデフォルト使用し、
+起動時にコンソールへ警告を出力）と一致する値を `X-Admin-Password` ヘッダーで
+送ることで通過します。**これはあくまで「本物のログイン機構ができるまでの仮の
+プレースホルダー」であり、セッションやアカウント別権限などは実装していません**
+（本番構築時に置き換える前提です）。
+
+```bash
+# 401になる例（パスワード無し・不一致）
+curl "http://localhost:3000/api/admin/dashboard?store=1"
+
+# 200になる例（正しいパスワード）
+curl -H "X-Admin-Password: demo1234" "http://localhost:3000/api/admin/dashboard?store=1"
+```
+
+**管理画面ページ（`public/admin/` 配下、単一HTMLファイルでCSS/JSともにインライン）**
+
+| ページ | 内容 |
+|---|---|
+| `public/admin/index.html` | ダッシュボード（本日/今週の件数、直近7日間の予約数リスト） |
+| `public/admin/customers.html` | 顧客マスタ閲覧（検索ボックス＋一覧テーブル） |
+| `public/admin/reservations.html` | 予約データ閲覧（日付範囲・担当フィルタ＋一覧テーブル） |
+
+いずれもページを開くとパスワード入力画面が表示され、入力したパスワードは
+**そのページを開いている間だけJS変数としてメモリ保持**します
+（本プロジェクトの方針どおり `localStorage` には保存しないため、リロードすると
+再入力が必要です＝プロトタイプとして許容している仕様）。
+初期パスワード（`ADMIN_PASSWORD` 未設定時）は `demo1234` です。
+
+---
+
+## 6. 本番（VPS＋MySQL）移行時に注意すべき点
 
 - **DB接続層の差し替え**：`lib/db.js` を `mysql2` 等に置き換え、
   `lib/reservationEngine.js` 内の `db.prepare(...).get()/.all()` の呼び出し方を

@@ -26,6 +26,7 @@ function seedData() {
   // 既存データを一旦クリア（再起動のたびに作り直す前提のため）
   db.exec(`
     DELETE FROM reservations;
+    DELETE FROM customers;
     DELETE FROM shift_master;
     DELETE FROM events;
     DELETE FROM rules;
@@ -128,6 +129,19 @@ function seedData() {
     staff_name: '寿子', menu: 'ボディ(90分)', reservation_date: day5, reservation_time: '19:30',
     note: '', editor: '寿子', customer_id: 'C0003'
   });
+
+  // --- 顧客マスタ（顧客マスタシート相当）：5名分のダミーデータ ------------------
+  const insertCustomer = db.prepare(`
+    INSERT INTO customers
+      (store_id, customer_id, realname, kana, phone, line_name, user_id, birthday, first_visit_date, last_visit_date, total_visits, memo)
+    VALUES
+      (@store_id, @customer_id, @realname, @kana, @phone, @line_name, @user_id, @birthday, @first_visit_date, @last_visit_date, @total_visits, @memo)
+  `);
+  insertCustomer.run({ store_id: storeId, customer_id: 'C0001', realname: '田中 美穂', kana: 'タナカ ミホ', phone: '090-1111-2222', line_name: 'みほ', user_id: 'U0001', birthday: '1990-04-12', first_visit_date: fmt(addDays(-200)), last_visit_date: fmt(addDays(-10)), total_visits: 12, memo: '敏感肌。強い圧NG。' });
+  insertCustomer.run({ store_id: storeId, customer_id: 'C0002', realname: '佐藤 由紀', kana: 'サトウ ユキ', phone: '090-2222-3333', line_name: 'ゆき', user_id: 'U0002', birthday: '1985-11-02', first_visit_date: fmt(addDays(-150)), last_visit_date: fmt(addDays(-30)), total_visits: 6, memo: '' });
+  insertCustomer.run({ store_id: storeId, customer_id: 'C0003', realname: '鈴木 花', kana: 'スズキ ハナ', phone: '090-3333-4444', line_name: 'はな', user_id: 'U0003', birthday: '1993-07-20', first_visit_date: fmt(addDays(-90)), last_visit_date: fmt(addDays(-5)), total_visits: 4, memo: '夜間の予約が多い' });
+  insertCustomer.run({ store_id: storeId, customer_id: 'C0004', realname: '高橋 恵子', kana: 'タカハシ ケイコ', phone: '090-4444-5555', line_name: '', user_id: '', birthday: '1978-01-30', first_visit_date: fmt(addDays(-400)), last_visit_date: fmt(addDays(-60)), total_visits: 20, memo: '常連。予約は電話が多い。' });
+  insertCustomer.run({ store_id: storeId, customer_id: 'C0005', realname: '山本 かな', kana: 'ヤマモト カナ', phone: '090-5555-6666', line_name: 'かなぴ', user_id: 'U0005', birthday: '2000-09-08', first_visit_date: fmt(addDays(-20)), last_visit_date: fmt(addDays(-20)), total_visits: 1, memo: '新規のお客様' });
 
   console.log('✅ シードデータ投入完了');
   console.log('   店舗: クラーレ寿 (storeId=1)');

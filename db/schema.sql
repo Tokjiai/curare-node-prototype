@@ -150,6 +150,36 @@ CREATE TABLE IF NOT EXISTS zones (
   UNIQUE(store_id, zone_key)
 );
 
+-- ----------------------------------------------------------------------------
+-- customers：顧客マスタ（GASの「顧客マスタ」シート相当）
+--   列の実際のマッピングは import_csv.js の COLUMN MAPPING に集約してある。
+--   （実運用のスプレッドシート側の列順・表記ゆれが変わっても、ここではなく
+--    import_csv.js 側のマッピング定義だけを直せばよいようにしてある）
+--   customer_id はGASスプレッドシート発行の顧客ID（外部/レガシーID）。
+--   store_id + customer_id の組で一意（1店舗内で重複しない前提）。
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS customers (
+  id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+  store_id           INTEGER NOT NULL REFERENCES stores(id),
+  customer_id        VARCHAR(50) NOT NULL,   -- 顧客マスタシート発行の顧客ID（例：'C0001'）
+  realname           VARCHAR(50) NOT NULL,   -- お客様氏名
+  kana               VARCHAR(50),
+  phone              VARCHAR(20),
+  line_name          VARCHAR(50),
+  user_id            VARCHAR(100),           -- LINE userId
+  birthday           DATE,                   -- 'YYYY-MM-DD'
+  first_visit_date   DATE,
+  last_visit_date    DATE,
+  total_visits       INTEGER NOT NULL DEFAULT 0,
+  memo               TEXT,
+  created_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(store_id, customer_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_customers_store_cid      ON customers(store_id, customer_id);
+CREATE INDEX IF NOT EXISTS idx_customers_store_realname  ON customers(store_id, realname);
+
 -- インデックス（検索性能用。日付・店舗・スタッフでの絞り込みが多いため）
 CREATE INDEX IF NOT EXISTS idx_reservations_store_date ON reservations(store_id, reservation_date);
 CREATE INDEX IF NOT EXISTS idx_reservations_staff_date  ON reservations(store_id, staff_name, reservation_date);

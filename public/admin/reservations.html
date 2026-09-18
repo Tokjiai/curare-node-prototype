@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>オーナー管理画面 - 予約データ</title>
+<style>
+  :root{
+    --pink-header:#C8A0B4; --pink-accent:#6B3050;
+    --pink-light:#FAF0F5; --pink-border:#E8C8D8;
+  }
+  *{box-sizing:border-box;}
+  body{
+    font-family:'Helvetica Neue',Arial,'Hiragino Sans','Yu Gothic',sans-serif;
+    font-size:16px; background:#f7f3f5; margin:0; min-height:100vh; color:#333;
+  }
+  .page-header{background:var(--pink-header); color:#fff; padding:22px 16px; text-align:center;}
+  .page-header h1{margin:0; font-size:20px; font-weight:600; letter-spacing:0.03em;}
+  .page-header p{margin:6px 0 0; font-size:12px; opacity:0.9;}
+  .proto-badge{display:inline-block; background:#fff3; padding:3px 8px; border-radius:12px; font-size:11px; margin-top:6px;}
+  .container{max-width:960px; margin:0 auto; padding:16px;}
+  nav{display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap;}
+  nav a{flex:1; text-align:center; padding:10px; background:#fff; border:1.5px solid var(--pink-border); border-radius:8px; color:var(--pink-accent); text-decoration:none; font-size:13px; font-weight:600;}
+  nav a.active{background:var(--pink-accent); color:#fff; border-color:var(--pink-accent);}
+  .card{background:#fff; border:1px solid var(--pink-border); border-radius:10px; padding:16px; margin-bottom:14px;}
+  .card h2{font-size:15px; color:var(--pink-accent); margin:0 0 10px; font-weight:600;}
+  .filter-grid{display:grid; grid-template-columns:repeat(2,1fr); gap:10px; margin-bottom:10px;}
+  .filter-grid label{display:block; font-size:12px; color:#888; margin-bottom:4px;}
+  .filter-grid input, .filter-grid select{width:100%; padding:9px; border:1.5px solid var(--pink-border); border-radius:8px; font-size:14px;}
+  .search-row{display:flex; gap:8px; margin-top:6px;}
+  .search-row button{padding:10px 16px; background:var(--pink-accent); color:#fff; border:none; border-radius:8px; font-size:14px; font-weight:600; cursor:pointer; flex-shrink:0;}
+  table{width:100%; border-collapse:collapse; margin-top:14px; font-size:13px;}
+  th, td{padding:8px 6px; text-align:left; border-bottom:1px solid #eee; white-space:nowrap;}
+  th{color:#888; font-weight:600; font-size:12px;}
+  .status-キャンセル{color:#c0392b;}
+  .pager{display:flex; justify-content:space-between; align-items:center; margin-top:10px; font-size:13px;}
+  .pager button{padding:6px 12px; border:1.5px solid var(--pink-border); border-radius:6px; background:#fff; cursor:pointer;}
+  .pager button:disabled{opacity:0.4; cursor:not-allowed;}
+  .login-box{max-width:320px; margin:60px auto; background:#fff; border:1px solid var(--pink-border); border-radius:10px; padding:20px; text-align:center;}
+  .login-box input{width:100%; padding:10px; border:1.5px solid var(--pink-border); border-radius:8px; font-size:15px; margin:10px 0;}
+  .login-box button{width:100%; padding:11px; background:var(--pink-accent); color:#fff; border:none; border-radius:8px; font-size:15px; font-weight:600; cursor:pointer;}
+  .err{color:#a12727; font-size:13px; margin-top:8px;}
+  .note{font-size:12px; color:#999; margin-top:10px;}
+  #mainArea{display:none;}
+  .empty{color:#999; font-size:13px; padding:14px 0; text-align:center;}
+</style>
+</head>
+<body>
+  <div class="page-header">
+    <h1>オーナー管理画面</h1>
+    <p>予約データ閲覧</p>
+    <div class="proto-badge">PROTOTYPE - パスワードは仮の共有パスワードです</div>
+  </div>
+
+  <div class="container">
+    <div class="login-box" id="loginBox">
+      <p>管理者パスワードを入力してください</p>
+      <input type="password" id="pwInput" placeholder="パスワード">
+      <button id="loginBtn" type="button">入室</button>
+      <div class="err" id="loginErr" style="display:none;"></div>
+      <div class="note">初期パスワード（未設定時）: demo1234</div>
+    </div>
+
+    <div id="mainArea">
+      <nav>
+        <a href="index.html">ダッシュボード</a>
+        <a href="customers.html">顧客マスタ</a>
+        <a href="reservations.html" class="active">予約データ</a>
+        <a href="../index.html">予約画面へ</a>
+      </nav>
+
+      <div class="card">
+        <h2>絞り込み</h2>
+        <div class="filter-grid">
+          <div>
+            <label>開始日</label>
+            <input type="date" id="fromInput">
+          </div>
+          <div>
+            <label>終了日</label>
+            <input type="date" id="toInput">
+          </div>
+          <div>
+            <label>担当スタッフ（本名）</label>
+            <input type="text" id="staffInput" placeholder="例：花子">
+          </div>
+          <div>
+            <label>お客様氏名（部分一致）</label>
+            <input type="text" id="qInput" placeholder="例：田中">
+          </div>
+        </div>
+        <div class="search-row">
+          <button id="searchBtn" type="button">検索</button>
+        </div>
+
+        <table>
+          <thead>
+            <tr><th>日付</th><th>時刻</th><th>担当</th><th>氏名</th><th>メニュー</th><th>ステータス</th></tr>
+          </thead>
+          <tbody id="tbody"></tbody>
+        </table>
+        <div class="empty" id="emptyMsg" style="display:none;">該当する予約がありません</div>
+
+        <div class="pager">
+          <button id="prevBtn" type="button">← 前へ</button>
+          <span id="pageLabel"></span>
+          <button id="nextBtn" type="button">次へ →</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+(function(){
+  let adminPassword = null; // メモリのみ保持（localStorage不使用）
+  const limit = 50;
+  let offset = 0;
+  let total = 0;
+
+  const loginBox = document.getElementById('loginBox');
+  const mainArea = document.getElementById('mainArea');
+  const loginErr = document.getElementById('loginErr');
+
+  async function adminFetch(url) {
+    const res = await fetch(url, { headers: { 'X-Admin-Password': adminPassword } });
+    if (res.status === 401) throw new Error('UNAUTHORIZED');
+    if (!res.ok) throw new Error('サーバーエラー: ' + res.status);
+    return res.json();
+  }
+
+  async function tryLogin(pw) {
+    adminPassword = pw;
+    try {
+      await load();
+      loginBox.style.display = 'none';
+      mainArea.style.display = 'block';
+    } catch (e) {
+      adminPassword = null;
+      loginErr.textContent = e.message === 'UNAUTHORIZED' ? 'パスワードが違います' : e.message;
+      loginErr.style.display = 'block';
+    }
+  }
+
+  async function load() {
+    const params = new URLSearchParams({ store: '1', limit, offset });
+    const from = document.getElementById('fromInput').value;
+    const to = document.getElementById('toInput').value;
+    const staffName = document.getElementById('staffInput').value.trim();
+    const q = document.getElementById('qInput').value.trim();
+    if (from) params.set('from', from);
+    if (to) params.set('to', to);
+    if (staffName) params.set('staffName', staffName);
+    if (q) params.set('q', q);
+
+    const data = await adminFetch('/api/admin/reservations?' + params.toString());
+    total = data.total;
+    render(data.reservations);
+  }
+
+  function render(rows) {
+    const tbody = document.getElementById('tbody');
+    tbody.innerHTML = '';
+    document.getElementById('emptyMsg').style.display = rows.length === 0 ? 'block' : 'none';
+    rows.forEach((r) => {
+      const isCancel = r.realname === 'キャンセル';
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${esc(r.reservation_date)}</td>
+        <td>${esc(r.reservation_time)}</td>
+        <td>${esc(r.staff_name)}</td>
+        <td>${esc(r.realname)}</td>
+        <td>${esc(r.menu || '')}</td>
+        <td class="${isCancel ? 'status-キャンセル' : ''}">${isCancel ? 'キャンセル' : esc(r.status || '確定')}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+    const page = Math.floor(offset / limit) + 1;
+    const maxPage = Math.max(1, Math.ceil(total / limit));
+    document.getElementById('pageLabel').textContent = `${page} / ${maxPage} ページ（全${total}件）`;
+    document.getElementById('prevBtn').disabled = offset <= 0;
+    document.getElementById('nextBtn').disabled = offset + limit >= total;
+  }
+
+  function esc(v) {
+    return String(v == null ? '' : v).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  }
+
+  document.getElementById('loginBtn').addEventListener('click', () => {
+    const pw = document.getElementById('pwInput').value;
+    if (!pw) return;
+    tryLogin(pw);
+  });
+  document.getElementById('pwInput').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') document.getElementById('loginBtn').click();
+  });
+  document.getElementById('searchBtn').addEventListener('click', () => { offset = 0; load(); });
+  document.getElementById('prevBtn').addEventListener('click', () => { offset = Math.max(0, offset - limit); load(); });
+  document.getElementById('nextBtn').addEventListener('click', () => { offset = offset + limit; load(); });
+})();
+</script>
+</body>
+</html>

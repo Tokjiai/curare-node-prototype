@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>オーナー管理画面 - ダッシュボード</title>
+<style>
+  :root{
+    --pink-header:#C8A0B4; --pink-accent:#6B3050;
+    --pink-light:#FAF0F5; --pink-border:#E8C8D8;
+  }
+  *{box-sizing:border-box;}
+  body{
+    font-family:'Helvetica Neue',Arial,'Hiragino Sans','Yu Gothic',sans-serif;
+    font-size:16px; background:#f7f3f5; margin:0; min-height:100vh; color:#333;
+  }
+  .page-header{background:var(--pink-header); color:#fff; padding:22px 16px; text-align:center;}
+  .page-header h1{margin:0; font-size:20px; font-weight:600; letter-spacing:0.03em;}
+  .page-header p{margin:6px 0 0; font-size:12px; opacity:0.9;}
+  .proto-badge{display:inline-block; background:#fff3; padding:3px 8px; border-radius:12px; font-size:11px; margin-top:6px;}
+  .container{max-width:640px; margin:0 auto; padding:16px;}
+  nav{display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap;}
+  nav a{flex:1; text-align:center; padding:10px; background:#fff; border:1.5px solid var(--pink-border); border-radius:8px; color:var(--pink-accent); text-decoration:none; font-size:13px; font-weight:600;}
+  nav a.active{background:var(--pink-accent); color:#fff; border-color:var(--pink-accent);}
+  .card{background:#fff; border:1px solid var(--pink-border); border-radius:10px; padding:16px; margin-bottom:14px;}
+  .card h2{font-size:15px; color:var(--pink-accent); margin:0 0 10px; font-weight:600;}
+  .stat-grid{display:grid; grid-template-columns:repeat(2,1fr); gap:10px;}
+  .stat-box{background:var(--pink-light); border:1px solid var(--pink-border); border-radius:10px; padding:14px; text-align:center;}
+  .stat-box .num{font-size:26px; font-weight:700; color:var(--pink-accent);}
+  .stat-box .label{font-size:12px; color:#888; margin-top:4px;}
+  .day-list{list-style:none; margin:0; padding:0; font-size:14px;}
+  .day-list li{display:flex; justify-content:space-between; padding:8px 4px; border-bottom:1px solid #eee;}
+  .day-list li .cnt{font-weight:700; color:var(--pink-accent);}
+  .login-box{max-width:320px; margin:60px auto; background:#fff; border:1px solid var(--pink-border); border-radius:10px; padding:20px; text-align:center;}
+  .login-box input{width:100%; padding:10px; border:1.5px solid var(--pink-border); border-radius:8px; font-size:15px; margin:10px 0;}
+  .login-box button{width:100%; padding:11px; background:var(--pink-accent); color:#fff; border:none; border-radius:8px; font-size:15px; font-weight:600; cursor:pointer;}
+  .err{color:#a12727; font-size:13px; margin-top:8px;}
+  .note{font-size:12px; color:#999; margin-top:10px;}
+  #mainArea{display:none;}
+</style>
+</head>
+<body>
+  <div class="page-header">
+    <h1>オーナー管理画面</h1>
+    <p>ダッシュボード</p>
+    <div class="proto-badge">PROTOTYPE - パスワードは仮の共有パスワードです</div>
+  </div>
+
+  <div class="container">
+    <!-- パスワード入力画面（セッション中のみメモリ保持。localStorageには保存しない） -->
+    <div class="login-box" id="loginBox">
+      <p>管理者パスワードを入力してください</p>
+      <input type="password" id="pwInput" placeholder="パスワード">
+      <button id="loginBtn" type="button">入室</button>
+      <div class="err" id="loginErr" style="display:none;"></div>
+      <div class="note">初期パスワード（未設定時）: demo1234</div>
+    </div>
+
+    <div id="mainArea">
+      <nav>
+        <a href="index.html" class="active">ダッシュボード</a>
+        <a href="customers.html">顧客マスタ</a>
+        <a href="reservations.html">予約データ</a>
+        <a href="../index.html">予約画面へ</a>
+      </nav>
+
+      <div class="card">
+        <h2>本日 (<span id="todayLabel"></span>)</h2>
+        <div class="stat-grid">
+          <div class="stat-box"><div class="num" id="todayCount">-</div><div class="label">本日の予約件数</div></div>
+          <div class="stat-box"><div class="num" id="weekCount">-</div><div class="label">今週の予約件数</div></div>
+          <div class="stat-box"><div class="num" id="totalCustomers">-</div><div class="label">総顧客数</div></div>
+          <div class="stat-box"><div class="num" id="totalReservations">-</div><div class="label">累計予約件数（有効分）</div></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>直近7日間の予約数</h2>
+        <ul class="day-list" id="dayList"></ul>
+      </div>
+    </div>
+  </div>
+
+<script>
+(function(){
+  // ★セッション内メモリのみで保持（プロジェクトの方針どおりlocalStorage不使用）。
+  //   ページをリロードすると再入力が必要（このプロトタイプでは許容仕様）。
+  let adminPassword = null;
+
+  const loginBox = document.getElementById('loginBox');
+  const mainArea = document.getElementById('mainArea');
+  const loginErr = document.getElementById('loginErr');
+
+  async function adminFetch(url) {
+    const res = await fetch(url, { headers: { 'X-Admin-Password': adminPassword } });
+    if (res.status === 401) throw new Error('UNAUTHORIZED');
+    if (!res.ok) throw new Error('サーバーエラー: ' + res.status);
+    return res.json();
+  }
+
+  async function tryLogin(pw) {
+    adminPassword = pw;
+    try {
+      const data = await adminFetch('/api/admin/dashboard?store=1');
+      loginBox.style.display = 'none';
+      mainArea.style.display = 'block';
+      renderDashboard(data);
+    } catch (e) {
+      adminPassword = null;
+      loginErr.textContent = e.message === 'UNAUTHORIZED' ? 'パスワードが違います' : e.message;
+      loginErr.style.display = 'block';
+    }
+  }
+
+  function renderDashboard(data) {
+    document.getElementById('todayLabel').textContent = data.today;
+    document.getElementById('todayCount').textContent = data.todayCount;
+    document.getElementById('weekCount').textContent = data.weekCount;
+    document.getElementById('totalCustomers').textContent = data.totalCustomers;
+    document.getElementById('totalReservations').textContent = data.totalReservations;
+
+    const list = document.getElementById('dayList');
+    list.innerHTML = '';
+    data.upcoming7Days.forEach((d) => {
+      const li = document.createElement('li');
+      li.innerHTML = `<span>${d.date}</span><span class="cnt">${d.count}件</span>`;
+      list.appendChild(li);
+    });
+  }
+
+  document.getElementById('loginBtn').addEventListener('click', () => {
+    const pw = document.getElementById('pwInput').value;
+    if (!pw) return;
+    tryLogin(pw);
+  });
+  document.getElementById('pwInput').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') document.getElementById('loginBtn').click();
+  });
+})();
+</script>
+</body>
+</html>
