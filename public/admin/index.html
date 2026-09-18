@@ -5,71 +5,113 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>オーナー管理画面 - ダッシュボード</title>
 <style>
+  /* ============================================================
+     実際のGAS版 owner_ui.html のカラートークン・サイドバー構成を移植。
+     （:root の値は owner_ui.html の :root 定義と同一）
+     ============================================================ */
   :root{
-    --pink-header:#C8A0B4; --pink-accent:#6B3050;
-    --pink-light:#FAF0F5; --pink-border:#E8C8D8;
+    --bg:#F5F4EF; --panel:#ffffff; --ink:#2B2B27; --ink-soft:#75746C; --ink-faint:#A9A79C;
+    --line:#E4E2D9; --accent:#3D6B5C; --accent-soft:#E7EFE9; --warn:#B3542E; --warn-soft:#F7E9E2;
+    --radius:14px;
   }
-  *{box-sizing:border-box;}
-  body{
-    font-family:'Helvetica Neue',Arial,'Hiragino Sans','Yu Gothic',sans-serif;
-    font-size:16px; background:#f7f3f5; margin:0; min-height:100vh; color:#333;
+  *{box-sizing:border-box; margin:0; padding:0; font-family:'Hiragino Sans','Yu Gothic',sans-serif;}
+  body{background:var(--bg); color:var(--ink);}
+  .shell{display:none; min-height:100vh;}
+  .shell.ready{display:grid; grid-template-columns:220px 1fr;}
+
+  .sidebar{background:var(--panel); border-right:1px solid var(--line); padding:20px 14px; display:flex; flex-direction:column; gap:16px;}
+  .brand{font-size:14px; font-weight:600; padding:0 8px;}
+  .store-name{background:var(--accent-soft); color:var(--accent); border-radius:8px; padding:9px 10px; font-size:13px; font-weight:700; text-align:center;}
+  .proto-badge{font-size:10.5px; color:var(--warn); background:var(--warn-soft); border-radius:8px; padding:6px 8px; text-align:center; font-weight:700;}
+  .nav{display:flex; flex-direction:column; gap:2px;}
+  .nav-item{display:flex; align-items:center; gap:10px; padding:10px 10px; border-radius:8px; text-decoration:none; font-size:13.5px; color:var(--ink-soft); font-weight:500;}
+  .nav-item.active{background:var(--accent-soft); color:var(--accent);}
+  .nav-item.warn{color:var(--warn); margin-top:auto;}
+
+  .main{padding:28px 32px; max-width:900px;}
+  .page-head{margin-bottom:20px;}
+  .page-head h1{font-size:19px; font-weight:600; margin-bottom:4px;}
+  .page-head p{font-size:13px; color:var(--ink-soft);}
+
+  .panel{background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:18px 20px; margin-bottom:16px;}
+  .panel h2{font-size:14px; font-weight:600; margin-bottom:14px; color:var(--ink);}
+
+  .stat-grid{display:grid; grid-template-columns:repeat(2,1fr); gap:12px;}
+  .tile{background:var(--accent-soft); border:1px solid var(--line); border-radius:var(--radius); padding:16px 14px; text-align:center;}
+  .tile .num{font-size:26px; font-weight:700; color:var(--accent);}
+  .tile .label{font-size:12px; color:var(--ink-soft); margin-top:4px;}
+
+  .day-list{list-style:none; font-size:13.5px;}
+  .day-list li{display:flex; justify-content:space-between; padding:9px 6px; border-bottom:1px solid #F1ECE9;}
+  .day-list li:last-child{border-bottom:none;}
+  .day-list li .cnt{font-weight:700; color:var(--accent);}
+
+  .btn-import{background:var(--accent); color:#fff; border:none; border-radius:10px; padding:11px 18px; font-size:14px; font-weight:600; cursor:pointer;}
+  .btn-import:disabled{opacity:0.6; cursor:default;}
+  .btn-import:hover:not(:disabled){filter:brightness(1.08);}
+
+  .err{color:var(--warn); font-size:13px; margin-top:8px;}
+  .hint{font-size:11px; color:var(--ink-soft); margin-top:10px;}
+  #loadingMsg{text-align:center; color:var(--ink-soft); font-size:13px; padding:60px 0;}
+
+  @media (max-width:760px){
+    .shell.ready{grid-template-columns:1fr;}
+    .sidebar{flex-direction:row; flex-wrap:wrap; align-items:center; padding:12px 14px;}
+    .brand{display:none;}
+    .nav{flex-direction:row; flex-wrap:wrap; gap:6px;}
+    .nav-item.warn{margin-top:0;}
+    .main{padding:18px 16px;}
   }
-  .page-header{background:var(--pink-header); color:#fff; padding:22px 16px; text-align:center;}
-  .page-header h1{margin:0; font-size:20px; font-weight:600; letter-spacing:0.03em;}
-  .page-header p{margin:6px 0 0; font-size:12px; opacity:0.9;}
-  .proto-badge{display:inline-block; background:#fff3; padding:3px 8px; border-radius:12px; font-size:11px; margin-top:6px;}
-  .container{max-width:640px; margin:0 auto; padding:16px;}
-  nav{display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap;}
-  nav a{flex:1; text-align:center; padding:10px; background:#fff; border:1.5px solid var(--pink-border); border-radius:8px; color:var(--pink-accent); text-decoration:none; font-size:13px; font-weight:600;}
-  nav a.active{background:var(--pink-accent); color:#fff; border-color:var(--pink-accent);}
-  .card{background:#fff; border:1px solid var(--pink-border); border-radius:10px; padding:16px; margin-bottom:14px;}
-  .card h2{font-size:15px; color:var(--pink-accent); margin:0 0 10px; font-weight:600;}
-  .stat-grid{display:grid; grid-template-columns:repeat(2,1fr); gap:10px;}
-  .stat-box{background:var(--pink-light); border:1px solid var(--pink-border); border-radius:10px; padding:14px; text-align:center;}
-  .stat-box .num{font-size:26px; font-weight:700; color:var(--pink-accent);}
-  .stat-box .label{font-size:12px; color:#888; margin-top:4px;}
-  .day-list{list-style:none; margin:0; padding:0; font-size:14px;}
-  .day-list li{display:flex; justify-content:space-between; padding:8px 4px; border-bottom:1px solid #eee;}
-  .day-list li .cnt{font-weight:700; color:var(--pink-accent);}
-  .err{color:#a12727; font-size:13px; margin-top:8px;}
-  .note{font-size:12px; color:#999; margin-top:10px;}
-  .logout-link{background:transparent!important; color:#a12727!important; border-color:#e0b0b0!important;}
-  #mainArea{display:none;}
-  #loadingMsg{text-align:center; color:#999; font-size:13px; padding:40px 0;}
 </style>
 </head>
 <body>
-  <div class="page-header">
-    <h1>オーナー管理画面</h1>
-    <p>ダッシュボード</p>
-    <div class="proto-badge">PROTOTYPE</div>
-  </div>
+  <div id="loadingMsg">読み込み中...</div>
 
-  <div class="container">
-    <div id="loadingMsg">読み込み中...</div>
+  <div class="shell" id="shell">
+    <div class="sidebar">
+      <div class="brand">クラーレ寿 ／ オーナー管理</div>
+      <div class="store-name">クラーレ寿</div>
+      <div class="proto-badge">PROTOTYPE</div>
+      <div class="nav">
+        <a href="index.html" class="nav-item active">📊 ダッシュボード</a>
+        <a href="customers.html" class="nav-item">👥 顧客マスタ</a>
+        <a href="reservations.html" class="nav-item">📅 予約データ</a>
+        <a href="../index.html" class="nav-item">🔗 予約画面へ</a>
+        <a href="#" id="logoutLink" class="nav-item warn">🚪 ログアウト</a>
+      </div>
+    </div>
 
-    <div id="mainArea">
-      <nav>
-        <a href="index.html" class="active">ダッシュボード</a>
-        <a href="customers.html">顧客マスタ</a>
-        <a href="reservations.html">予約データ</a>
-        <a href="../index.html">予約画面へ</a>
-        <a href="#" id="logoutLink" class="logout-link">ログアウト</a>
-      </nav>
+    <div class="main">
+      <div class="page-head">
+        <h1>ダッシュボード</h1>
+        <p>本日 (<span id="todayLabel"></span>)</p>
+      </div>
 
-      <div class="card">
-        <h2>本日 (<span id="todayLabel"></span>)</h2>
+      <div class="panel">
+        <h2>予約状況サマリー</h2>
         <div class="stat-grid">
-          <div class="stat-box"><div class="num" id="todayCount">-</div><div class="label">本日の予約件数</div></div>
-          <div class="stat-box"><div class="num" id="weekCount">-</div><div class="label">今週の予約件数</div></div>
-          <div class="stat-box"><div class="num" id="totalCustomers">-</div><div class="label">総顧客数</div></div>
-          <div class="stat-box"><div class="num" id="totalReservations">-</div><div class="label">累計予約件数（有効分）</div></div>
+          <div class="tile"><div class="num" id="todayCount">-</div><div class="label">本日の予約件数</div></div>
+          <div class="tile"><div class="num" id="weekCount">-</div><div class="label">今週の予約件数</div></div>
+          <div class="tile"><div class="num" id="totalCustomers">-</div><div class="label">総顧客数</div></div>
+          <div class="tile"><div class="num" id="totalReservations">-</div><div class="label">累計予約件数（有効分）</div></div>
         </div>
       </div>
 
-      <div class="card">
+      <div class="panel">
         <h2>直近7日間の予約数</h2>
         <ul class="day-list" id="dayList"></ul>
+      </div>
+
+      <div class="panel">
+        <h2>テストB店データの取込（PROTOTYPE専用）</h2>
+        <p style="margin:0 0 12px;color:#666;font-size:13px;">
+          Renderの無料プランにはShell機能がないため、同梱の sample_data/ 配下のCSV
+          （テストB店の実データ：顧客3件・予約6件）を、このボタンからワンクリックで取り込めます。
+          何度押しても重複登録されません（ただしキャンセル済み予約の一部は元データに顧客IDが
+          無いため重複が生じることがあります）。
+        </p>
+        <button id="importSampleBtn" class="btn-import">サンプルデータを取り込む</button>
+        <div id="importResult" style="margin-top:10px;font-size:13px;white-space:pre-wrap;"></div>
       </div>
     </div>
   </div>
@@ -77,7 +119,7 @@
 <script>
 (function(){
   const loadingMsg = document.getElementById('loadingMsg');
-  const mainArea = document.getElementById('mainArea');
+  const shell = document.getElementById('shell');
 
   // ★セッションcookieはブラウザが自動送信するため、追加ヘッダーは不要。
   //   （fetchのデフォルトcredentials: 'same-origin'で十分）
@@ -93,7 +135,7 @@
       await adminFetch('/api/auth/me'); // ログイン状態確認。401なら下でリダイレクト
       const data = await adminFetch('/api/admin/dashboard');
       loadingMsg.style.display = 'none';
-      mainArea.style.display = 'block';
+      shell.classList.add('ready');
       renderDashboard(data);
     } catch (e) {
       window.location.href = '/admin/login.html';
@@ -104,6 +146,28 @@
     e.preventDefault();
     try { await fetch('/api/auth/logout', { method: 'POST' }); } catch (_) {}
     window.location.href = '/admin/login.html';
+  });
+
+  document.getElementById('importSampleBtn').addEventListener('click', async () => {
+    const btn = document.getElementById('importSampleBtn');
+    const out = document.getElementById('importResult');
+    btn.disabled = true;
+    out.textContent = '取込中...';
+    try {
+      const res = await fetch('/api/admin/import-sample-data', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'サーバーエラー');
+      out.textContent =
+        `✅ 完了\n顧客: 読込${data.customers.read} / 新規${data.customers.inserted} / 更新${data.customers.updated} / スキップ${data.customers.skipped}\n` +
+        `予約: 読込${data.reservations.read} / 新規${data.reservations.inserted} / 更新${data.reservations.updated} / スキップ${data.reservations.skipped}\n` +
+        `ページを再読み込みすると反映されたダッシュボードが見られます。`;
+      const dash = await adminFetch('/api/admin/dashboard');
+      renderDashboard(dash);
+    } catch (e) {
+      out.textContent = '❌ 失敗: ' + e.message;
+    } finally {
+      btn.disabled = false;
+    }
   });
 
   function renderDashboard(data) {

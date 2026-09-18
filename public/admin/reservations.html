@@ -6,64 +6,88 @@
 <title>オーナー管理画面 - 予約データ</title>
 <style>
   :root{
-    --pink-header:#C8A0B4; --pink-accent:#6B3050;
-    --pink-light:#FAF0F5; --pink-border:#E8C8D8;
+    --bg:#F5F4EF; --panel:#ffffff; --ink:#2B2B27; --ink-soft:#75746C; --ink-faint:#A9A79C;
+    --line:#E4E2D9; --accent:#3D6B5C; --accent-soft:#E7EFE9; --warn:#B3542E; --warn-soft:#F7E9E2;
+    --radius:14px;
   }
-  *{box-sizing:border-box;}
-  body{
-    font-family:'Helvetica Neue',Arial,'Hiragino Sans','Yu Gothic',sans-serif;
-    font-size:16px; background:#f7f3f5; margin:0; min-height:100vh; color:#333;
-  }
-  .page-header{background:var(--pink-header); color:#fff; padding:22px 16px; text-align:center;}
-  .page-header h1{margin:0; font-size:20px; font-weight:600; letter-spacing:0.03em;}
-  .page-header p{margin:6px 0 0; font-size:12px; opacity:0.9;}
-  .proto-badge{display:inline-block; background:#fff3; padding:3px 8px; border-radius:12px; font-size:11px; margin-top:6px;}
-  .container{max-width:960px; margin:0 auto; padding:16px;}
-  nav{display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap;}
-  nav a{flex:1; text-align:center; padding:10px; background:#fff; border:1.5px solid var(--pink-border); border-radius:8px; color:var(--pink-accent); text-decoration:none; font-size:13px; font-weight:600;}
-  nav a.active{background:var(--pink-accent); color:#fff; border-color:var(--pink-accent);}
-  .card{background:#fff; border:1px solid var(--pink-border); border-radius:10px; padding:16px; margin-bottom:14px;}
-  .card h2{font-size:15px; color:var(--pink-accent); margin:0 0 10px; font-weight:600;}
-  .filter-grid{display:grid; grid-template-columns:repeat(2,1fr); gap:10px; margin-bottom:10px;}
-  .filter-grid label{display:block; font-size:12px; color:#888; margin-bottom:4px;}
-  .filter-grid input, .filter-grid select{width:100%; padding:9px; border:1.5px solid var(--pink-border); border-radius:8px; font-size:14px;}
-  .search-row{display:flex; gap:8px; margin-top:6px;}
-  .search-row button{padding:10px 16px; background:var(--pink-accent); color:#fff; border:none; border-radius:8px; font-size:14px; font-weight:600; cursor:pointer; flex-shrink:0;}
+  *{box-sizing:border-box; margin:0; padding:0; font-family:'Hiragino Sans','Yu Gothic',sans-serif;}
+  body{background:var(--bg); color:var(--ink);}
+  .shell{display:none; min-height:100vh;}
+  .shell.ready{display:grid; grid-template-columns:220px 1fr;}
+
+  .sidebar{background:var(--panel); border-right:1px solid var(--line); padding:20px 14px; display:flex; flex-direction:column; gap:16px;}
+  .brand{font-size:14px; font-weight:600; padding:0 8px;}
+  .store-name{background:var(--accent-soft); color:var(--accent); border-radius:8px; padding:9px 10px; font-size:13px; font-weight:700; text-align:center;}
+  .proto-badge{font-size:10.5px; color:var(--warn); background:var(--warn-soft); border-radius:8px; padding:6px 8px; text-align:center; font-weight:700;}
+  .nav{display:flex; flex-direction:column; gap:2px;}
+  .nav-item{display:flex; align-items:center; gap:10px; padding:10px 10px; border-radius:8px; text-decoration:none; font-size:13.5px; color:var(--ink-soft); font-weight:500;}
+  .nav-item.active{background:var(--accent-soft); color:var(--accent);}
+  .nav-item.warn{color:var(--warn); margin-top:auto;}
+
+  .main{padding:28px 32px; max-width:1080px;}
+  .page-head{margin-bottom:20px;}
+  .page-head h1{font-size:19px; font-weight:600; margin-bottom:4px;}
+  .page-head p{font-size:13px; color:var(--ink-soft);}
+
+  .panel{background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:18px 20px; margin-bottom:16px;}
+  .panel h2{font-size:14px; font-weight:600; margin-bottom:14px; color:var(--ink);}
+
+  .filter-grid{display:grid; grid-template-columns:repeat(2,1fr); gap:12px; margin-bottom:12px;}
+  .filter-grid label{display:block; font-size:11px; color:var(--ink-soft); font-weight:600; margin-bottom:4px;}
+  .filter-grid input, .filter-grid select{border:1px solid var(--line); border-radius:8px; padding:9px 10px; font-size:13.5px; width:100%; font-family:inherit; background:#fff;}
+  .search-row{margin-top:4px;}
+  .btn-save{background:var(--accent); color:#fff; border:none; border-radius:9px; padding:10px 20px; font-size:13px; font-weight:600; cursor:pointer;}
+
   table{width:100%; border-collapse:collapse; margin-top:14px; font-size:13px;}
-  th, td{padding:8px 6px; text-align:left; border-bottom:1px solid #eee; white-space:nowrap;}
-  th{color:#888; font-weight:600; font-size:12px;}
-  .status-キャンセル{color:#c0392b;}
-  .pager{display:flex; justify-content:space-between; align-items:center; margin-top:10px; font-size:13px;}
-  .pager button{padding:6px 12px; border:1.5px solid var(--pink-border); border-radius:6px; background:#fff; cursor:pointer;}
+  th{text-align:left; font-size:11px; color:var(--ink-soft); font-weight:600; padding:8px 6px; border-bottom:1px solid var(--line); white-space:nowrap;}
+  td{padding:9px 6px; border-bottom:1px solid #F1ECE9; vertical-align:middle; white-space:nowrap;}
+  tr:last-child td{border-bottom:none;}
+  .status-キャンセル{color:var(--warn); font-weight:600;}
+
+  .pager{display:flex; justify-content:space-between; align-items:center; margin-top:12px; font-size:13px;}
+  .pager button{padding:7px 14px; border:1px solid var(--line); border-radius:8px; background:#fff; cursor:pointer; font-family:inherit;}
   .pager button:disabled{opacity:0.4; cursor:not-allowed;}
-  .err{color:#a12727; font-size:13px; margin-top:8px;}
-  .note{font-size:12px; color:#999; margin-top:10px;}
-  .logout-link{background:transparent!important; color:#a12727!important; border-color:#e0b0b0!important;}
-  #mainArea{display:none;}
-  #loadingMsg{text-align:center; color:#999; font-size:13px; padding:40px 0;}
-  .empty{color:#999; font-size:13px; padding:14px 0; text-align:center;}
+
+  .err{color:var(--warn); font-size:13px; margin-top:8px;}
+  .hint{font-size:11px; color:var(--ink-soft); margin-top:10px;}
+  #loadingMsg{text-align:center; color:var(--ink-soft); font-size:13px; padding:60px 0;}
+  .empty{color:var(--ink-soft); font-size:13px; padding:14px 0; text-align:center;}
+
+  @media (max-width:760px){
+    .shell.ready{grid-template-columns:1fr;}
+    .sidebar{flex-direction:row; flex-wrap:wrap; align-items:center; padding:12px 14px;}
+    .brand{display:none;}
+    .nav{flex-direction:row; flex-wrap:wrap; gap:6px;}
+    .nav-item.warn{margin-top:0;}
+    .main{padding:18px 16px;}
+    .filter-grid{grid-template-columns:1fr;}
+  }
 </style>
 </head>
 <body>
-  <div class="page-header">
-    <h1>オーナー管理画面</h1>
-    <p>予約データ閲覧</p>
-    <div class="proto-badge">PROTOTYPE</div>
-  </div>
+  <div id="loadingMsg">読み込み中...</div>
 
-  <div class="container">
-    <div id="loadingMsg">読み込み中...</div>
+  <div class="shell" id="shell">
+    <div class="sidebar">
+      <div class="brand">クラーレ寿 ／ オーナー管理</div>
+      <div class="store-name">クラーレ寿</div>
+      <div class="proto-badge">PROTOTYPE</div>
+      <div class="nav">
+        <a href="index.html" class="nav-item">📊 ダッシュボード</a>
+        <a href="customers.html" class="nav-item">👥 顧客マスタ</a>
+        <a href="reservations.html" class="nav-item active">📅 予約データ</a>
+        <a href="../index.html" class="nav-item">🔗 予約画面へ</a>
+        <a href="#" id="logoutLink" class="nav-item warn">🚪 ログアウト</a>
+      </div>
+    </div>
 
-    <div id="mainArea">
-      <nav>
-        <a href="index.html">ダッシュボード</a>
-        <a href="customers.html">顧客マスタ</a>
-        <a href="reservations.html" class="active">予約データ</a>
-        <a href="../index.html">予約画面へ</a>
-        <a href="#" id="logoutLink" class="logout-link">ログアウト</a>
-      </nav>
+    <div class="main">
+      <div class="page-head">
+        <h1>予約データ</h1>
+        <p>日付範囲・担当・氏名で絞り込みできます</p>
+      </div>
 
-      <div class="card">
+      <div class="panel">
         <h2>絞り込み</h2>
         <div class="filter-grid">
           <div>
@@ -84,7 +108,7 @@
           </div>
         </div>
         <div class="search-row">
-          <button id="searchBtn" type="button">検索</button>
+          <button class="btn-save" id="searchBtn" type="button">検索</button>
         </div>
 
         <table>
@@ -111,7 +135,7 @@
   let total = 0;
 
   const loadingMsg = document.getElementById('loadingMsg');
-  const mainArea = document.getElementById('mainArea');
+  const shell = document.getElementById('shell');
 
   async function adminFetch(url) {
     const res = await fetch(url);
@@ -125,7 +149,7 @@
       await adminFetch('/api/auth/me');
       await load();
       loadingMsg.style.display = 'none';
-      mainArea.style.display = 'block';
+      shell.classList.add('ready');
     } catch (e) {
       window.location.href = '/admin/login.html';
     }

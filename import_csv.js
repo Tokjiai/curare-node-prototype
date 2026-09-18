@@ -304,4 +304,7 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { parseCsv, rowsToObjects, mapRow, CUSTOMER_COLUMN_MAP, RESERVATION_COLUMN_MAP };
+module.exports = {
+  parseCsv, rowsToObjects, mapRow, CUSTOMER_COLUMN_MAP, RESERVATION_COLUMN_MAP,
+  resolveStoreId, importCustomers, importReservations
+};

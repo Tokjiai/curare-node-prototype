@@ -516,6 +516,54 @@ app.get('/api/admin/dashboard', requireOwnerSession, (req, res) => {
   }
 });
 
+// ----------------------------------------------------------------------------
+// POST /api/admin/import-sample-data
+//   Renderの無料プランにはShell機能がないため、sample_data/配下に同梱した
+//   テストB店の実データCSVを、管理画面のボタン1つから取り込めるようにする
+//   代替手段。中身はimport_csv.jsのCLIロジックと完全に同じ（コードの重複を避けるため
+//   importCustomers/importReservationsをそのままrequireして呼び出す）。
+//   オーナーセッション必須（一般公開エンドポイントではない）。
+// ----------------------------------------------------------------------------
+app.post('/api/admin/import-sample-data', requireOwnerSession, (req, res) => {
+  try {
+    const importer = require('./import_csv');
+    const storeId = req.session.staff.storeId;
+    const fs = require('fs');
+
+    const custPath = path.join(__dirname, 'sample_data', 'customers.csv');
+    const resvPath = path.join(__dirname, 'sample_data', 'reservations.csv');
+
+    if (!fs.existsSync(custPath) || !fs.existsSync(resvPath)) {
+      return res.status(404).json({ error: 'sample_data/ 配下にCSVが見つかりません' });
+    }
+
+    const custRows = importer.rowsToObjects(importer.parseCsv(fs.readFileSync(custPath, 'utf8')));
+    const resvRows = importer.rowsToObjects(importer.parseCsv(fs.readFileSync(resvPath, 'utf8')));
+
+    const customersSummary = importer.importCustomers(custRows, storeId);
+    const reservationsSummary = importer.importReservations(resvRows, storeId);
+
+    res.json({
+      success: true,
+      customers: {
+        read: customersSummary.read,
+        inserted: customersSummary.inserted,
+        updated: customersSummary.updated,
+        skipped: customersSummary.skipped.length
+      },
+      reservations: {
+        read: reservationsSummary.read,
+        inserted: reservationsSummary.inserted,
+        updated: reservationsSummary.updated,
+        skipped: reservationsSummary.skipped.length
+      }
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 予約管理プロトタイプ サーバー起動: http://localhost:${PORT}`);
