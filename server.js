@@ -14,6 +14,7 @@
 //   POST /api/auth/login         スタッフPINログイン（4桁PIN、GAS版の電話番号下4桁運用を踏襲）
 //   POST /api/auth/logout        ログアウト（セッション破棄）
 //   GET  /api/auth/me            現在のログイン状態確認
+//   POST /webhook/line            LINE Messaging API Webhook受信（routes/lineWebhook.js）
 //
 // これは商用のVPS＋MySQL本番システムではなく、
 // 「予約エンジンのコアロジックがNode.jsで正しく動くこと」を実証するプロトタイプです。
@@ -26,6 +27,8 @@ const db = require('./lib/db');
 const engine = require('./lib/reservationEngine');
 const { initDatabase } = require('./db/init');
 const { verifyPin } = require('./lib/auth');
+const { registerLineWebhook } = require('./routes/lineWebhook');
+const { notifyReservationConfirmed } = require('./lib/reservationNotify');
 
 // Render無料プランのディスクは再起動で消える（エフェメラル）ため、
 // 起動のたびにスキーマ作成とシードデータ投入をやり直す。
@@ -42,6 +45,16 @@ if (process.env.SKIP_SEED === '1') {
 }
 
 const app = express();
+
+// ----------------------------------------------------------------------------
+// ★LINE Webhook（/webhook/line）は、生のリクエストボディ（Buffer）でないと
+//   署名検証ができないため、express.json() より前にマウントする必要がある。
+//   routes/lineWebhook.js 内で express.raw() をこのパスにだけ適用している。
+//   （app.use(express.json())は全ルート共通でボディをパース済みJSONに変換して
+//    しまい、元のバイト列が失われるため、この順序を崩すと署名検証が壊れる）
+// ----------------------------------------------------------------------------
+registerLineWebhook(app);
+
 app.use(express.json());
 
 // ----------------------------------------------------------------------------
@@ -221,6 +234,28 @@ app.post('/api/reservations', (req, res) => {
         });
       }
       throw constraintErr;
+    }
+
+    // ★LINE通知はあくまで付加機能。ここでの失敗（未設定・API障害等）が
+    //   予約登録の成功レスポンスを妨げてはならないため、awaitせずfire-and-forgetし、
+    //   例外は.catchで握りつぶしてログにのみ残す（詳細は lib/reservationNotify.js 参照）。
+    try {
+      if (data.customerId) {
+        const customer = db.prepare(
+          'SELECT * FROM customers WHERE store_id = ? AND customer_id = ?'
+        ).get(storeId, data.customerId);
+        const store = db.prepare('SELECT * FROM stores WHERE id = ?').get(storeId);
+        notifyReservationConfirmed(store, customer, {
+          staffName: data.staffName,
+          menu: data.menu,
+          date: data.date,
+          time: data.time
+        }).catch((notifyErr) => {
+          console.error('LINE通知処理でエラー（予約自体は成功しているため無視）:', notifyErr);
+        });
+      }
+    } catch (notifySyncErr) {
+      console.error('LINE通知の呼び出し準備でエラー（予約自体は成功しているため無視）:', notifySyncErr);
     }
 
     res.json({ success: true, message: '✅ 予約を登録しました', reservationId: info.lastInsertRowid });

@@ -31,11 +31,23 @@ PRAGMA foreign_keys = ON;
 --   のスラッグを想定。現時点ではどの機能もこの値でゲート（制限）されておらず、
 --   単なる保存領域。将来「このプランでは機能Xを使えない」といった判定を
 --   実装する際の土台として、今のうちにカラムだけ用意しておく。
+-- ★2026-09-18追加：LINE連携用の店舗ごとのチャネル資格情報（プレースホルダー）
+--   line_customer_channel_token / line_staff_channel_secret は「環境変数」ではなく
+--   あえてDBのこのテーブルの列として持たせている。将来、複数のサロンがそれぞれ
+--   自分のLINE公式アカウント（お客様向け／スタッフ向け）を持つマルチテナント運用に
+--   なったとき、店舗ごとに異なるトークン・シークレットをリクエスト時に読み出せる
+--   必要があるためで、単一プロセスの環境変数では店舗をまたいで使い分けられない。
+--   一方、server.js が使う LINE_CHANNEL_SECRET 環境変数は、このプロトタイプ自体の
+--   Webhookエンドポイント（/webhook/line）自体の署名検証用であり、この2つは役割が違う
+--   （どちらも現段階ではnullable・デフォルト値なしのプレースホルダーで、
+--    設定用の管理画面UIはまだ無いため、値を入れる場合はSQL/インポートで直接投入する）。
 CREATE TABLE IF NOT EXISTS stores (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   slug          VARCHAR(50)  NOT NULL UNIQUE,   -- URLやAPIパラメータで使う店舗識別子（例：'kurare-kotobuki'）
   name          VARCHAR(100) NOT NULL,          -- 店舗名（表示用）
   plan          VARCHAR(20) NOT NULL DEFAULT 'trial', -- 'trial' / 'onecoin' / 'base' / 'line'（プレースホルダー、未使用）
+  line_customer_channel_token  VARCHAR(255),    -- お客様向けLINE公式アカウントのチャネルアクセストークン（未設定＝プッシュ通知はシミュレーションのみ）
+  line_staff_channel_secret    VARCHAR(255),    -- スタッフ／オーナー向けLINE公式アカウントのチャネルシークレット（Webhook署名検証・店舗判別に使用）
   created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -67,6 +79,11 @@ CREATE TABLE IF NOT EXISTS staff (
   pin_hash         VARCHAR(255),                 -- ログイン用PIN（電話番号下4桁想定）のscryptハッシュ値（hex）
   pin_salt         VARCHAR(64),                  -- pin_hash計算時に使ったランダムsalt（行ごとに異なる）
   is_owner         BOOLEAN NOT NULL DEFAULT 0,    -- オーナー権限か（1=オーナー、現状は管理画面はオーナーのみアクセス可）
+  line_user_id     VARCHAR(64),                  -- ★2026-09-18追加：スタッフ本人のLINE userId。
+                                                   --   GAS版運用の踏襲：スタッフ向けLINE公式アカウントに
+                                                   --   自分の4桁PINをテキストで送ると、routes/lineWebhook.js が
+                                                   --   staffマスタと照合し、未設定ならここに自動登録する。
+                                                   --   既に値がある場合は上書きしない（なりすまし登録防止）。
   created_at       DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -184,7 +201,9 @@ CREATE TABLE IF NOT EXISTS customers (
   kana               VARCHAR(50),
   phone              VARCHAR(20),
   line_name          VARCHAR(50),
-  user_id            VARCHAR(100),           -- LINE userId
+  user_id            VARCHAR(100),           -- 顧客本人のLINE userId（既存列を流用。★2026-09-18：
+                                              --   LINE連携機能追加にあたり新規列を足さず、この列を
+                                              --   lib/reservationNotify.js からの通知先として利用する）
   birthday           DATE,                   -- 'YYYY-MM-DD'
   first_visit_date   DATE,
   last_visit_date    DATE,
@@ -214,3 +233,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_no_double_booking
 CREATE INDEX IF NOT EXISTS idx_shift_store_date          ON shift_master(store_id, shift_date);
 CREATE INDEX IF NOT EXISTS idx_shift_staff_date           ON shift_master(store_id, staff_name, shift_date);
 CREATE INDEX IF NOT EXISTS idx_events_store_date          ON events(store_id, event_date);
+
+-- ============================================================================
+-- ★2026-09-18追加：LINE連携（Messaging API）はこのラウンドでは「骨組み」段階。
+--   - Webhook受信（署名検証・イベントのパース＆ログ出力）：実際に動く実装。
+--   - スタッフPIN自動登録（4桁PINテキスト送信 → staff.line_user_id 自動登録）：実際に動く実装。
+--   - お客様への予約確定プッシュ通知（lib/reservationNotify.js）：
+--     stores.line_customer_channel_token が未設定の間は「送信したつもりでログに出す」
+--     シミュレーション動作。実チャネルのトークンをDBに設定すれば実送信に切り替わる。
+--   詳しくは README_PROTOTYPE.md の「LINE連携（Messaging API）」セクションを参照。
+-- ============================================================================
