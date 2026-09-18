@@ -10,6 +10,7 @@
 const fs = require('fs');
 const path = require('path');
 const db = require('../lib/db');
+const { createPinHash } = require('../lib/auth');
 
 function initDatabase() {
   const schemaSql = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
@@ -40,13 +41,30 @@ function seedData() {
   const storeId = 1;
 
   // --- スタッフ3名（GASの「マスタ」シート相当） -----------------------------
+  // ★2026-09-18追加：ログイン用PIN（電話番号下4桁を想定したダミー値）を付与。
+  //   実運用では「スタッフの電話番号の下4桁」をPINとして使う運用に合わせている。
+  //   寿子（オーナー）のみ is_owner=1 とし、管理画面にログインできるようにする。
   const insertStaff = db.prepare(`
-    INSERT INTO staff (store_id, name, nickname, role, opt_support, night_restrict, show_in_booking, is_active)
-    VALUES (@store_id, @name, @nickname, @role, @opt_support, @night_restrict, @show_in_booking, @is_active)
+    INSERT INTO staff (store_id, name, nickname, role, opt_support, night_restrict, show_in_booking, is_active, pin_hash, pin_salt, is_owner)
+    VALUES (@store_id, @name, @nickname, @role, @opt_support, @night_restrict, @show_in_booking, @is_active, @pin_hash, @pin_salt, @is_owner)
   `);
-  insertStaff.run({ store_id: storeId, name: '寿子',   nickname: 'ことこ', role: 'オーナー', opt_support: 1, night_restrict: 1, show_in_booking: 1, is_active: 1 });
-  insertStaff.run({ store_id: storeId, name: '花子',   nickname: 'はなちゃん', role: 'スタッフ', opt_support: 1, night_restrict: 0, show_in_booking: 1, is_active: 1 });
-  insertStaff.run({ store_id: storeId, name: '美咲',   nickname: 'みさき', role: 'スタッフ', opt_support: 0, night_restrict: 1, show_in_booking: 1, is_active: 1 });
+  const staffSeeds = [
+    { name: '寿子', nickname: 'ことこ',       role: 'オーナー', opt_support: 1, night_restrict: 1, phone: '090-1234-5678', is_owner: 1 },
+    { name: '花子', nickname: 'はなちゃん',   role: 'スタッフ', opt_support: 1, night_restrict: 0, phone: '090-2345-6789', is_owner: 0 },
+    { name: '美咲', nickname: 'みさき',       role: 'スタッフ', opt_support: 0, night_restrict: 1, phone: '090-3456-7890', is_owner: 0 }
+  ];
+  let seededOwnerPin = null;
+  staffSeeds.forEach((s) => {
+    const pin = s.phone.slice(-4); // 電話番号の下4桁をPINとして使う（GAS版の運用を踏襲）
+    const { hash, salt } = createPinHash(pin);
+    if (s.is_owner) seededOwnerPin = pin;
+    insertStaff.run({
+      store_id: storeId, name: s.name, nickname: s.nickname, role: s.role,
+      opt_support: s.opt_support, night_restrict: s.night_restrict,
+      show_in_booking: 1, is_active: 1,
+      pin_hash: hash, pin_salt: salt, is_owner: s.is_owner
+    });
+  });
 
   // --- ルール設定（rule1シート相当） -----------------------------------------
   const insertRule = db.prepare('INSERT INTO rules (store_id, rule_id, memo, value) VALUES (?, ?, ?, ?)');
@@ -145,6 +163,7 @@ function seedData() {
 
   console.log('✅ シードデータ投入完了');
   console.log('   店舗: クラーレ寿 (storeId=1)');
+  console.log(`🔑 [開発用] オーナーPIN: ${seededOwnerPin} (store=${storeId}, staff=寿子) ※本番ではこの行は出力しないこと`);
   console.log('   今日: ' + fmt(today));
   console.log('   4日後(' + day4 + ')の午前: 花子に2件予約あり → 空き/残1/満の判定確認用');
   console.log('   5日後(' + day5 + ')の夜間: 寿子19:30に1件予約あり → 固定枠「残1」判定確認用');

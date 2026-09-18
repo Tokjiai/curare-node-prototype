@@ -26,10 +26,16 @@ PRAGMA foreign_keys = ON;
 -- ----------------------------------------------------------------------------
 -- stores：店舗マスタ（将来的な複数店舗展開を見据えて用意。プロトタイプでは1店舗のみ使用）
 -- ----------------------------------------------------------------------------
+-- ★2026-09-18追加：plan列（課金プランのプレースホルダー）
+--   将来の料金プラン（ワンコイン/ベース/LINE連携）に合わせて 'onecoin' / 'base' / 'line'
+--   のスラッグを想定。現時点ではどの機能もこの値でゲート（制限）されておらず、
+--   単なる保存領域。将来「このプランでは機能Xを使えない」といった判定を
+--   実装する際の土台として、今のうちにカラムだけ用意しておく。
 CREATE TABLE IF NOT EXISTS stores (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   slug          VARCHAR(50)  NOT NULL UNIQUE,   -- URLやAPIパラメータで使う店舗識別子（例：'kurare-kotobuki'）
   name          VARCHAR(100) NOT NULL,          -- 店舗名（表示用）
+  plan          VARCHAR(20) NOT NULL DEFAULT 'trial', -- 'trial' / 'onecoin' / 'base' / 'line'（プレースホルダー、未使用）
   created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -39,6 +45,15 @@ CREATE TABLE IF NOT EXISTS stores (
 --     row[0]=name, row[1]=role, row[3]=nickname, row[5]=optSupport,
 --     row[8]=予約表示フラグ, row[9]=nightRestrict, row[14]=active
 -- ----------------------------------------------------------------------------
+-- ★2026-09-18追加：ログイン機構（pin_hash / pin_salt / is_owner）
+--   実際のGAS版運用では「スタッフの電話番号下4桁」をPINとしてログインに使っている。
+--   PINは絶対に平文で保存しない：行ごとのランダムsalt（pin_salt）を使い、
+--   Node標準cryptoのscryptでハッシュ化した値のみをpin_hashに保存する
+--   （ハッシュ計算ロジックは lib/auth.js に集約。server.js / db/init.js 両方から利用）。
+--   is_ownerは「オーナー権限か、一般スタッフか」を区別するフラグ。
+--   このプロトタイプ段階では、オーナー（is_owner=1）のみが管理画面
+--   （/api/admin/*）にログインできる。一般スタッフのログイン自体は将来の
+--   拡張（スタッフ別の予約操作画面など）のための土台として先に用意してある。
 CREATE TABLE IF NOT EXISTS staff (
   id               INTEGER PRIMARY KEY AUTOINCREMENT,
   store_id         INTEGER NOT NULL REFERENCES stores(id),
@@ -49,6 +64,9 @@ CREATE TABLE IF NOT EXISTS staff (
   night_restrict   BOOLEAN NOT NULL DEFAULT 0,   -- 夜間ゾーンで固定枠（90分間隔）対象のスタッフか
   show_in_booking  BOOLEAN NOT NULL DEFAULT 1,   -- 予約対象スタッフとして表示するか（GAS row[8]相当）
   is_active        BOOLEAN NOT NULL DEFAULT 1,   -- 在籍中フラグ（GAS row[14]相当）
+  pin_hash         VARCHAR(255),                 -- ログイン用PIN（電話番号下4桁想定）のscryptハッシュ値（hex）
+  pin_salt         VARCHAR(64),                  -- pin_hash計算時に使ったランダムsalt（行ごとに異なる）
+  is_owner         BOOLEAN NOT NULL DEFAULT 0,    -- オーナー権限か（1=オーナー、現状は管理画面はオーナーのみアクセス可）
   created_at       DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 

@@ -31,30 +31,22 @@
   .day-list{list-style:none; margin:0; padding:0; font-size:14px;}
   .day-list li{display:flex; justify-content:space-between; padding:8px 4px; border-bottom:1px solid #eee;}
   .day-list li .cnt{font-weight:700; color:var(--pink-accent);}
-  .login-box{max-width:320px; margin:60px auto; background:#fff; border:1px solid var(--pink-border); border-radius:10px; padding:20px; text-align:center;}
-  .login-box input{width:100%; padding:10px; border:1.5px solid var(--pink-border); border-radius:8px; font-size:15px; margin:10px 0;}
-  .login-box button{width:100%; padding:11px; background:var(--pink-accent); color:#fff; border:none; border-radius:8px; font-size:15px; font-weight:600; cursor:pointer;}
   .err{color:#a12727; font-size:13px; margin-top:8px;}
   .note{font-size:12px; color:#999; margin-top:10px;}
+  .logout-link{background:transparent!important; color:#a12727!important; border-color:#e0b0b0!important;}
   #mainArea{display:none;}
+  #loadingMsg{text-align:center; color:#999; font-size:13px; padding:40px 0;}
 </style>
 </head>
 <body>
   <div class="page-header">
     <h1>オーナー管理画面</h1>
     <p>ダッシュボード</p>
-    <div class="proto-badge">PROTOTYPE - パスワードは仮の共有パスワードです</div>
+    <div class="proto-badge">PROTOTYPE</div>
   </div>
 
   <div class="container">
-    <!-- パスワード入力画面（セッション中のみメモリ保持。localStorageには保存しない） -->
-    <div class="login-box" id="loginBox">
-      <p>管理者パスワードを入力してください</p>
-      <input type="password" id="pwInput" placeholder="パスワード">
-      <button id="loginBtn" type="button">入室</button>
-      <div class="err" id="loginErr" style="display:none;"></div>
-      <div class="note">初期パスワード（未設定時）: demo1234</div>
-    </div>
+    <div id="loadingMsg">読み込み中...</div>
 
     <div id="mainArea">
       <nav>
@@ -62,6 +54,7 @@
         <a href="customers.html">顧客マスタ</a>
         <a href="reservations.html">予約データ</a>
         <a href="../index.html">予約画面へ</a>
+        <a href="#" id="logoutLink" class="logout-link">ログアウト</a>
       </nav>
 
       <div class="card">
@@ -83,34 +76,35 @@
 
 <script>
 (function(){
-  // ★セッション内メモリのみで保持（プロジェクトの方針どおりlocalStorage不使用）。
-  //   ページをリロードすると再入力が必要（このプロトタイプでは許容仕様）。
-  let adminPassword = null;
-
-  const loginBox = document.getElementById('loginBox');
+  const loadingMsg = document.getElementById('loadingMsg');
   const mainArea = document.getElementById('mainArea');
-  const loginErr = document.getElementById('loginErr');
 
+  // ★セッションcookieはブラウザが自動送信するため、追加ヘッダーは不要。
+  //   （fetchのデフォルトcredentials: 'same-origin'で十分）
   async function adminFetch(url) {
-    const res = await fetch(url, { headers: { 'X-Admin-Password': adminPassword } });
+    const res = await fetch(url);
     if (res.status === 401) throw new Error('UNAUTHORIZED');
     if (!res.ok) throw new Error('サーバーエラー: ' + res.status);
     return res.json();
   }
 
-  async function tryLogin(pw) {
-    adminPassword = pw;
+  async function init() {
     try {
-      const data = await adminFetch('/api/admin/dashboard?store=1');
-      loginBox.style.display = 'none';
+      await adminFetch('/api/auth/me'); // ログイン状態確認。401なら下でリダイレクト
+      const data = await adminFetch('/api/admin/dashboard');
+      loadingMsg.style.display = 'none';
       mainArea.style.display = 'block';
       renderDashboard(data);
     } catch (e) {
-      adminPassword = null;
-      loginErr.textContent = e.message === 'UNAUTHORIZED' ? 'パスワードが違います' : e.message;
-      loginErr.style.display = 'block';
+      window.location.href = '/admin/login.html';
     }
   }
+
+  document.getElementById('logoutLink').addEventListener('click', async (e) => {
+    e.preventDefault();
+    try { await fetch('/api/auth/logout', { method: 'POST' }); } catch (_) {}
+    window.location.href = '/admin/login.html';
+  });
 
   function renderDashboard(data) {
     document.getElementById('todayLabel').textContent = data.today;
@@ -128,14 +122,7 @@
     });
   }
 
-  document.getElementById('loginBtn').addEventListener('click', () => {
-    const pw = document.getElementById('pwInput').value;
-    if (!pw) return;
-    tryLogin(pw);
-  });
-  document.getElementById('pwInput').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') document.getElementById('loginBtn').click();
-  });
+  init();
 })();
 </script>
 </body>

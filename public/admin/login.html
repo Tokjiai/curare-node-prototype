@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>オーナー管理画面 - ログイン</title>
+<style>
+  :root{
+    --pink-header:#C8A0B4; --pink-accent:#6B3050;
+    --pink-light:#FAF0F5; --pink-border:#E8C8D8;
+  }
+  *{box-sizing:border-box;}
+  body{
+    font-family:'Helvetica Neue',Arial,'Hiragino Sans','Yu Gothic',sans-serif;
+    font-size:16px; background:#f7f3f5; margin:0; min-height:100vh; color:#333;
+  }
+  .page-header{background:var(--pink-header); color:#fff; padding:22px 16px; text-align:center;}
+  .page-header h1{margin:0; font-size:20px; font-weight:600; letter-spacing:0.03em;}
+  .page-header p{margin:6px 0 0; font-size:12px; opacity:0.9;}
+  .proto-badge{display:inline-block; background:#fff3; padding:3px 8px; border-radius:12px; font-size:11px; margin-top:6px;}
+  .login-box{max-width:320px; margin:60px auto; background:#fff; border:1px solid var(--pink-border); border-radius:10px; padding:20px; text-align:center;}
+  .login-box p{font-size:14px; color:#555;}
+  .login-box label{display:block; text-align:left; font-size:12px; color:#888; margin:12px 0 4px;}
+  .login-box input{width:100%; padding:10px; border:1.5px solid var(--pink-border); border-radius:8px; font-size:15px;}
+  .login-box button{width:100%; padding:11px; background:var(--pink-accent); color:#fff; border:none; border-radius:8px; font-size:15px; font-weight:600; cursor:pointer; margin-top:16px;}
+  .err{color:#a12727; font-size:13px; margin-top:10px;}
+  .note{font-size:12px; color:#999; margin-top:14px; line-height:1.5;}
+</style>
+</head>
+<body>
+  <div class="page-header">
+    <h1>オーナー管理画面</h1>
+    <p>ログイン</p>
+    <div class="proto-badge">PROTOTYPE</div>
+  </div>
+
+  <div class="login-box">
+    <p>店舗識別子とPIN（4桁）を入力してください</p>
+
+    <label for="storeInput">店舗（slugまたはID）</label>
+    <input type="text" id="storeInput" placeholder="例：1 または kurare-kotobuki">
+
+    <label for="pinInput">PIN（4桁）</label>
+    <input type="password" id="pinInput" placeholder="例：5678" maxlength="4" inputmode="numeric" pattern="[0-9]*">
+
+    <button id="loginBtn" type="button">ログイン</button>
+    <div class="err" id="loginErr" style="display:none;"></div>
+    <div class="note">スタッフの電話番号の下4桁がPINです（実運用と同じ方式）。<br>このプロトタイプ段階ではオーナー権限のスタッフのみログインできます。</div>
+  </div>
+
+<script>
+(function(){
+  const storeInput = document.getElementById('storeInput');
+  const pinInput = document.getElementById('pinInput');
+  const loginErr = document.getElementById('loginErr');
+
+  async function doLogin() {
+    loginErr.style.display = 'none';
+    const store = storeInput.value.trim();
+    const pin = pinInput.value.trim();
+    if (!store || !pin) {
+      loginErr.textContent = '店舗とPINを入力してください';
+      loginErr.style.display = 'block';
+      return;
+    }
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ store, pin })
+      });
+      const data = await res.json();
+      if (data.success) {
+        window.location.href = '/admin/index.html';
+      } else {
+        loginErr.textContent = data.message || 'ログインに失敗しました';
+        loginErr.style.display = 'block';
+      }
+    } catch (e) {
+      loginErr.textContent = 'サーバーエラー: ' + e.message;
+      loginErr.style.display = 'block';
+    }
+  }
+
+  document.getElementById('loginBtn').addEventListener('click', doLogin);
+  pinInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
+  storeInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') pinInput.focus(); });
+})();
+</script>
+</body>
+</html>
