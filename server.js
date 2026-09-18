@@ -29,6 +29,7 @@ const { initDatabase } = require('./db/init');
 const { verifyPin } = require('./lib/auth');
 const { registerLineWebhook } = require('./routes/lineWebhook');
 const { notifyReservationConfirmed } = require('./lib/reservationNotify');
+const { getPlan, listPlans } = require('./lib/plans');
 
 // Render無料プランのディスクは再起動で消える（エフェメラル）ため、
 // 起動のたびにスキーマ作成とシードデータ投入をやり直す。
@@ -558,6 +559,49 @@ app.post('/api/admin/import-sample-data', requireOwnerSession, (req, res) => {
         skipped: reservationsSummary.skipped.length
       }
     });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// ⑤ 課金基盤（プラン管理）の骨組み
+//
+// GET  /api/admin/plan  : 現在ログイン中の店舗のプランと、選べるプラン一覧を返す
+// POST /api/admin/plan  : { plan: 'trial'|'onecoin'|'base'|'line' } でプランを切り替える
+//
+// 【重要】これは実際の決済・申込みフローではない「デモ用スイッチ」。
+//   本番では決済確認後にシステム側（またはオーナー申込み＋承認フロー）が
+//   更新する想定で、オーナーが管理画面から自由に切り替えられる状態は
+//   本番運用にはそのまま使えない。ここではあくまで「プランによって機能が
+//   実際に変わる」ことをデモで見せるための骨組みとして用意している。
+// ----------------------------------------------------------------------------
+app.get('/api/admin/plan', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const store = db.prepare('SELECT plan FROM stores WHERE id = ?').get(storeId);
+    const currentSlug = store ? store.plan : 'trial';
+    res.json({
+      currentPlan: { slug: currentSlug, ...getPlan(currentSlug) },
+      allPlans: listPlans()
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/admin/plan', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const { plan } = req.body || {};
+    const validSlugs = listPlans().map((p) => p.slug);
+    if (!validSlugs.includes(plan)) {
+      return res.status(400).json({ error: `plan は ${validSlugs.join(' / ')} のいずれかを指定してください` });
+    }
+    db.prepare('UPDATE stores SET plan = ? WHERE id = ?').run(plan, storeId);
+    res.json({ success: true, currentPlan: { slug: plan, ...getPlan(plan) } });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: e.message });

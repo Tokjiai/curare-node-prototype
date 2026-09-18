@@ -103,6 +103,19 @@
       </div>
 
       <div class="panel">
+        <h2>ご利用プラン（⑤ 課金基盤・骨組み）</h2>
+        <p style="margin:0 0 12px;color:#666;font-size:13px;">
+          実際の決済・申込みはまだありません。下のセレクトはデモ用の切替スイッチです。
+          プランを変えると「LINE通知が実送信対象になるか」など、裏側の挙動が実際に変わります。
+        </p>
+        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:10px;">
+          <select id="planSelect" style="padding:8px 10px; border-radius:8px; border:1px solid var(--line); font-size:13.5px;"></select>
+          <button id="planApplyBtn" class="btn-import">このプランに切り替える（デモ）</button>
+        </div>
+        <div id="planFeatures" style="font-size:12.5px; color:#666; line-height:1.9;"></div>
+      </div>
+
+      <div class="panel">
         <h2>テストB店データの取込（PROTOTYPE専用）</h2>
         <p style="margin:0 0 12px;color:#666;font-size:13px;">
           Renderの無料プランにはShell機能がないため、同梱の sample_data/ 配下のCSV
@@ -137,6 +150,7 @@
       loadingMsg.style.display = 'none';
       shell.classList.add('ready');
       renderDashboard(data);
+      loadPlan();
     } catch (e) {
       window.location.href = '/admin/login.html';
     }
@@ -146,6 +160,57 @@
     e.preventDefault();
     try { await fetch('/api/auth/logout', { method: 'POST' }); } catch (_) {}
     window.location.href = '/admin/login.html';
+  });
+
+  const FEATURE_LABELS = {
+    customerBookingForm: 'お客様予約フォーム',
+    ownerDashboard: 'オーナー管理画面',
+    lineNotify: 'LINE通知の実送信',
+    calendarSync: 'Googleカレンダー同期（未実装）'
+  };
+
+  async function loadPlan() {
+    const data = await adminFetch('/api/admin/plan');
+    const select = document.getElementById('planSelect');
+    select.innerHTML = '';
+    data.allPlans.forEach((p) => {
+      const opt = document.createElement('option');
+      opt.value = p.slug;
+      opt.textContent = `${p.label}（${p.priceNote}）`;
+      if (p.slug === data.currentPlan.slug) opt.selected = true;
+      select.appendChild(opt);
+    });
+    renderPlanFeatures(data.currentPlan);
+  }
+
+  function renderPlanFeatures(plan) {
+    const box = document.getElementById('planFeatures');
+    const rows = Object.entries(plan.features).map(([key, on]) => {
+      const label = FEATURE_LABELS[key] || key;
+      const icon = on ? '✅' : '—';
+      return `<div>${icon} ${label}</div>`;
+    }).join('');
+    box.innerHTML = `<strong>現在のプラン：${plan.label}</strong>` + rows;
+  }
+
+  document.getElementById('planApplyBtn').addEventListener('click', async () => {
+    const btn = document.getElementById('planApplyBtn');
+    const select = document.getElementById('planSelect');
+    btn.disabled = true;
+    try {
+      const res = await fetch('/api/admin/plan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ plan: select.value })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'サーバーエラー');
+      renderPlanFeatures(data.currentPlan);
+    } catch (e) {
+      alert('プラン切替に失敗しました: ' + e.message);
+    } finally {
+      btn.disabled = false;
+    }
   });
 
   document.getElementById('importSampleBtn').addEventListener('click', async () => {
