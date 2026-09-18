@@ -1,0 +1,25 @@
+# ============================================================================
+# render.yaml
+# Render Blueprint 設定ファイル。
+# Renderのダッシュボードで「New +」→「Blueprint」からこのリポジトリを選ぶと、
+# この内容に沿ってWebサービスが自動作成されます（無料プラン想定）。
+#
+# 【重要】Render無料プランのディスクはエフェメラル（デプロイ・再起動のたびに消える）ため、
+# 本アプリは起動時（server.js内）に毎回SQLiteのスキーマ作成＋シードデータ投入をやり直す
+# 設計にしてあります。そのため永続ディスク(disk:)の設定は不要です。
+# ============================================================================
+services:
+  - type: web
+    name: salon-booking-prototype
+    runtime: node
+    plan: free
+    region: singapore   # 日本から近いリージョン。必要に応じて変更可
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_VERSION
+        value: 20.11.0
+      # DB_PATH はコンテナ内の一時ディスクに置く（デプロイのたびに再初期化される想定）
+      - key: DB_PATH
+        value: /opt/render/project/src/data/app.db
+    autoDeploy: true

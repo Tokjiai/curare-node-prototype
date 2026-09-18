@@ -1,0 +1,19 @@
+{
+  "name": "salon-booking-prototype",
+  "version": "0.1.0",
+  "description": "サロン予約管理システム プロトタイプ（GAS版予約エンジンのNode.js移植・Render無料デプロイ確認用）",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "seed": "node db/init.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.3.0",
+    "express": "^4.19.2"
+  },
+  "license": "UNLICENSED",
+  "private": true
+}

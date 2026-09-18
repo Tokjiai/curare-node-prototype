@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>クラーレ寿 予約プロトタイプ</title>
+<style>
+  /* 現行GAS版 customer_form.html のピンク系配色・雰囲気を踏襲 */
+  :root{
+    --pink-header:#C8A0B4; --pink-accent:#6B3050;
+    --pink-light:#FAF0F5; --pink-border:#E8C8D8; --pink-done:#E8C8D8;
+  }
+  *{box-sizing:border-box;}
+  body{
+    font-family:'Helvetica Neue',Arial,'Hiragino Sans','Yu Gothic',sans-serif;
+    font-size:16px; background:#f7f3f5; margin:0; min-height:100vh; color:#333;
+  }
+  .page-header{background:var(--pink-header); color:#fff; padding:22px 16px; text-align:center;}
+  .page-header h1{margin:0; font-size:22px; font-weight:600; letter-spacing:0.03em;}
+  .page-header p{margin:6px 0 0; font-size:13px; opacity:0.9;}
+  .container{max-width:480px; margin:0 auto; padding:16px;}
+  .card{background:#fff; border:1px solid var(--pink-border); border-radius:10px; padding:16px; margin-bottom:14px;}
+  .card h2{font-size:15px; color:var(--pink-accent); margin:0 0 10px; font-weight:600;}
+  label{display:block; font-size:13px; color:#888; margin-bottom:4px;}
+  select, input{width:100%; padding:10px; border:1.5px solid var(--pink-border); border-radius:8px; font-size:15px; margin-bottom:12px; background:#fff;}
+  .zone-grid{display:flex; gap:8px;}
+  .zone-box{flex:1; border:1.5px solid var(--pink-border); border-radius:10px; padding:12px 6px; text-align:center; cursor:pointer; background:#fff;}
+  .zone-box.selectable{border-color:var(--pink-header);}
+  .zone-box.selected{border-color:var(--pink-accent); box-shadow:0 0 0 2px var(--pink-accent); background:var(--pink-light);}
+  .zone-label{font-size:14px; font-weight:600; color:#333;}
+  .zone-status{margin-top:6px; font-size:16px; font-weight:700;}
+  .status-空き{color:#1D9E75;}
+  .status-残1{color:#d98c00;}
+  .status-満, .status-店休, .status-ー{color:#999;}
+  .status-TEL{color:#c0392b;}
+  .time-grid{display:flex; flex-wrap:wrap; gap:8px; margin-top:10px;}
+  .time-chip{padding:8px 12px; border:1.5px solid var(--pink-border); border-radius:20px; font-size:14px; cursor:pointer; background:#fff;}
+  .time-chip.selected{background:var(--pink-header); color:#fff; border-color:var(--pink-header);}
+  .time-chip.disabled{opacity:0.35; cursor:not-allowed; text-decoration:line-through;}
+  button.primary{width:100%; padding:13px; background:var(--pink-accent); color:#fff; border:none; border-radius:8px; font-size:16px; font-weight:600; cursor:pointer;}
+  button.primary:disabled{background:#ccc; cursor:not-allowed;}
+  .msg{margin-top:10px; font-size:14px; padding:10px; border-radius:8px;}
+  .msg.ok{background:#e1f5ee; color:#085041;}
+  .msg.ng{background:#fbe4e4; color:#a12727;}
+  .reserv-list{list-style:none; margin:0; padding:0; font-size:13px;}
+  .reserv-list li{padding:8px 0; border-bottom:1px solid #eee;}
+  .note{font-size:12px; color:#999; margin-top:4px;}
+  .proto-badge{display:inline-block; background:#fff3; padding:3px 8px; border-radius:12px; font-size:11px; margin-top:6px;}
+</style>
+</head>
+<body>
+  <div class="page-header">
+    <h1>クラーレ寿 ご予約</h1>
+    <p>予約エンジン移植プロトタイプ（GAS版 getZoneStatus_ 忠実移植）</p>
+    <div class="proto-badge">PROTOTYPE - 本番運用データではありません</div>
+  </div>
+
+  <div class="container">
+    <div class="card">
+      <h2>① 担当スタッフを選ぶ</h2>
+      <select id="staffSelect"></select>
+
+      <h2 style="margin-top:16px;">② 日付を選ぶ</h2>
+      <input type="date" id="dateInput">
+      <button class="primary" id="checkBtn" type="button">この日の空き状況を見る</button>
+    </div>
+
+    <div class="card" id="zoneCard" style="display:none;">
+      <h2>③ 時間帯を選ぶ</h2>
+      <div class="zone-grid" id="zoneGrid"></div>
+      <div id="timeSlotWrap" style="display:none;">
+        <h2 style="margin-top:16px;">④ 時刻を選ぶ</h2>
+        <div class="time-grid" id="timeGrid"></div>
+      </div>
+    </div>
+
+    <div class="card" id="formCard" style="display:none;">
+      <h2>⑤ お客様情報を入力</h2>
+      <label>お名前</label>
+      <input type="text" id="nameInput" placeholder="例：山田 花子">
+      <label>メニュー</label>
+      <select id="menuSelect">
+        <option>フェイシャル(60分)</option>
+        <option>フェイシャル(90分)</option>
+        <option>ボディ(90分)</option>
+        <option>ハンド(45分)</option>
+      </select>
+      <label>備考（任意）</label>
+      <input type="text" id="noteInput" placeholder="ご要望など">
+      <button class="primary" id="submitBtn" type="button">この内容で予約する</button>
+      <div id="submitMsg"></div>
+    </div>
+
+    <div class="card">
+      <h2>現在の予約一覧（店舗全体）</h2>
+      <ul class="reserv-list" id="reservList"><li>読み込み中...</li></ul>
+    </div>
+  </div>
+
+<script src="app.js"></script>
+</body>
+</html>
