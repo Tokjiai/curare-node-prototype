@@ -666,6 +666,82 @@ async function main() {
   }
 
   // --------------------------------------------------------------------------
+  // 16. 顧客マスタの詳細編集・削除・復元（★2026-09-19追加）
+  // --------------------------------------------------------------------------
+  console.log('--- 16. 顧客マスタの詳細編集・削除・復元 ---');
+  {
+    const r = await ownerFresh.request('/api/admin/customers/C0001', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        realname: '田中 美穂（改）', kana: 'タナカ ミホ', phone: '090-1111-2222', totalVisits: 15,
+        staffName: '花子', status: 'active', memo: '統合テストで編集', isKeepMember: true, optSupport: true,
+        bookingBlocked: false, notifyEnabled: true
+      })
+    });
+    assert(r.status === 200 && r.body.success === true, '顧客情報を編集できる');
+  }
+  {
+    const r = await ownerFresh.get('/api/admin/customers?q=' + encodeURIComponent('田中'));
+    const found = (r.body.customers || []).find((c) => c.customer_id === 'C0001');
+    assert(!!found && found.realname === '田中 美穂（改）' && found.total_visits === 15 && found.is_keep_member === 1, '編集内容（氏名・来店回数・キープメンバー）が反映される');
+  }
+  {
+    const r = await ownerFresh.request('/api/admin/customers/C0001', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ realname: '不正電話テスト', phone: '123' })
+    });
+    assert(r.status === 400, '不正な形式の電話番号は拒否される');
+  }
+  {
+    const r = await ownerFresh.request('/api/admin/customers/C0001', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ realname: '' })
+    });
+    assert(r.status === 400, '氏名なしでは編集できない');
+  }
+  {
+    const r = await owner2.request('/api/admin/customers/C0001', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ realname: 'なりすまし編集' })
+    });
+    assert(r.status === 404, '他店舗オーナーは他店の顧客を編集できない（店舗スコープ確認）');
+  }
+  {
+    const r = await ownerFresh.request('/api/admin/customers/C0002', { method: 'DELETE' });
+    assert(r.status === 200 && r.body.success === true, '顧客を削除（論理削除）できる');
+  }
+  {
+    const r = await ownerFresh.get('/api/admin/customers?q=' + encodeURIComponent('佐藤'));
+    const found = (r.body.customers || []).some((c) => c.customer_id === 'C0002');
+    assert(!found, '削除した顧客は通常の一覧（includeDeletedなし）には出てこない');
+  }
+  {
+    const r = await ownerFresh.get('/api/admin/customers?q=' + encodeURIComponent('佐藤') + '&includeDeleted=1');
+    const found = (r.body.customers || []).find((c) => c.customer_id === 'C0002');
+    assert(!!found && found.is_deleted === 1, 'includeDeleted=1を指定すると削除済みの顧客も一覧に出る（is_deleted=1）');
+  }
+  {
+    const r = await owner2.request('/api/admin/customers/C0002/restore', { method: 'POST' });
+    assert(r.status === 404, '他店舗オーナーは他店の顧客を復元できない（店舗スコープ確認）');
+  }
+  {
+    const r = await ownerFresh.request('/api/admin/customers/C0002/restore', { method: 'POST' });
+    assert(r.status === 200 && r.body.success === true, '削除した顧客を復元できる');
+  }
+  {
+    const r = await ownerFresh.get('/api/admin/customers?q=' + encodeURIComponent('佐藤'));
+    const found = (r.body.customers || []).some((c) => c.customer_id === 'C0002');
+    assert(found, '復元した顧客は通常の一覧に再び出てくる');
+  }
+  {
+    const r = await ownerFresh.request('/api/admin/customers/C9999', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ realname: 'テスト' })
+    });
+    assert(r.status === 404, '存在しない顧客IDの編集は404になる');
+  }
+
+  // --------------------------------------------------------------------------
   console.log(`\n=== 結果: PASS ${passCount} / FAIL ${failCount} ===`);
   if (failCount > 0) {
     console.log('\n失敗した項目:');

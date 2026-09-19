@@ -210,8 +210,21 @@ CREATE TABLE IF NOT EXISTS customers (
   total_visits       INTEGER NOT NULL DEFAULT 0,
   memo               TEXT,
   is_deleted         INTEGER NOT NULL DEFAULT 0,  -- ★2026-09-19追加：顧客統合機能。統合されて消える側は
-                                                    --   物理削除せずここを1にする（GAS版のdelFlag相当）
+                                                    --   物理削除せずここを1にする（GAS版のdelFlag相当）。
+                                                    --   ★同日追加：詳細編集画面からの手動削除・復元にも
+                                                    --   この列をそのまま流用する（GAS版owner_ui.htmlの
+                                                    --   「顧客管理」画面の削除・復元ボタン相当）
   deleted_at         DATETIME,
+  status             VARCHAR(10) NOT NULL DEFAULT 'active',  -- ★2026-09-19追加：'active'|'inactive'
+                                                    --   （GAS版COL_K_STATUS相当。予約フォームのスタッフ
+                                                    --   選択肢などから隠したいがデータは残したい顧客用。
+                                                    --   is_deletedとは別概念）
+  staff_name         VARCHAR(50),                 -- ★2026-09-19追加：担当スタッフ（GAS版H列相当）
+  is_keep_member     INTEGER NOT NULL DEFAULT 0,  -- ★2026-09-19追加：キープメンバー（GAS版I列相当）
+  opt_support        INTEGER NOT NULL DEFAULT 0,  -- ★2026-09-19追加：オプション対応可否（GAS版G列相当）
+  booking_blocked    INTEGER NOT NULL DEFAULT 0,  -- ★2026-09-19追加：この顧客からの予約をブロックする
+  notify_enabled     INTEGER NOT NULL DEFAULT 1,  -- ★2026-09-19追加：LINE通知の対象にするか
+  updated_by         VARCHAR(50),                 -- ★2026-09-19追加：最終更新者（スタッフ名）
   created_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(store_id, customer_id)

@@ -68,6 +68,22 @@
   const pinInput = document.getElementById('pinInput');
   const loginErr = document.getElementById('loginErr');
 
+  // ★2026-09-19追加：
+  //   ①「顧客マスタ」等を開こうとしてセッション切れでこの画面に飛ばされた場合、
+  //     ログイン後に元のページへ戻れるよう next パラメータを覚えておく（無ければダッシュボード）。
+  //   ②店舗欄が毎回空欄だと、PINだけ入力して送信 → 「店舗とPINを入力してください」で
+  //     何も起きずこの画面に留まり続ける、という「ループしているように見える」現象の
+  //     原因になっていたため、前回ログイン時の店舗をブラウザに記憶して自動入力する。
+  const params = new URLSearchParams(window.location.search);
+  const requestedNext = params.get('next') || '';
+  // ★他サイトへ誘導されるオープンリダイレクトを防ぐため、/admin/配下のパスのみ許可する
+  const nextPath = requestedNext.startsWith('/admin/') ? requestedNext : '/admin/index.html';
+  try {
+    const savedStore = localStorage.getItem('curare_last_store');
+    if (savedStore) storeInput.value = savedStore;
+  } catch (_) { /* localStorageが使えない環境でも動作に支障はない */ }
+  if (storeInput.value) { pinInput.focus(); } else { storeInput.focus(); }
+
   async function doLogin() {
     loginErr.style.display = 'none';
     const store = storeInput.value.trim();
@@ -85,7 +101,8 @@
       });
       const data = await res.json();
       if (data.success) {
-        window.location.href = '/admin/index.html';
+        try { localStorage.setItem('curare_last_store', store); } catch (_) {}
+        window.location.href = nextPath;
       } else {
         loginErr.textContent = data.message || 'ログインに失敗しました';
         loginErr.style.display = 'block';
