@@ -51,13 +51,21 @@
     <div class="login-title">👤 オーナー管理画面</div>
     <div class="login-sub">店舗識別子とPIN（4桁）を入力してください</div>
 
-    <label for="storeInput">店舗（slugまたはID）</label>
-    <input type="text" id="storeInput" placeholder="例：1 または kurare-kotobuki">
+    <!-- ★2026-09-19追加：<form>で囲む。
+         以前はinputが素のまま置かれており、ブラウザのコンソールに
+         「Password field is not contained in a form」という警告が出ていた。
+         これが原因で、一部のパスワード管理系ブラウザ拡張機能がPIN欄に誤って介入し、
+         入力した数字がそばから消えてしまう不具合が起きていたと考えられるため、
+         正式な<form>構造にして、パスワードマネージャー向けの無効化属性も付与する。 -->
+    <form id="loginForm" autocomplete="off">
+      <label for="storeInput">店舗（slugまたはID）</label>
+      <input type="text" id="storeInput" name="curare_store" placeholder="例：1 または kurare-kotobuki" autocomplete="off" data-lpignore="true" data-1p-ignore>
 
-    <label for="pinInput">PIN（4桁）</label>
-    <input type="password" id="pinInput" placeholder="例：5678" maxlength="4" inputmode="numeric" pattern="[0-9]*">
+      <label for="pinInput">PIN（4桁）</label>
+      <input type="text" id="pinInput" name="curare_pin" placeholder="例：5678" maxlength="4" inputmode="numeric" pattern="[0-9]*" autocomplete="off" data-lpignore="true" data-1p-ignore>
 
-    <button id="loginBtn" type="button">ログイン</button>
+      <button id="loginBtn" type="submit">ログイン</button>
+    </form>
     <div class="err" id="loginErr" style="display:none;"></div>
     <div class="note">スタッフの電話番号の下4桁がPINです（実運用と同じ方式）。<br>このプロトタイプ段階ではオーナー権限のスタッフのみログインできます。</div>
   </div>
@@ -113,9 +121,11 @@
     }
   }
 
-  document.getElementById('loginBtn').addEventListener('click', doLogin);
-  pinInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
-  storeInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') pinInput.focus(); });
+  // ★フォーム化に伴い、送信はsubmitイベントで一本化する（Enterキーでの送信もこれで自然に効く）
+  document.getElementById('loginForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    doLogin();
+  });
 })();
 </script>
 </body>
