@@ -237,6 +237,29 @@ CREATE TABLE IF NOT EXISTS customer_merge_dismissals (
   UNIQUE(store_id, customer_id_a, customer_id_b)
 );
 
+-- ============================================================================
+-- ★2026-09-19追加：メニューマスタ（GAS版owner_ui.htmlの「メニューマスタ」パネル・
+--   SHEET_MENU相当）。それまでお客様予約フォームのメニュー選択肢は
+--   public/index.htmlに直接ハードコードされた4件の固定文字列だったが、
+--   オーナー管理画面から料金・所要時間込みで追加/編集/非表示にできるようにする。
+--   GAS版は親メニュー＋内訳（parent/child）の階層構造を持つが、このプロトタイプでは
+--   フラットな一覧のみに簡略化している（親子内訳は将来の拡張候補）。
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS menu_items (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  store_id       INTEGER NOT NULL REFERENCES stores(id),
+  category       VARCHAR(30) NOT NULL,   -- 'メインメニュー' / '施術系オプション' / 'オプション'
+  name           VARCHAR(100) NOT NULL,
+  duration_min   INTEGER NOT NULL DEFAULT 0,
+  price          INTEGER NOT NULL DEFAULT 0,
+  target         VARCHAR(20) NOT NULL DEFAULT '全員',  -- '全員' / '初回' / 'キープメンバー' / 'ビジター'
+  is_active      INTEGER NOT NULL DEFAULT 1,
+  display_order  INTEGER NOT NULL DEFAULT 0,
+  created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_menu_items_store ON menu_items(store_id, display_order);
+
 -- インデックス（検索性能用。日付・店舗・スタッフでの絞り込みが多いため）
 CREATE INDEX IF NOT EXISTS idx_reservations_store_date ON reservations(store_id, reservation_date);
 CREATE INDEX IF NOT EXISTS idx_reservations_staff_date  ON reservations(store_id, staff_name, reservation_date);

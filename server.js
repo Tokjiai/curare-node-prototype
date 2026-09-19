@@ -103,7 +103,14 @@ app.get('/api/store', (req, res) => {
   const store = db.prepare('SELECT * FROM stores WHERE id = ?').get(storeId);
   const staffList = engine.getCustomerStaffList_(storeId);
   const zones = engine.getZonesConfig_(storeId);
-  res.json({ store, staffList, zones });
+  // ★2026-09-19追加：メニューマスタで管理している有効なメニューを、お客様予約フォーム用に返す。
+  //   以前はpublic/index.htmlに固定4件がハードコードされていたが、店舗設定画面から
+  //   追加・編集した内容がここに反映されるようになった。
+  const menuItems = db.prepare(`
+    SELECT id, category, name, duration_min, price, target FROM menu_items
+    WHERE store_id = ? AND is_active = 1 ORDER BY display_order ASC, id ASC
+  `).all(storeId);
+  res.json({ store, staffList, zones, menuItems });
 });
 
 // ----------------------------------------------------------------------------
@@ -1059,6 +1066,136 @@ app.delete('/api/admin/events/:id', requireOwnerSession, (req, res) => {
       return res.status(404).json({ success: false, message: '対象のイベントが見つかりません' });
     }
     db.prepare('DELETE FROM events WHERE id = ?').run(id);
+    res.json({ success: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ============================================================================
+// ★2026-09-19追加：メニューマスタ（GAS版owner_ui.htmlの「メニューマスタ」パネルに相当）
+//   GAS版は親メニュー＋内訳（parent/child）の階層構造を持つが、このプロトタイプでは
+//   フラットな一覧のみに簡略化している。
+// ============================================================================
+const MENU_CATEGORIES = ['メインメニュー', '施術系オプション', 'オプション'];
+const MENU_TARGETS = ['全員', '初回', 'キープメンバー', 'ビジター'];
+
+// ----------------------------------------------------------------------------
+// GET /api/admin/settings/menu
+//   非表示（is_active=0）も含めて全件返す（管理画面側で表示切替できるように）。
+// ----------------------------------------------------------------------------
+app.get('/api/admin/settings/menu', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const items = db.prepare('SELECT * FROM menu_items WHERE store_id = ? ORDER BY display_order ASC, id ASC').all(storeId);
+    res.json({ items, categories: MENU_CATEGORIES, targets: MENU_TARGETS });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// POST /api/admin/settings/menu
+//   { category, name, durationMin, price, target }
+// ----------------------------------------------------------------------------
+app.post('/api/admin/settings/menu', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const data = req.body || {};
+    if (!data.name || !String(data.name).trim()) {
+      return res.status(400).json({ success: false, message: 'メニュー名は必須です' });
+    }
+    if (MENU_CATEGORIES.indexOf(data.category) === -1) {
+      return res.status(400).json({ success: false, message: 'カテゴリの指定が不正です' });
+    }
+    if (MENU_TARGETS.indexOf(data.target) === -1) {
+      return res.status(400).json({ success: false, message: '対象の指定が不正です' });
+    }
+    const duration = Number(data.durationMin);
+    const price = Number(data.price);
+    if (isNaN(duration) || duration < 0) {
+      return res.status(400).json({ success: false, message: '所要時間は0以上の数値で指定してください' });
+    }
+    if (isNaN(price) || price < 0) {
+      return res.status(400).json({ success: false, message: '料金は0以上の数値で指定してください' });
+    }
+    const maxOrder = db.prepare('SELECT MAX(display_order) AS m FROM menu_items WHERE store_id = ?').get(storeId).m || 0;
+    const info = db.prepare(`
+      INSERT INTO menu_items (store_id, category, name, duration_min, price, target, is_active, display_order)
+      VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+    `).run(storeId, data.category, data.name.trim(), duration, price, data.target, maxOrder + 1);
+    res.json({ success: true, menuItemId: info.lastInsertRowid });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// PUT /api/admin/settings/menu/:id
+//   { category, name, durationMin, price, target, isActive }
+// ----------------------------------------------------------------------------
+app.put('/api/admin/settings/menu/:id', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const id = Number(req.params.id);
+    const data = req.body || {};
+
+    const existing = db.prepare('SELECT * FROM menu_items WHERE id = ? AND store_id = ?').get(id, storeId);
+    if (!existing) {
+      return res.status(404).json({ success: false, message: '対象のメニューが見つかりません（他店舗のデータは操作できません）' });
+    }
+    if (!data.name || !String(data.name).trim()) {
+      return res.status(400).json({ success: false, message: 'メニュー名は必須です' });
+    }
+    if (MENU_CATEGORIES.indexOf(data.category) === -1) {
+      return res.status(400).json({ success: false, message: 'カテゴリの指定が不正です' });
+    }
+    if (MENU_TARGETS.indexOf(data.target) === -1) {
+      return res.status(400).json({ success: false, message: '対象の指定が不正です' });
+    }
+    const duration = Number(data.durationMin);
+    const price = Number(data.price);
+    if (isNaN(duration) || duration < 0) {
+      return res.status(400).json({ success: false, message: '所要時間は0以上の数値で指定してください' });
+    }
+    if (isNaN(price) || price < 0) {
+      return res.status(400).json({ success: false, message: '料金は0以上の数値で指定してください' });
+    }
+
+    db.prepare(`
+      UPDATE menu_items SET
+        category = @category, name = @name, duration_min = @duration_min, price = @price,
+        target = @target, is_active = @is_active, updated_at = CURRENT_TIMESTAMP
+      WHERE id = @id AND store_id = @store_id
+    `).run({
+      id, store_id: storeId, category: data.category, name: data.name.trim(),
+      duration_min: duration, price, target: data.target,
+      is_active: data.isActive === false ? 0 : 1
+    });
+    res.json({ success: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// DELETE /api/admin/settings/menu/:id
+//   物理削除ではなく非表示（is_active=0）にする（過去の予約データのmenu列は文字列保持のため
+//   削除しても既存予約の表示に影響は無いが、GAS版の「非表示」運用に合わせて論理削除にする）。
+// ----------------------------------------------------------------------------
+app.delete('/api/admin/settings/menu/:id', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const id = Number(req.params.id);
+    const existing = db.prepare('SELECT id FROM menu_items WHERE id = ? AND store_id = ?').get(id, storeId);
+    if (!existing) {
+      return res.status(404).json({ success: false, message: '対象のメニューが見つかりません' });
+    }
+    db.prepare('UPDATE menu_items SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(id);
     res.json({ success: true });
   } catch (e) {
     console.error(e);

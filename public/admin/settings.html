@@ -97,6 +97,45 @@
       </div>
 
       <div class="panel">
+        <h2>メニューマスタ</h2>
+        <div class="desc">お客様予約フォームに表示するメニュー・料金・所要時間を管理します</div>
+        <div class="event-form" id="menuAddForm" style="display:none;">
+          <div>
+            <label>カテゴリ</label>
+            <select id="menuAddCategory"></select>
+          </div>
+          <div>
+            <label>メニュー名</label>
+            <input type="text" id="menuAddName" placeholder="例：フェイシャル(60分)">
+          </div>
+          <div>
+            <label>所要時間(分)</label>
+            <input type="number" id="menuAddDuration" min="0" step="5" value="60">
+          </div>
+          <div>
+            <label>料金(円)</label>
+            <input type="number" id="menuAddPrice" min="0" step="50" value="0">
+          </div>
+          <div>
+            <label>対象</label>
+            <select id="menuAddTarget"></select>
+          </div>
+          <div style="display:flex; gap:6px;">
+            <button class="btn" id="menuAddSaveBtn" type="button">追加する</button>
+            <button class="btn secondary" id="menuAddCancelBtn" type="button">キャンセル</button>
+          </div>
+        </div>
+        <div style="margin-bottom:10px;">
+          <button class="btn secondary" id="menuAddToggleBtn" type="button">＋ 新しいメニューを追加</button>
+        </div>
+        <div class="err" id="menuErr" style="display:none;"></div>
+        <table>
+          <thead><tr><th>カテゴリ</th><th>メニュー名</th><th>所要時間</th><th>料金</th><th>対象</th><th>表示</th><th></th></tr></thead>
+          <tbody id="menuBody"></tbody>
+        </table>
+      </div>
+
+      <div class="panel">
         <h2>基本ルール</h2>
         <div class="desc">予約の受付条件に関わる数値設定です</div>
         <table>
@@ -182,7 +221,7 @@
   async function init() {
     try {
       await adminFetch('/api/auth/me');
-      await Promise.all([loadRules(), loadZones(), loadEvents()]);
+      await Promise.all([loadMenu(), loadRules(), loadZones(), loadEvents()]);
       loadingMsg.style.display = 'none';
       shell.classList.add('ready');
     } catch (e) {
@@ -194,6 +233,120 @@
     e.preventDefault();
     try { await fetch('/api/auth/logout', { method: 'POST' }); } catch (_) {}
     window.location.href = '/admin/login.html';
+  });
+
+  // ---------- メニューマスタ ----------
+  let menuCategories = [];
+  let menuTargets = [];
+
+  function fillSelect(sel, options, current) {
+    sel.innerHTML = '';
+    options.forEach((v) => {
+      const opt = document.createElement('option');
+      opt.value = v; opt.textContent = v;
+      if (v === current) opt.selected = true;
+      sel.appendChild(opt);
+    });
+  }
+
+  async function loadMenu() {
+    const data = await adminFetch('/api/admin/settings/menu');
+    menuCategories = data.categories || [];
+    menuTargets = data.targets || [];
+    fillSelect(document.getElementById('menuAddCategory'), menuCategories, menuCategories[0]);
+    fillSelect(document.getElementById('menuAddTarget'), menuTargets, menuTargets[0]);
+
+    const tbody = document.getElementById('menuBody');
+    tbody.innerHTML = '';
+    (data.items || []).forEach((m) => {
+      const tr = document.createElement('tr');
+      const catSel = document.createElement('select');
+      fillSelect(catSel, menuCategories, m.category);
+      const targetSel = document.createElement('select');
+      fillSelect(targetSel, menuTargets, m.target);
+
+      const nameInput = document.createElement('input');
+      nameInput.type = 'text'; nameInput.value = m.name; nameInput.style.width = '160px';
+      const durInput = document.createElement('input');
+      durInput.type = 'number'; durInput.value = m.duration_min; durInput.min = '0'; durInput.step = '5'; durInput.style.width = '70px';
+      const priceInput = document.createElement('input');
+      priceInput.type = 'number'; priceInput.value = m.price; priceInput.min = '0'; priceInput.step = '50'; priceInput.style.width = '80px';
+      const activeChk = document.createElement('input');
+      activeChk.type = 'checkbox'; activeChk.checked = !!m.is_active;
+
+      const tdCat = document.createElement('td'); tdCat.appendChild(catSel);
+      const tdName = document.createElement('td'); tdName.appendChild(nameInput);
+      const tdDur = document.createElement('td'); tdDur.appendChild(durInput); tdDur.appendChild(document.createTextNode(' 分'));
+      const tdPrice = document.createElement('td'); tdPrice.appendChild(document.createTextNode('¥')); tdPrice.appendChild(priceInput);
+      const tdTarget = document.createElement('td'); tdTarget.appendChild(targetSel);
+      const tdActive = document.createElement('td'); tdActive.appendChild(activeChk);
+      const tdBtn = document.createElement('td');
+      const saveBtn = document.createElement('button'); saveBtn.className = 'btn small'; saveBtn.type = 'button'; saveBtn.textContent = '保存';
+      const delBtn = document.createElement('button'); delBtn.className = 'btn danger small'; delBtn.type = 'button'; delBtn.textContent = '削除'; delBtn.style.marginLeft = '6px';
+      const msg = document.createElement('span'); msg.className = 'row-save-msg'; msg.style.display = 'none'; msg.textContent = '保存しました';
+      tdBtn.appendChild(saveBtn); tdBtn.appendChild(delBtn); tdBtn.appendChild(msg);
+
+      tr.appendChild(tdCat); tr.appendChild(tdName); tr.appendChild(tdDur); tr.appendChild(tdPrice); tr.appendChild(tdTarget); tr.appendChild(tdActive); tr.appendChild(tdBtn);
+
+      saveBtn.addEventListener('click', async () => {
+        msg.style.display = 'none';
+        try {
+          await adminFetch('/api/admin/settings/menu/' + m.id, {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              category: catSel.value, name: nameInput.value.trim(), durationMin: durInput.value,
+              price: priceInput.value, target: targetSel.value, isActive: activeChk.checked
+            })
+          });
+          msg.style.display = 'inline';
+          setTimeout(() => { msg.style.display = 'none'; }, 2000);
+        } catch (err) { alert(err.message); }
+      });
+      delBtn.addEventListener('click', async () => {
+        if (!confirm(`「${m.name}」を非表示にしますか？（お客様フォームに表示されなくなります）`)) return;
+        try {
+          await adminFetch('/api/admin/settings/menu/' + m.id, { method: 'DELETE' });
+          loadMenu();
+        } catch (err) { alert(err.message); }
+      });
+      tbody.appendChild(tr);
+    });
+  }
+
+  document.getElementById('menuAddToggleBtn').addEventListener('click', () => {
+    const form = document.getElementById('menuAddForm');
+    form.style.display = form.style.display === 'none' ? 'grid' : 'none';
+  });
+  document.getElementById('menuAddCancelBtn').addEventListener('click', () => {
+    document.getElementById('menuAddForm').style.display = 'none';
+  });
+  document.getElementById('menuAddSaveBtn').addEventListener('click', async () => {
+    const errBox = document.getElementById('menuErr');
+    errBox.style.display = 'none';
+    const name = document.getElementById('menuAddName').value.trim();
+    if (!name) {
+      errBox.textContent = 'メニュー名は必須です';
+      errBox.style.display = 'block';
+      return;
+    }
+    try {
+      await adminFetch('/api/admin/settings/menu', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          category: document.getElementById('menuAddCategory').value,
+          name: name,
+          durationMin: document.getElementById('menuAddDuration').value,
+          price: document.getElementById('menuAddPrice').value,
+          target: document.getElementById('menuAddTarget').value
+        })
+      });
+      document.getElementById('menuAddName').value = '';
+      document.getElementById('menuAddForm').style.display = 'none';
+      await loadMenu();
+    } catch (err) {
+      errBox.textContent = err.message;
+      errBox.style.display = 'block';
+    }
   });
 
   // ---------- 基本ルール ----------

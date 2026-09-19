@@ -557,6 +557,63 @@ async function main() {
   }
 
   // --------------------------------------------------------------------------
+  // 14. メニューマスタ（★2026-09-19追加）
+  // --------------------------------------------------------------------------
+  console.log('--- 14. メニューマスタ ---');
+  {
+    const r = await ownerFresh.get('/api/admin/settings/menu');
+    assert(r.status === 200 && (r.body.items || []).length >= 4, '初期投入した4件のメニューが取得できる');
+  }
+  {
+    const r = await fetch(BASE + '/api/store?store=kurare-kotobuki').then((res) => res.json());
+    assert(Array.isArray(r.menuItems) && r.menuItems.length >= 4, 'お客様フォーム用APIにもメニュー一覧が含まれる');
+  }
+  let newMenuId = null;
+  {
+    const r = await ownerFresh.postJson('/api/admin/settings/menu', {
+      category: 'オプション', name: '統合テストメニュー', durationMin: 30, price: 1500, target: '全員'
+    });
+    assert(r.status === 200 && r.body.success === true, '新規メニューを追加できる');
+    newMenuId = r.body.menuItemId;
+  }
+  {
+    const r = await ownerFresh.postJson('/api/admin/settings/menu', { category: '存在しないカテゴリ', name: 'x', durationMin: 10, price: 0, target: '全員' });
+    assert(r.status === 400, '不正なカテゴリは拒否される');
+  }
+  {
+    const r = await ownerFresh.postJson('/api/admin/settings/menu', { category: 'オプション', name: '', durationMin: 10, price: 0, target: '全員' });
+    assert(r.status === 400, 'メニュー名なしでは追加できない');
+  }
+  {
+    const r = await ownerFresh.request(`/api/admin/settings/menu/${newMenuId}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ category: 'オプション', name: '統合テストメニュー（改）', durationMin: 45, price: 2000, target: '全員', isActive: true })
+    });
+    assert(r.status === 200 && r.body.success === true, 'メニューを編集できる');
+  }
+  {
+    const r = await owner2.request(`/api/admin/settings/menu/${newMenuId}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ category: 'オプション', name: 'なりすまし', durationMin: 10, price: 0, target: '全員' })
+    });
+    assert(r.status === 404, '他店舗オーナーは他店のメニューを編集できない（店舗スコープ確認）');
+  }
+  {
+    const r = await ownerFresh.request(`/api/admin/settings/menu/${newMenuId}`, { method: 'DELETE' });
+    assert(r.status === 200 && r.body.success === true, 'メニューを削除（非表示化）できる');
+  }
+  {
+    const r = await fetch(BASE + '/api/store?store=kurare-kotobuki').then((res) => res.json());
+    const found = r.menuItems.some((m) => m.id === newMenuId);
+    assert(!found, '削除（非表示化）したメニューはお客様フォーム用の一覧から消える');
+  }
+  {
+    const r = await ownerFresh.get('/api/admin/settings/menu');
+    const found = (r.body.items || []).find((m) => m.id === newMenuId);
+    assert(!!found && found.is_active === 0, '削除後も管理画面の一覧にはis_active=0として残っている（物理削除ではない）');
+  }
+
+  // --------------------------------------------------------------------------
   console.log(`\n=== 結果: PASS ${passCount} / FAIL ${failCount} ===`);
   if (failCount > 0) {
     console.log('\n失敗した項目:');
