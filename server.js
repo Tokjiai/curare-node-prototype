@@ -396,7 +396,7 @@ app.get('/api/admin/customers', requireOwnerSession, (req, res) => {
     const offset = Number(req.query.offset) || 0;
     const q = (req.query.q || '').trim();
 
-    let where = 'store_id = ?';
+    let where = 'store_id = ? AND is_deleted = 0';
     const params = [storeId];
     if (q) {
       where += ' AND (realname LIKE ? OR kana LIKE ? OR phone LIKE ?)';
@@ -649,6 +649,84 @@ app.put('/api/admin/staff/:id', requireOwnerSession, (req, res) => {
     `).run(params);
 
     res.json({ success: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ============================================================================
+// ★2026-09-19追加：顧客マスタの重複統合（マージ）機能
+//   GAS版のcustomer_merge_functions.gsに相当。電話番号の一致で重複候補を検知し、
+//   統合（片方に情報を集約して片方を論理削除）または「別人」として見送るかを
+//   オーナーが判断できるようにする。
+// ============================================================================
+const { normalizePhoneDigits, findMergeCandidates, mergeCustomerRecords } = require('./lib/customerMerge');
+
+// ----------------------------------------------------------------------------
+// GET /api/admin/customers/merge-candidates
+//   電話番号が一致するのに顧客IDが異なる組み合わせを検知して返す（見送り済みは除外）
+// ----------------------------------------------------------------------------
+app.get('/api/admin/customers/merge-candidates', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const candidates = findMergeCandidates(db, storeId);
+    res.json({ candidates });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// POST /api/admin/customers/merge-candidates/dismiss  { customerIdA, customerIdB }
+//   「別人」として見送る。以後この組み合わせは候補一覧に出さない。
+// ----------------------------------------------------------------------------
+app.post('/api/admin/customers/merge-candidates/dismiss', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const { customerIdA, customerIdB } = req.body || {};
+    if (!customerIdA || !customerIdB) {
+      return res.status(400).json({ success: false, message: 'customerIdA・customerIdBは必須です' });
+    }
+    if (String(customerIdA) === String(customerIdB)) {
+      return res.status(400).json({ success: false, message: '同じ顧客同士は指定できません' });
+    }
+    const [a, b] = [String(customerIdA), String(customerIdB)].sort();
+    db.prepare(`
+      INSERT INTO customer_merge_dismissals (store_id, customer_id_a, customer_id_b, dismissed_by)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(store_id, customer_id_a, customer_id_b) DO NOTHING
+    `).run(storeId, a, b, req.session.staff.name);
+    res.json({ success: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// POST /api/admin/customers/merge  { keepCustomerId, mergeCustomerId }
+//   mergeCustomerId側の空欄を埋めた上でkeepCustomerId側に統合し、mergeCustomerId側は論理削除する。
+// ----------------------------------------------------------------------------
+app.post('/api/admin/customers/merge', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const { keepCustomerId, mergeCustomerId } = req.body || {};
+    if (!keepCustomerId || !mergeCustomerId) {
+      return res.status(400).json({ success: false, message: 'keepCustomerId・mergeCustomerIdは必須です' });
+    }
+    if (String(keepCustomerId) === String(mergeCustomerId)) {
+      return res.status(400).json({ success: false, message: '同じ顧客同士は統合できません' });
+    }
+    const result = mergeCustomerRecords(db, storeId, keepCustomerId, mergeCustomerId, req.session.staff.name);
+    if (!result.success) {
+      return res.status(400).json(result);
+    }
+    // 統合済みなら、見送り済み記録もマージ候補一覧に紛れないよう一緒に片付ける
+    const [a, b] = [String(keepCustomerId), String(mergeCustomerId)].sort();
+    db.prepare('DELETE FROM customer_merge_dismissals WHERE store_id = ? AND customer_id_a = ? AND customer_id_b = ?').run(storeId, a, b);
+    res.json(result);
   } catch (e) {
     console.error(e);
     res.status(500).json({ success: false, error: e.message });

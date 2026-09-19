@@ -14,6 +14,7 @@
 // ============================================================================
 
 const BASE = process.env.TEST_BASE_URL || 'http://localhost:3000';
+const db = require('../lib/db'); // ★11章（顧客統合）のテスト用フィクスチャ直接投入にのみ使用
 
 let passCount = 0;
 let failCount = 0;
@@ -358,6 +359,78 @@ async function main() {
       body: JSON.stringify({ name: '統合テスト新人', pin: '5555' })
     });
     assert(r.status === 200 && r.body.success === true, 'PINをリセットできる');
+  }
+
+  // --------------------------------------------------------------------------
+  // 11. 顧客マスタの重複統合（★2026-09-19追加）
+  // --------------------------------------------------------------------------
+  console.log('--- 11. 顧客マスタの重複統合 ---');
+  const dupTel = '09055556666';
+  db.prepare(`INSERT INTO customers (store_id, customer_id, realname, kana, phone, total_visits) VALUES (1, 'CT900', 'テスト統合太郎', 'テストトウゴウタロウ', ?, 3)`).run(dupTel);
+  db.prepare(`INSERT INTO customers (store_id, customer_id, realname, kana, phone, total_visits) VALUES (1, 'CT901', 'てすと統合太郎', '', ?, 2)`).run(dupTel.replace(/(\d{3})(\d{4})(\d{4})/, '$1-$2-$3'));
+  // 店2側にも同じ電話番号の顧客を1件だけ投入（店舗スコープ確認用：店1の候補に混ざらないこと）
+  db.prepare(`INSERT INTO customers (store_id, customer_id, realname, kana, phone, total_visits) VALUES (2, 'CT902', '店2テスト花子', '', ?, 1)`).run(dupTel);
+
+  let ct900Candidate = null;
+  {
+    const r = await ownerFresh.get('/api/admin/customers/merge-candidates');
+    ct900Candidate = (r.body.candidates || []).find((c) =>
+      (c.customerA.customer_id === 'CT900' && c.customerB.customer_id === 'CT901') ||
+      (c.customerA.customer_id === 'CT901' && c.customerB.customer_id === 'CT900')
+    );
+    assert(r.status === 200 && !!ct900Candidate, '電話番号一致の重複候補（CT900⇔CT901）が検出される');
+  }
+  {
+    const r = await owner2.get('/api/admin/customers/merge-candidates');
+    const leaked = (r.body.candidates || []).some((c) => c.customerA.customer_id === 'CT900' || c.customerB.customer_id === 'CT900');
+    assert(r.status === 200 && !leaked, '他店舗の重複候補には自店舗のデータしか出ない（店舗スコープ確認）');
+  }
+  {
+    const r = await owner2.postJson('/api/admin/customers/merge', { keepCustomerId: 'CT900', mergeCustomerId: 'CT901' });
+    assert(r.status === 400, '他店舗オーナーは他店の顧客を統合できない');
+  }
+  {
+    const r = await ownerFresh.postJson('/api/admin/customers/merge', { keepCustomerId: 'CT900', mergeCustomerId: 'CT900' });
+    assert(r.status === 400, '同じ顧客同士は統合できない');
+  }
+  {
+    const r = await ownerFresh.postJson('/api/admin/customers/merge', { keepCustomerId: 'CT900', mergeCustomerId: 'CT901' });
+    assert(r.status === 200 && r.body.success === true, 'CT901をCT900に統合できる');
+  }
+  {
+    const r = await ownerFresh.get('/api/admin/customers?q=' + encodeURIComponent('テスト統合太郎'));
+    const found = (r.body.customers || []).find((c) => c.customer_id === 'CT900');
+    assert(!!found && found.total_visits === 5, '統合後：残った側の来店回数が合算される（3+2=5）');
+  }
+  {
+    const r = await ownerFresh.get('/api/admin/customers?q=' + encodeURIComponent('てすと統合太郎'));
+    assert((r.body.customers || []).length === 0, '統合後：消えた側（CT901）は一覧に出てこない（論理削除）');
+  }
+  {
+    const r = await ownerFresh.get('/api/admin/customers/merge-candidates');
+    const stillThere = (r.body.candidates || []).some((c) => c.customerA.customer_id === 'CT901' || c.customerB.customer_id === 'CT901');
+    assert(!stillThere, '統合済みの組み合わせは候補一覧に再度出てこない');
+  }
+  // 見送り（別人）機能の確認：店2の顧客とは別電話番号の組み合わせを新規に作る
+  const dismissTel = '09077778888';
+  db.prepare(`INSERT INTO customers (store_id, customer_id, realname, phone) VALUES (1, 'CT910', '見送りA', ?)`).run(dismissTel);
+  db.prepare(`INSERT INTO customers (store_id, customer_id, realname, phone) VALUES (1, 'CT911', '見送りB', ?)`).run(dismissTel);
+  {
+    const r = await ownerFresh.postJson('/api/admin/customers/merge-candidates/dismiss', { customerIdA: 'CT910', customerIdB: 'CT911' });
+    assert(r.status === 200 && r.body.success === true, '別人として見送りを記録できる');
+  }
+  {
+    const r = await ownerFresh.get('/api/admin/customers/merge-candidates');
+    const stillThere = (r.body.candidates || []).some((c) =>
+      (c.customerA.customer_id === 'CT910' && c.customerB.customer_id === 'CT911') ||
+      (c.customerA.customer_id === 'CT911' && c.customerB.customer_id === 'CT910')
+    );
+    assert(!stillThere, '見送り済みの組み合わせは候補一覧に再度出てこない');
+  }
+  {
+    const r = await ownerFresh.get('/api/admin/customers?q=' + encodeURIComponent('見送りA'));
+    const found = (r.body.customers || []).find((c) => c.customer_id === 'CT910');
+    assert(!!found, '見送り後も両方の顧客データはそのまま残る（削除されない）');
   }
 
   // --------------------------------------------------------------------------

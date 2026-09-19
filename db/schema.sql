@@ -209,6 +209,9 @@ CREATE TABLE IF NOT EXISTS customers (
   last_visit_date    DATE,
   total_visits       INTEGER NOT NULL DEFAULT 0,
   memo               TEXT,
+  is_deleted         INTEGER NOT NULL DEFAULT 0,  -- ★2026-09-19追加：顧客統合機能。統合されて消える側は
+                                                    --   物理削除せずここを1にする（GAS版のdelFlag相当）
+  deleted_at         DATETIME,
   created_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(store_id, customer_id)
@@ -216,6 +219,23 @@ CREATE TABLE IF NOT EXISTS customers (
 
 CREATE INDEX IF NOT EXISTS idx_customers_store_cid      ON customers(store_id, customer_id);
 CREATE INDEX IF NOT EXISTS idx_customers_store_realname  ON customers(store_id, realname);
+CREATE INDEX IF NOT EXISTS idx_customers_store_phone     ON customers(store_id, phone);
+
+-- ============================================================================
+-- ★2026-09-19追加：顧客マスタの重複統合（マージ）機能
+--   GAS版のcustomer_merge_functions.gsに相当。電話番号が一致するのに顧客IDが
+--   異なる（＝重複登録の疑いがある）組み合わせを検知し、統合または「別人」として
+--   見送るかをオーナーが判断する。見送り済みの組み合わせは再度候補として出さない。
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS customer_merge_dismissals (
+  id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+  store_id           INTEGER NOT NULL REFERENCES stores(id),
+  customer_id_a      VARCHAR(50) NOT NULL,  -- ★正規化のため常に customer_id_a < customer_id_b の順で保存
+  customer_id_b      VARCHAR(50) NOT NULL,
+  dismissed_by       VARCHAR(50),
+  dismissed_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(store_id, customer_id_a, customer_id_b)
+);
 
 -- インデックス（検索性能用。日付・店舗・スタッフでの絞り込みが多いため）
 CREATE INDEX IF NOT EXISTS idx_reservations_store_date ON reservations(store_id, reservation_date);
