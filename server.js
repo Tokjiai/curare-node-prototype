@@ -77,6 +77,12 @@ if (!process.env.SESSION_SECRET) {
 //   本番でconnect-mysql2等に差し替える際は、そちらのstoreも同様にall()/destroy()
 //   をサポートしていることを確認すること（connect系ストアは概ね対応している）。
 const sessionStore = new session.MemoryStore();
+// ★2026-09-19追加：RenderはTLS終端を行うリバースプロキシの背後でアプリを動かすため、
+//   これを明示しないとExpressは「HTTPSで来ている」ことを認識できない
+//   （req.secureが常にfalseになる）。cookie.secure:'auto'と組み合わせて、
+//   本番(HTTPS経由)ではSecure属性つきCookieを、ローカル開発(HTTP)では
+//   Secure属性なしのCookieを、自動で正しく出し分けるために設定する。
+app.set('trust proxy', 1);
 app.use(session({
   secret: SESSION_SECRET,
   resave: false,
@@ -84,7 +90,9 @@ app.use(session({
   store: sessionStore,
   cookie: {
     httpOnly: true,
-    maxAge: 8 * 60 * 60 * 1000 // 8時間
+    maxAge: 8 * 60 * 60 * 1000, // 8時間
+    sameSite: 'lax',
+    secure: 'auto'
   }
 }));
 
@@ -340,7 +348,19 @@ app.post('/api/auth/login', (req, res) => {
       isOwner: !!matched.is_owner
     };
 
-    res.json({ success: true, staffName: matched.name, storeId: matched.store_id });
+    // ★2026-09-19追加：res.json()を呼ぶ前にreq.session.save()の完了を明示的に待つ。
+    //   resave:falseの設定では、レスポンスがクライアントに届くタイミングと
+    //   セッションストアへの書き込み完了のタイミングの前後関係が環境によって
+    //   ずれる可能性があるため、「必ずセッション保存が終わってからレスポンスを返す」
+    //   ことを保証し、「ログインは成功と表示されるがセッションが認識されない」
+    //   不具合の芽を摘んでおく。
+    req.session.save((err) => {
+      if (err) {
+        console.error('セッション保存エラー:', err);
+        return res.status(500).json({ success: false, message: 'セッションの保存に失敗しました' });
+      }
+      res.json({ success: true, staffName: matched.name, storeId: matched.store_id });
+    });
   } catch (e) {
     console.error(e);
     res.status(500).json({ success: false, message: e.message });
