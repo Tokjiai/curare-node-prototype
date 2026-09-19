@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>オーナー管理画面 - シフト管理</title>
+<style>
+  :root{
+    --bg:#F5F4EF; --panel:#ffffff; --ink:#2B2B27; --ink-soft:#75746C; --ink-faint:#A9A79C;
+    --line:#E4E2D9; --accent:#3D6B5C; --accent-soft:#E7EFE9; --warn:#B3542E; --warn-soft:#F7E9E2;
+    --radius:14px;
+  }
+  *{box-sizing:border-box; margin:0; padding:0; font-family:'Hiragino Sans','Yu Gothic',sans-serif;}
+  body{background:var(--bg); color:var(--ink);}
+  .shell{display:none; min-height:100vh;}
+  .shell.ready{display:grid; grid-template-columns:220px 1fr;}
+
+  .sidebar{background:var(--panel); border-right:1px solid var(--line); padding:20px 14px; display:flex; flex-direction:column; gap:16px;}
+  .brand{font-size:14px; font-weight:600; padding:0 8px;}
+  .store-name{background:var(--accent-soft); color:var(--accent); border-radius:8px; padding:9px 10px; font-size:13px; font-weight:700; text-align:center;}
+  .proto-badge{font-size:10.5px; color:var(--warn); background:var(--warn-soft); border-radius:8px; padding:6px 8px; text-align:center; font-weight:700;}
+  .nav{display:flex; flex-direction:column; gap:2px;}
+  .nav-item{display:flex; align-items:center; gap:10px; padding:10px 10px; border-radius:8px; text-decoration:none; font-size:13.5px; color:var(--ink-soft); font-weight:500;}
+  .nav-item.active{background:var(--accent-soft); color:var(--accent);}
+  .nav-item.warn{color:var(--warn); margin-top:auto;}
+
+  .main{padding:28px 32px; max-width:1080px;}
+  .page-head{margin-bottom:20px;}
+  .page-head h1{font-size:19px; font-weight:600; margin-bottom:4px;}
+  .page-head p{font-size:13px; color:var(--ink-soft);}
+
+  .panel{background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:18px 20px; margin-bottom:16px;}
+  .panel h2{font-size:14px; font-weight:600; margin-bottom:14px; color:var(--ink);}
+
+  .week-nav{display:flex; align-items:center; justify-content:space-between; margin-bottom:14px;}
+  .week-nav button{padding:9px 16px; border:1px solid var(--line); border-radius:9px; background:#fff; cursor:pointer; font-family:inherit; font-size:13px; color:var(--accent); font-weight:600;}
+  .week-nav .label{font-size:14px; font-weight:700;}
+
+  .day-grid{display:grid; grid-template-columns:repeat(auto-fill, minmax(160px, 1fr)); gap:10px;}
+  .day-card{border:1px solid var(--line); border-radius:12px; padding:10px 12px; background:#fff; min-height:120px; display:flex; flex-direction:column; gap:8px;}
+  .day-card.closed{background:var(--warn-soft);}
+  .day-card .day-title{font-size:12.5px; font-weight:700; display:flex; justify-content:space-between; align-items:center;}
+  .day-card .day-title .dow-sun{color:#C0392B;} .day-card .day-title .dow-sat{color:#2980B9;}
+  .shift-chip{background:var(--accent-soft); color:var(--accent); border-radius:7px; padding:5px 7px; font-size:11.5px; display:flex; justify-content:space-between; align-items:center; gap:6px;}
+  .shift-chip .del{cursor:pointer; color:var(--ink-faint); font-weight:700;}
+  .shift-chip .del:hover{color:var(--warn);}
+  .add-shift-btn{border:1px dashed var(--line); border-radius:7px; padding:5px 7px; font-size:11.5px; background:none; cursor:pointer; color:var(--ink-soft); font-family:inherit; text-align:center;}
+  .add-shift-btn:hover{background:var(--accent-soft); color:var(--accent); border-color:var(--accent-soft);}
+
+  .modal-overlay{display:none; position:fixed; inset:0; background:rgba(43,43,39,0.45); align-items:center; justify-content:center; z-index:50; padding:16px;}
+  .modal-overlay.open{display:flex;}
+  .modal-box{background:var(--panel); border-radius:var(--radius); padding:22px 22px 18px; width:100%; max-width:360px; box-shadow:0 12px 40px rgba(0,0,0,0.18);}
+  .modal-title{font-size:15px; font-weight:700; margin-bottom:14px;}
+  .modal-field{margin-bottom:12px;}
+  .modal-field label{display:block; font-size:11px; color:var(--ink-soft); font-weight:600; margin-bottom:4px;}
+  .modal-field input, .modal-field select{width:100%; border:1px solid var(--line); border-radius:8px; padding:9px 10px; font-size:13.5px; font-family:inherit;}
+  .modal-actions{display:flex; justify-content:flex-end; gap:8px; margin-top:16px;}
+  .modal-btn-cancel{background:#fff; border:1px solid var(--line); border-radius:9px; padding:9px 16px; font-size:13px; cursor:pointer; font-family:inherit; color:var(--ink-soft);}
+  .modal-btn-ok{background:var(--accent); color:#fff; border:none; border-radius:9px; padding:9px 16px; font-size:13px; font-weight:600; cursor:pointer; font-family:inherit;}
+  .modal-err{color:var(--warn); font-size:12px; margin-top:8px; display:none;}
+
+  .hint{font-size:11px; color:var(--ink-soft); margin-top:12px; line-height:1.7;}
+  #loadingMsg{text-align:center; color:var(--ink-soft); font-size:13px; padding:60px 0;}
+
+  @media (max-width:760px){
+    .shell.ready{grid-template-columns:1fr;}
+    .sidebar{flex-direction:row; flex-wrap:wrap; align-items:center; padding:12px 14px;}
+    .brand{display:none;}
+    .nav{flex-direction:row; flex-wrap:wrap; gap:6px;}
+    .nav-item.warn{margin-top:0;}
+    .main{padding:18px 16px;}
+    .day-grid{grid-template-columns:1fr 1fr;}
+  }
+</style>
+</head>
+<body>
+  <div id="loadingMsg">読み込み中...</div>
+
+  <div class="shell" id="shell">
+    <div class="sidebar">
+      <div class="brand">クラーレ寿 ／ オーナー管理</div>
+      <div class="store-name">クラーレ寿</div>
+      <div class="proto-badge">PROTOTYPE</div>
+      <div class="nav">
+        <a href="index.html" class="nav-item">📊 ダッシュボード</a>
+        <a href="customers.html" class="nav-item">👥 顧客マスタ</a>
+        <a href="reservations.html" class="nav-item">📅 予約データ</a>
+        <a href="shifts.html" class="nav-item active">🗓️ シフト管理</a>
+        <a href="../index.html" class="nav-item">🔗 予約画面へ</a>
+        <a href="#" id="logoutLink" class="nav-item warn">🚪 ログアウト</a>
+      </div>
+    </div>
+
+    <div class="main">
+      <div class="page-head">
+        <h1>シフト管理</h1>
+        <p>週単位でスタッフの出勤シフトを確認・追加・削除できます</p>
+      </div>
+
+      <div class="panel">
+        <div class="week-nav">
+          <button id="prevWeekBtn" type="button">← 前週</button>
+          <div class="label" id="weekLabel"></div>
+          <button id="nextWeekBtn" type="button">次週 →</button>
+        </div>
+        <div class="day-grid" id="dayGrid"></div>
+        <div class="hint">枠の「＋」から追加、シフトの「×」から削除できます。休業日設定（店休日）は今回の対象外です。</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- シフト追加モーダル -->
+  <div class="modal-overlay" id="addModal">
+    <div class="modal-box">
+      <div class="modal-title">➕ シフトを追加</div>
+      <div class="modal-field">
+        <label>日付</label>
+        <input type="date" id="addDate" readonly>
+      </div>
+      <div class="modal-field">
+        <label>スタッフ</label>
+        <select id="addStaff"></select>
+      </div>
+      <div class="modal-field">
+        <label>開始時間</label>
+        <input type="time" id="addStart" value="10:00">
+      </div>
+      <div class="modal-field">
+        <label>終了時間</label>
+        <input type="time" id="addEnd" value="19:00">
+      </div>
+      <div class="modal-err" id="addErr"></div>
+      <div class="modal-actions">
+        <button class="modal-btn-cancel" type="button" id="addCancelBtn">閉じる</button>
+        <button class="modal-btn-ok" type="button" id="addSaveBtn">追加する</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+(function(){
+  const loadingMsg = document.getElementById('loadingMsg');
+  const shell = document.getElementById('shell');
+  let weekStart = startOfWeek(new Date());
+  let staffList = [];
+  let shiftsByDate = {};
+
+  function startOfWeek(d) {
+    const x = new Date(d); x.setHours(0,0,0,0);
+    const dow = (x.getDay() + 6) % 7; // 0=月曜
+    x.setDate(x.getDate() - dow);
+    return x;
+  }
+  function fmt(d) {
+    const y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,'0'), day = String(d.getDate()).padStart(2,'0');
+    return `${y}-${m}-${day}`;
+  }
+  function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate()+n); return x; }
+  const DOW_LABELS = ['月','火','水','木','金','土','日'];
+
+  async function adminFetch(url) {
+    const res = await fetch(url);
+    if (res.status === 401) throw new Error('UNAUTHORIZED');
+    if (!res.ok) throw new Error('サーバーエラー: ' + res.status);
+    return res.json();
+  }
+
+  async function init() {
+    try {
+      await adminFetch('/api/auth/me');
+      const staffData = await adminFetch('/api/admin/staff');
+      staffList = (staffData.staff || []).filter((s) => s.is_active);
+      const select = document.getElementById('addStaff');
+      select.innerHTML = staffList.map((s) => `<option value="${escAttr(s.name)}">${escAttr(s.name)}${s.role ? '（' + escAttr(s.role) + '）' : ''}</option>`).join('');
+      await loadWeek();
+      loadingMsg.style.display = 'none';
+      shell.classList.add('ready');
+    } catch (e) {
+      window.location.href = '/admin/login.html';
+    }
+  }
+
+  document.getElementById('logoutLink').addEventListener('click', async (e) => {
+    e.preventDefault();
+    try { await fetch('/api/auth/logout', { method: 'POST' }); } catch (_) {}
+    window.location.href = '/admin/login.html';
+  });
+
+  async function loadWeek() {
+    const from = fmt(weekStart);
+    const to = fmt(addDays(weekStart, 6));
+    document.getElementById('weekLabel').textContent = `${from} 〜 ${to}`;
+    const data = await adminFetch(`/api/admin/shifts?from=${from}&to=${to}`);
+    shiftsByDate = {};
+    (data.shifts || []).forEach((s) => {
+      if (!shiftsByDate[s.shift_date]) shiftsByDate[s.shift_date] = [];
+      shiftsByDate[s.shift_date].push(s);
+    });
+    render();
+  }
+
+  function render() {
+    const grid = document.getElementById('dayGrid');
+    grid.innerHTML = '';
+    for (let i = 0; i < 7; i++) {
+      const d = addDays(weekStart, i);
+      const dateStr = fmt(d);
+      const dow = DOW_LABELS[i];
+      const dowClass = i === 5 ? 'dow-sat' : (i === 6 ? 'dow-sun' : '');
+      const card = document.createElement('div');
+      card.className = 'day-card';
+      const shifts = (shiftsByDate[dateStr] || []).slice().sort((a,b) => a.start_time.localeCompare(b.start_time));
+      card.innerHTML = `
+        <div class="day-title"><span>${dateStr.slice(5)}（<span class="${dowClass}">${dow}</span>）</span></div>
+        ${shifts.map((s) => `
+          <div class="shift-chip">
+            <span>${esc(s.staff_name)} ${esc(s.start_time)}〜${esc(s.end_time)}</span>
+            <span class="del" data-del="${s.id}">×</span>
+          </div>
+        `).join('')}
+        <button class="add-shift-btn" type="button" data-add="${dateStr}">＋ 追加</button>
+      `;
+      grid.appendChild(card);
+    }
+    grid.querySelectorAll('[data-del]').forEach((el) => {
+      el.addEventListener('click', () => deleteShift(Number(el.dataset.del)));
+    });
+    grid.querySelectorAll('[data-add]').forEach((el) => {
+      el.addEventListener('click', () => openAddModal(el.dataset.add));
+    });
+  }
+
+  function esc(v) { return String(v == null ? '' : v).replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
+  function escAttr(v) { return esc(v); }
+
+  function openAddModal(dateStr) {
+    document.getElementById('addDate').value = dateStr;
+    document.getElementById('addErr').style.display = 'none';
+    document.getElementById('addModal').classList.add('open');
+  }
+  document.getElementById('addCancelBtn').addEventListener('click', () => {
+    document.getElementById('addModal').classList.remove('open');
+  });
+  document.getElementById('addSaveBtn').addEventListener('click', async () => {
+    const errBox = document.getElementById('addErr');
+    errBox.style.display = 'none';
+    try {
+      const res = await fetch('/api/admin/shifts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          staffName: document.getElementById('addStaff').value,
+          date: document.getElementById('addDate').value,
+          startTime: document.getElementById('addStart').value,
+          endTime: document.getElementById('addEnd').value
+        })
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        errBox.textContent = data.message || 'サーバーエラー';
+        errBox.style.display = 'block';
+        return;
+      }
+      document.getElementById('addModal').classList.remove('open');
+      loadWeek();
+    } catch (e) {
+      errBox.textContent = 'エラー: ' + e.message;
+      errBox.style.display = 'block';
+    }
+  });
+
+  async function deleteShift(id) {
+    if (!confirm('このシフトを削除しますか？')) return;
+    try {
+      const res = await fetch(`/api/admin/shifts/${id}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        alert('削除に失敗しました: ' + (data.message || res.status));
+        return;
+      }
+      loadWeek();
+    } catch (e) {
+      alert('削除に失敗しました: ' + e.message);
+    }
+  }
+
+  document.getElementById('prevWeekBtn').addEventListener('click', () => { weekStart = addDays(weekStart, -7); loadWeek(); });
+  document.getElementById('nextWeekBtn').addEventListener('click', () => { weekStart = addDays(weekStart, 7); loadWeek(); });
+
+  init();
+})();
+</script>
+</body>
+</html>

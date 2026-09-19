@@ -267,17 +267,12 @@ app.post('/api/reservations', (req, res) => {
 });
 
 // ----------------------------------------------------------------------------
-// DELETE /api/reservations/:id : GAS版のキャンセル運用（realname列に'キャンセル'を入れる方式）を踏襲
+// ★2026-09-19追加：予約のキャンセル・変更はオーナー管理画面からの操作に限定する
+//   （旧実装はセッションチェックも店舗スコープも無い公開エンドポイントだった。
+//    フロント側でも呼んでいなかったため、実害が出る前に
+//    /api/admin/reservations/:id （requireOwnerSession・店舗スコープ付き）へ
+//    差し替える。実装本体は requireOwnerSession 定義後のセクションにある）。
 // ----------------------------------------------------------------------------
-app.delete('/api/reservations/:id', (req, res) => {
-  try {
-    const id = Number(req.params.id);
-    db.prepare(`UPDATE reservations SET realname = 'キャンセル', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(id);
-    res.json({ success: true });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
 
 // ============================================================================
 // 認証 API（/api/auth/*）とオーナー用管理画面 API（/api/admin/*）
@@ -456,6 +451,190 @@ app.get('/api/admin/reservations', requireOwnerSession, (req, res) => {
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// ★2026-09-19追加：予約のキャンセル・変更（オーナー管理画面から操作する用）
+//
+// DELETE /api/admin/reservations/:id
+//   GAS版のキャンセル運用（realname列に'キャンセル'を入れる方式）を踏襲。
+//   物理削除はしない（履歴を残す・元のGAS運用と挙動を合わせるため）。
+// ----------------------------------------------------------------------------
+app.delete('/api/admin/reservations/:id', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const id = Number(req.params.id);
+
+    // ★店舗スコープ確認：他店の予約IDを推測して叩かれても操作できないようにする
+    const row = db.prepare('SELECT * FROM reservations WHERE id = ? AND store_id = ?').get(id, storeId);
+    if (!row) {
+      return res.status(404).json({ success: false, message: '対象の予約が見つかりません（他店舗のデータは操作できません）' });
+    }
+
+    db.prepare(`UPDATE reservations SET realname = 'キャンセル', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(id);
+    res.json({ success: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// PUT /api/admin/reservations/:id
+//   予約の変更（担当・メニュー・日付・時間・備考）。GAS版には「予約変更」操作が
+//   台帳の直接編集として存在していたため、それに相当する機能をオーナー管理画面に用意する。
+//   日付・時間・担当を変える場合は、二重予約防止のUNIQUE制約に必ず引っかかるように
+//   （予約作成時と同じ仕組みで）保護する。
+// ----------------------------------------------------------------------------
+app.put('/api/admin/reservations/:id', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const id = Number(req.params.id);
+    const data = req.body || {};
+
+    const existing = db.prepare('SELECT * FROM reservations WHERE id = ? AND store_id = ?').get(id, storeId);
+    if (!existing) {
+      return res.status(404).json({ success: false, message: '対象の予約が見つかりません（他店舗のデータは操作できません）' });
+    }
+    if (existing.realname === 'キャンセル') {
+      return res.status(400).json({ success: false, message: 'キャンセル済みの予約は編集できません' });
+    }
+    if (!data.staffName || !data.date || !data.time || !data.menu) {
+      return res.status(400).json({ success: false, message: 'staffName / date / time / menu は必須です' });
+    }
+
+    try {
+      db.prepare(`
+        UPDATE reservations
+        SET staff_name = @staff_name, menu = @menu, reservation_date = @reservation_date,
+            reservation_time = @reservation_time, note = @note, updated_at = CURRENT_TIMESTAMP
+        WHERE id = @id AND store_id = @store_id
+      `).run({
+        id, store_id: storeId,
+        staff_name: data.staffName, menu: data.menu,
+        reservation_date: data.date, reservation_time: data.time,
+        note: data.note || existing.note || ''
+      });
+    } catch (constraintErr) {
+      if (String(constraintErr.message).includes('UNIQUE constraint failed')) {
+        return res.status(409).json({
+          success: false,
+          isDoubleBooking: true,
+          message: 'その日時・担当は既に別の予約で埋まっています。別の枠を選んでください。'
+        });
+      }
+      throw constraintErr;
+    }
+
+    res.json({ success: true, message: '✅ 予約を変更しました' });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// ★2026-09-19追加：スタッフのシフト管理（オーナー管理画面から操作する用）
+//
+// GET /api/admin/staff
+//   シフト割当のスタッフ選択肢用に、店舗の全スタッフ（見習い・非表示スタッフ含む）を返す。
+//   /api/store のgetCustomerStaffList_は「予約フォームに出す人だけ」に絞るフィルタが
+//   入っているため、オーナー向けのシフト管理では別に用意する。
+// ----------------------------------------------------------------------------
+app.get('/api/admin/staff', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const rows = db.prepare(
+      'SELECT id, name, nickname, role, is_active FROM staff WHERE store_id = ? ORDER BY is_active DESC, name ASC'
+    ).all(storeId);
+    res.json({ staff: rows });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// GET /api/admin/shifts?from=&to=
+//   指定期間のシフトマスタ一覧を返す（省略時は本日から14日間）。
+// ----------------------------------------------------------------------------
+app.get('/api/admin/shifts', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const fmt = (d) => {
+      const y = d.getFullYear(); const m = String(d.getMonth() + 1).padStart(2, '0'); const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    };
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const from = req.query.from || fmt(today);
+    const toDefault = new Date(today); toDefault.setDate(toDefault.getDate() + 13);
+    const to = req.query.to || fmt(toDefault);
+
+    const rows = db.prepare(`
+      SELECT * FROM shift_master
+      WHERE store_id = ? AND shift_date >= ? AND shift_date <= ? AND is_active = 1
+      ORDER BY shift_date ASC, start_time ASC
+    `).all(storeId, from, to);
+
+    res.json({ from, to, shifts: rows });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// POST /api/admin/shifts
+//   シフトを1件追加する。{ staffName, date, startTime, endTime }
+// ----------------------------------------------------------------------------
+app.post('/api/admin/shifts', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const { staffName, date, startTime, endTime } = req.body || {};
+    if (!staffName || !date || !startTime || !endTime) {
+      return res.status(400).json({ success: false, message: 'staffName / date / startTime / endTime は必須です' });
+    }
+    if (startTime >= endTime) {
+      return res.status(400).json({ success: false, message: '終了時間は開始時間より後にしてください' });
+    }
+    const staffExists = db.prepare(
+      'SELECT 1 FROM staff WHERE store_id = ? AND name = ? AND is_active = 1'
+    ).get(storeId, staffName);
+    if (!staffExists) {
+      return res.status(400).json({ success: false, message: '在籍中のスタッフとして見つかりません' });
+    }
+
+    const info = db.prepare(`
+      INSERT INTO shift_master (store_id, staff_name, shift_date, start_time, end_time, is_active)
+      VALUES (?, ?, ?, ?, ?, 1)
+    `).run(storeId, staffName, date, startTime, endTime);
+
+    res.json({ success: true, shiftId: info.lastInsertRowid });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// DELETE /api/admin/shifts/:id
+//   シフトを1件削除する（is_active=0にする論理削除ではなく、シフトマスタ自体は
+//   「出勤予定そのもの」を表すシンプルなテーブルのため、物理削除で問題ない）。
+// ----------------------------------------------------------------------------
+app.delete('/api/admin/shifts/:id', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const id = Number(req.params.id);
+    const row = db.prepare('SELECT id FROM shift_master WHERE id = ? AND store_id = ?').get(id, storeId);
+    if (!row) {
+      return res.status(404).json({ success: false, message: '対象のシフトが見つかりません' });
+    }
+    db.prepare('DELETE FROM shift_master WHERE id = ?').run(id);
+    res.json({ success: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
   }
 });
 
