@@ -209,6 +209,22 @@ CREATE TABLE IF NOT EXISTS customers (
   last_visit_date    DATE,
   total_visits       INTEGER NOT NULL DEFAULT 0,
   memo               TEXT,
+  is_deleted         INTEGER NOT NULL DEFAULT 0,  -- ★2026-09-19追加：顧客統合機能。統合されて消える側は
+                                                    --   物理削除せずここを1にする（GAS版のdelFlag相当）。
+                                                    --   ★同日追加：詳細編集画面からの手動削除・復元にも
+                                                    --   この列をそのまま流用する（GAS版owner_ui.htmlの
+                                                    --   「顧客管理」画面の削除・復元ボタン相当）
+  deleted_at         DATETIME,
+  status             VARCHAR(10) NOT NULL DEFAULT 'active',  -- ★2026-09-19追加：'active'|'inactive'
+                                                    --   （GAS版COL_K_STATUS相当。予約フォームのスタッフ
+                                                    --   選択肢などから隠したいがデータは残したい顧客用。
+                                                    --   is_deletedとは別概念）
+  staff_name         VARCHAR(50),                 -- ★2026-09-19追加：担当スタッフ（GAS版H列相当）
+  is_keep_member     INTEGER NOT NULL DEFAULT 0,  -- ★2026-09-19追加：キープメンバー（GAS版I列相当）
+  opt_support        INTEGER NOT NULL DEFAULT 0,  -- ★2026-09-19追加：オプション対応可否（GAS版G列相当）
+  booking_blocked    INTEGER NOT NULL DEFAULT 0,  -- ★2026-09-19追加：この顧客からの予約をブロックする
+  notify_enabled     INTEGER NOT NULL DEFAULT 1,  -- ★2026-09-19追加：LINE通知の対象にするか
+  updated_by         VARCHAR(50),                 -- ★2026-09-19追加：最終更新者（スタッフ名）
   created_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(store_id, customer_id)
@@ -216,6 +232,46 @@ CREATE TABLE IF NOT EXISTS customers (
 
 CREATE INDEX IF NOT EXISTS idx_customers_store_cid      ON customers(store_id, customer_id);
 CREATE INDEX IF NOT EXISTS idx_customers_store_realname  ON customers(store_id, realname);
+CREATE INDEX IF NOT EXISTS idx_customers_store_phone     ON customers(store_id, phone);
+
+-- ============================================================================
+-- ★2026-09-19追加：顧客マスタの重複統合（マージ）機能
+--   GAS版のcustomer_merge_functions.gsに相当。電話番号が一致するのに顧客IDが
+--   異なる（＝重複登録の疑いがある）組み合わせを検知し、統合または「別人」として
+--   見送るかをオーナーが判断する。見送り済みの組み合わせは再度候補として出さない。
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS customer_merge_dismissals (
+  id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+  store_id           INTEGER NOT NULL REFERENCES stores(id),
+  customer_id_a      VARCHAR(50) NOT NULL,  -- ★正規化のため常に customer_id_a < customer_id_b の順で保存
+  customer_id_b      VARCHAR(50) NOT NULL,
+  dismissed_by       VARCHAR(50),
+  dismissed_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(store_id, customer_id_a, customer_id_b)
+);
+
+-- ============================================================================
+-- ★2026-09-19追加：メニューマスタ（GAS版owner_ui.htmlの「メニューマスタ」パネル・
+--   SHEET_MENU相当）。それまでお客様予約フォームのメニュー選択肢は
+--   public/index.htmlに直接ハードコードされた4件の固定文字列だったが、
+--   オーナー管理画面から料金・所要時間込みで追加/編集/非表示にできるようにする。
+--   GAS版は親メニュー＋内訳（parent/child）の階層構造を持つが、このプロトタイプでは
+--   フラットな一覧のみに簡略化している（親子内訳は将来の拡張候補）。
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS menu_items (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  store_id       INTEGER NOT NULL REFERENCES stores(id),
+  category       VARCHAR(30) NOT NULL,   -- 'メインメニュー' / '施術系オプション' / 'オプション'
+  name           VARCHAR(100) NOT NULL,
+  duration_min   INTEGER NOT NULL DEFAULT 0,
+  price          INTEGER NOT NULL DEFAULT 0,
+  target         VARCHAR(20) NOT NULL DEFAULT '全員',  -- '全員' / '初回' / 'キープメンバー' / 'ビジター'
+  is_active      INTEGER NOT NULL DEFAULT 1,
+  display_order  INTEGER NOT NULL DEFAULT 0,
+  created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_menu_items_store ON menu_items(store_id, display_order);
 
 -- インデックス（検索性能用。日付・店舗・スタッフでの絞り込みが多いため）
 CREATE INDEX IF NOT EXISTS idx_reservations_store_date ON reservations(store_id, reservation_date);

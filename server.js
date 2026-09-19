@@ -408,8 +408,11 @@ app.get('/api/admin/customers', requireOwnerSession, (req, res) => {
     const limit = Math.min(Number(req.query.limit) || 50, 200);
     const offset = Number(req.query.offset) || 0;
     const q = (req.query.q || '').trim();
+    // ★2026-09-19追加：顧客管理画面（削除済みも含めた一覧表示）向けに、
+    //   includeDeleted=1のときだけ論理削除済みの顧客も含めて返す。
+    const includeDeleted = req.query.includeDeleted === '1';
 
-    let where = 'store_id = ? AND is_deleted = 0';
+    let where = includeDeleted ? 'store_id = ?' : 'store_id = ? AND is_deleted = 0';
     const params = [storeId];
     if (q) {
       where += ' AND (realname LIKE ? OR kana LIKE ? OR phone LIKE ?)';
@@ -809,6 +812,101 @@ app.post('/api/admin/customers/merge', requireOwnerSession, (req, res) => {
     const [a, b] = [String(keepCustomerId), String(mergeCustomerId)].sort();
     db.prepare('DELETE FROM customer_merge_dismissals WHERE store_id = ? AND customer_id_a = ? AND customer_id_b = ?').run(storeId, a, b);
     res.json(result);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// ★2026-09-19追加：顧客マスタの詳細編集・削除・復元
+//   GAS版owner_ui.html「顧客管理」画面の編集モーダル（saveCustomerRecord/
+//   deleteCustomerRecord/restoreCustomerRecord、いずれもreservation_form_functions.gs）相当。
+//   統合（マージ）機能とは別の、1件ずつの通常編集・論理削除・復元を行う。
+//
+// PUT /api/admin/customers/:customerId
+//   { realname, kana, phone, addr(※このプロトタイプにはaddr列が無いためmemoに含める運用),
+//     totalVisits, staffName, isKeepMember, optSupport, memo, status, bookingBlocked, notifyEnabled }
+// DELETE /api/admin/customers/:customerId  : 論理削除（復元可能）
+// POST   /api/admin/customers/:customerId/restore : 復元
+// ----------------------------------------------------------------------------
+function findCustomerByCid_(storeId, customerId) {
+  return db.prepare('SELECT * FROM customers WHERE store_id = ? AND customer_id = ?').get(storeId, String(customerId));
+}
+
+app.put('/api/admin/customers/:customerId', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const existing = findCustomerByCid_(storeId, req.params.customerId);
+    if (!existing) {
+      return res.status(404).json({ success: false, message: '対象の顧客が見つかりません（他店舗のデータは操作できません）' });
+    }
+    const data = req.body || {};
+    if (!data.realname || !String(data.realname).trim()) {
+      return res.status(400).json({ success: false, message: '氏名は必須です' });
+    }
+    // GAS版と同様、電話番号はハイフン・全角を除去した半角数字のみに正規化して保存する
+    const telDigits = String(data.phone || '').replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0)).replace(/[^0-9]/g, '');
+    if (telDigits && !/^0\d{9,10}$/.test(telDigits)) {
+      return res.status(400).json({ success: false, message: '電話番号は0から始まる10桁または11桁の数字で入力してください（ハイフン不要）' });
+    }
+    if (data.status && !['active', 'inactive'].includes(data.status)) {
+      return res.status(400).json({ success: false, message: 'statusはactiveかinactiveのいずれかで指定してください' });
+    }
+
+    db.prepare(`
+      UPDATE customers
+      SET realname = @realname, kana = @kana, phone = @phone, total_visits = @total_visits,
+          staff_name = @staff_name, is_keep_member = @is_keep_member, opt_support = @opt_support,
+          memo = @memo, status = @status, booking_blocked = @booking_blocked, notify_enabled = @notify_enabled,
+          updated_by = @updated_by, updated_at = CURRENT_TIMESTAMP
+      WHERE store_id = @store_id AND customer_id = @customer_id
+    `).run({
+      store_id: storeId, customer_id: existing.customer_id,
+      realname: data.realname.trim(), kana: data.kana || '', phone: telDigits,
+      total_visits: Number(data.totalVisits) || 0, staff_name: data.staffName || '',
+      is_keep_member: data.isKeepMember ? 1 : 0, opt_support: data.optSupport ? 1 : 0,
+      memo: data.memo || '', status: data.status === 'inactive' ? 'inactive' : 'active',
+      booking_blocked: data.bookingBlocked ? 1 : 0, notify_enabled: data.notifyEnabled === false ? 0 : 1,
+      updated_by: req.session.staff.name
+    });
+    res.json({ success: true, message: '✅ 顧客情報を保存しました' });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.delete('/api/admin/customers/:customerId', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const existing = findCustomerByCid_(storeId, req.params.customerId);
+    if (!existing) {
+      return res.status(404).json({ success: false, message: '対象の顧客が見つかりません（他店舗のデータは操作できません）' });
+    }
+    db.prepare(`
+      UPDATE customers SET is_deleted = 1, deleted_at = CURRENT_TIMESTAMP, updated_by = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE store_id = ? AND customer_id = ?
+    `).run(req.session.staff.name, storeId, existing.customer_id);
+    res.json({ success: true, message: '🗑️ 顧客を削除しました（復元可能）' });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post('/api/admin/customers/:customerId/restore', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const existing = findCustomerByCid_(storeId, req.params.customerId);
+    if (!existing) {
+      return res.status(404).json({ success: false, message: '対象の顧客が見つかりません（他店舗のデータは操作できません）' });
+    }
+    db.prepare(`
+      UPDATE customers SET is_deleted = 0, deleted_at = NULL, updated_by = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE store_id = ? AND customer_id = ?
+    `).run(req.session.staff.name, storeId, existing.customer_id);
+    res.json({ success: true, message: '↩️ 顧客を復元しました' });
   } catch (e) {
     console.error(e);
     res.status(500).json({ success: false, error: e.message });

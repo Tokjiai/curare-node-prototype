@@ -53,6 +53,23 @@
   #loadingMsg{text-align:center; color:var(--ink-soft); font-size:13px; padding:60px 0;}
   .empty{color:var(--ink-soft); font-size:13px; padding:14px 0; text-align:center;}
 
+  .row-actions{display:flex; gap:6px;}
+  .row-btn{border:1px solid var(--line); background:#fff; border-radius:7px; padding:5px 9px; font-size:11.5px; cursor:pointer; font-family:inherit; color:var(--ink-soft);}
+  .row-btn:hover{background:var(--accent-soft); color:var(--accent); border-color:var(--accent-soft);}
+  .row-btn.danger:hover{background:var(--warn-soft); color:var(--warn); border-color:var(--warn-soft);}
+
+  .modal-overlay{display:none; position:fixed; inset:0; background:rgba(43,43,39,0.45); align-items:center; justify-content:center; z-index:50; padding:16px;}
+  .modal-overlay.open{display:flex;}
+  .modal-box{background:var(--panel); border-radius:var(--radius); padding:22px 22px 18px; width:100%; max-width:380px; box-shadow:0 12px 40px rgba(0,0,0,0.18);}
+  .modal-title{font-size:15px; font-weight:700; margin-bottom:14px;}
+  .modal-field{margin-bottom:12px;}
+  .modal-field label{display:block; font-size:11px; color:var(--ink-soft); font-weight:600; margin-bottom:4px;}
+  .modal-field input, .modal-field select{width:100%; border:1px solid var(--line); border-radius:8px; padding:9px 10px; font-size:13.5px; font-family:inherit;}
+  .modal-actions{display:flex; justify-content:flex-end; gap:8px; margin-top:16px;}
+  .modal-btn-cancel{background:#fff; border:1px solid var(--line); border-radius:9px; padding:9px 16px; font-size:13px; cursor:pointer; font-family:inherit; color:var(--ink-soft);}
+  .modal-btn-ok{background:var(--accent); color:#fff; border:none; border-radius:9px; padding:9px 16px; font-size:13px; font-weight:600; cursor:pointer; font-family:inherit;}
+  .modal-err{color:var(--warn); font-size:12px; margin-top:8px; display:none;}
+
   @media (max-width:760px){
     .shell.ready{grid-template-columns:1fr;}
     .sidebar{flex-direction:row; flex-wrap:wrap; align-items:center; padding:12px 14px;}
@@ -76,15 +93,21 @@
         <a href="index.html" class="nav-item">📊 ダッシュボード</a>
         <a href="customers.html" class="nav-item">👥 顧客マスタ</a>
         <a href="reservations.html" class="nav-item active">📅 予約データ</a>
+        <a href="shifts.html" class="nav-item">🗓️ シフト管理</a>
+        <a href="staff.html" class="nav-item">🧑‍🤝‍🧑 スタッフ管理</a>
+        <a href="settings.html" class="nav-item">⚙️ 店舗設定</a>
         <a href="../index.html" class="nav-item">🔗 予約画面へ</a>
         <a href="#" id="logoutLink" class="nav-item warn">🚪 ログアウト</a>
       </div>
     </div>
 
     <div class="main">
-      <div class="page-head">
-        <h1>予約データ</h1>
-        <p>日付範囲・担当・氏名で絞り込みできます</p>
+      <div class="page-head" style="display:flex; align-items:flex-end; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+        <div>
+          <h1>予約データ</h1>
+          <p>日付範囲・担当・氏名で絞り込みできます</p>
+        </div>
+        <button class="btn-save" id="newResBtn" type="button">＋ 新規予約を追加（電話予約など）</button>
       </div>
 
       <div class="panel">
@@ -113,7 +136,7 @@
 
         <table>
           <thead>
-            <tr><th>日付</th><th>時刻</th><th>担当</th><th>氏名</th><th>メニュー</th><th>ステータス</th></tr>
+            <tr><th>日付</th><th>時刻</th><th>担当</th><th>氏名</th><th>メニュー</th><th>ステータス</th><th>操作</th></tr>
           </thead>
           <tbody id="tbody"></tbody>
         </table>
@@ -124,6 +147,79 @@
           <span id="pageLabel"></span>
           <button id="nextBtn" type="button">次へ →</button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 予約編集モーダル -->
+  <div class="modal-overlay" id="editModal">
+    <div class="modal-box">
+      <div class="modal-title">✏️ 予約を変更</div>
+      <div class="modal-field">
+        <label>担当スタッフ（本名）</label>
+        <input type="text" id="editStaff">
+      </div>
+      <div class="modal-field">
+        <label>メニュー</label>
+        <input type="text" id="editMenu">
+      </div>
+      <div class="modal-field">
+        <label>日付</label>
+        <input type="date" id="editDate">
+      </div>
+      <div class="modal-field">
+        <label>時刻</label>
+        <input type="time" id="editTime">
+      </div>
+      <div class="modal-field">
+        <label>備考</label>
+        <input type="text" id="editNote">
+      </div>
+      <div class="modal-err" id="editErr"></div>
+      <div class="modal-actions">
+        <button class="modal-btn-cancel" type="button" id="editCancelBtn">閉じる</button>
+        <button class="modal-btn-ok" type="button" id="editSaveBtn">保存する</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 新規予約追加モーダル（電話予約・当日飛び込み対応） -->
+  <div class="modal-overlay" id="newModal">
+    <div class="modal-box">
+      <div class="modal-title">＋ 新規予約を追加</div>
+      <p style="font-size:12px; color:var(--ink-soft); margin-bottom:10px;">電話予約や当日飛び込みなど、お客様ご自身が予約フォームを操作しない場合にここから登録します。</p>
+      <div class="modal-field">
+        <label>お客様氏名</label>
+        <input type="text" id="newRealname">
+      </div>
+      <div class="modal-field">
+        <label>フリガナ（任意）</label>
+        <input type="text" id="newKana">
+      </div>
+      <div class="modal-field">
+        <label>担当スタッフ（本名）</label>
+        <input type="text" id="newStaff">
+      </div>
+      <div class="modal-field">
+        <label>メニュー</label>
+        <input type="text" id="newMenu">
+      </div>
+      <div class="modal-field">
+        <label>日付</label>
+        <input type="date" id="newDate">
+      </div>
+      <div class="modal-field">
+        <label>時刻</label>
+        <input type="time" id="newTime">
+      </div>
+      <div class="modal-field">
+        <label>備考</label>
+        <input type="text" id="newNote">
+      </div>
+      <div class="modal-err" id="newErr"></div>
+      <div class="modal-actions">
+        <button class="modal-btn-cancel" type="button" id="newCancelBtn">閉じる</button>
+        <button class="modal-btn-ok" type="button" id="newSaveBtn">登録する</button>
       </div>
     </div>
   </div>
@@ -178,11 +274,15 @@
     render(data.reservations);
   }
 
+  let rowsById = {};
+
   function render(rows) {
     const tbody = document.getElementById('tbody');
     tbody.innerHTML = '';
+    rowsById = {};
     document.getElementById('emptyMsg').style.display = rows.length === 0 ? 'block' : 'none';
     rows.forEach((r) => {
+      rowsById[r.id] = r;
       const isCancel = r.realname === 'キャンセル';
       const tr = document.createElement('tr');
       tr.innerHTML = `
@@ -192,8 +292,22 @@
         <td>${esc(r.realname)}</td>
         <td>${esc(r.menu || '')}</td>
         <td class="${isCancel ? 'status-キャンセル' : ''}">${isCancel ? 'キャンセル' : esc(r.status || '確定')}</td>
+        <td>
+          ${isCancel ? '' : `
+            <div class="row-actions">
+              <button class="row-btn" type="button" data-edit="${r.id}">編集</button>
+              <button class="row-btn danger" type="button" data-cancel="${r.id}">キャンセル</button>
+            </div>
+          `}
+        </td>
       `;
       tbody.appendChild(tr);
+    });
+    tbody.querySelectorAll('[data-edit]').forEach((btn) => {
+      btn.addEventListener('click', () => openEditModal(rowsById[Number(btn.dataset.edit)]));
+    });
+    tbody.querySelectorAll('[data-cancel]').forEach((btn) => {
+      btn.addEventListener('click', () => cancelReservation(Number(btn.dataset.cancel)));
     });
     const page = Math.floor(offset / limit) + 1;
     const maxPage = Math.max(1, Math.ceil(total / limit));
@@ -205,6 +319,132 @@
   function esc(v) {
     return String(v == null ? '' : v).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   }
+
+  let editingId = null;
+
+  function openEditModal(r) {
+    editingId = r.id;
+    document.getElementById('editStaff').value = r.staff_name || '';
+    document.getElementById('editMenu').value = r.menu || '';
+    document.getElementById('editDate').value = r.reservation_date || '';
+    document.getElementById('editTime').value = r.reservation_time || '';
+    document.getElementById('editNote').value = r.note || '';
+    document.getElementById('editErr').style.display = 'none';
+    document.getElementById('editModal').classList.add('open');
+  }
+  function closeEditModal() {
+    document.getElementById('editModal').classList.remove('open');
+    editingId = null;
+  }
+  document.getElementById('editCancelBtn').addEventListener('click', closeEditModal);
+
+  document.getElementById('editSaveBtn').addEventListener('click', async () => {
+    const errBox = document.getElementById('editErr');
+    errBox.style.display = 'none';
+    try {
+      const res = await fetch(`/api/admin/reservations/${editingId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          staffName: document.getElementById('editStaff').value.trim(),
+          menu: document.getElementById('editMenu').value.trim(),
+          date: document.getElementById('editDate').value,
+          time: document.getElementById('editTime').value,
+          note: document.getElementById('editNote').value.trim()
+        })
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        errBox.textContent = data.message || 'サーバーエラー';
+        errBox.style.display = 'block';
+        return;
+      }
+      closeEditModal();
+      load();
+    } catch (e) {
+      errBox.textContent = 'エラー: ' + e.message;
+      errBox.style.display = 'block';
+    }
+  });
+
+  async function cancelReservation(id) {
+    const r = rowsById[id];
+    if (!confirm(`${r.realname}様（${r.reservation_date} ${r.reservation_time}）の予約をキャンセルしますか？`)) return;
+    try {
+      const res = await fetch(`/api/admin/reservations/${id}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        alert('キャンセルに失敗しました: ' + (data.message || res.status));
+        return;
+      }
+      load();
+    } catch (e) {
+      alert('キャンセルに失敗しました: ' + e.message);
+    }
+  }
+
+  function openNewModal() {
+    document.getElementById('newRealname').value = '';
+    document.getElementById('newKana').value = '';
+    document.getElementById('newStaff').value = '';
+    document.getElementById('newMenu').value = '';
+    document.getElementById('newDate').value = document.getElementById('fromInput').value || '';
+    document.getElementById('newTime').value = '';
+    document.getElementById('newNote').value = '';
+    document.getElementById('newErr').style.display = 'none';
+    document.getElementById('newModal').classList.add('open');
+  }
+  function closeNewModal() {
+    document.getElementById('newModal').classList.remove('open');
+  }
+  document.getElementById('newResBtn').addEventListener('click', openNewModal);
+  document.getElementById('newCancelBtn').addEventListener('click', closeNewModal);
+
+  async function submitNewReservation(ownerOverride) {
+    const errBox = document.getElementById('newErr');
+    errBox.style.display = 'none';
+    const payload = {
+      realname: document.getElementById('newRealname').value.trim(),
+      kana: document.getElementById('newKana').value.trim(),
+      staffName: document.getElementById('newStaff').value.trim(),
+      menu: document.getElementById('newMenu').value.trim(),
+      date: document.getElementById('newDate').value,
+      time: document.getElementById('newTime').value,
+      note: document.getElementById('newNote').value.trim(),
+      ownerOverride: !!ownerOverride
+    };
+    if (!payload.realname || !payload.staffName || !payload.menu || !payload.date || !payload.time) {
+      errBox.textContent = 'お客様氏名・担当スタッフ・メニュー・日付・時刻は必須です';
+      errBox.style.display = 'block';
+      return;
+    }
+    try {
+      const res = await fetch('/api/admin/reservations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (data.isLimitWarning) {
+        if (confirm(data.message + '\n\nこのまま登録しますか？')) {
+          await submitNewReservation(true);
+        }
+        return;
+      }
+      if (!res.ok || !data.success) {
+        errBox.textContent = data.message || 'サーバーエラー';
+        errBox.style.display = 'block';
+        return;
+      }
+      closeNewModal();
+      offset = 0;
+      load();
+    } catch (e) {
+      errBox.textContent = 'エラー: ' + e.message;
+      errBox.style.display = 'block';
+    }
+  }
+  document.getElementById('newSaveBtn').addEventListener('click', () => submitNewReservation(false));
 
   document.getElementById('searchBtn').addEventListener('click', () => { offset = 0; load(); });
   document.getElementById('prevBtn').addEventListener('click', () => { offset = Math.max(0, offset - limit); load(); });

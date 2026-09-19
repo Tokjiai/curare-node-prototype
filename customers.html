@@ -53,6 +53,45 @@
   #loadingMsg{text-align:center; color:var(--ink-soft); font-size:13px; padding:60px 0;}
   .empty{color:var(--ink-soft); font-size:13px; padding:14px 0; text-align:center;}
 
+  .merge-panel{background:var(--warn-soft); border-color:transparent;}
+  .merge-panel h2{color:var(--warn);}
+  .merge-item{background:#fff; border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin-bottom:10px;}
+  .merge-item .pair{display:flex; gap:14px; flex-wrap:wrap; font-size:13px; margin-bottom:10px;}
+  .merge-card{flex:1; min-width:180px; background:var(--bg); border-radius:8px; padding:8px 10px;}
+  .merge-card .cid{font-size:11px; color:var(--ink-faint); font-weight:700;}
+  .merge-card .rn{font-weight:600; margin:2px 0;}
+  .merge-card .sub{font-size:12px; color:var(--ink-soft);}
+  .merge-actions{display:flex; gap:8px; align-items:center;}
+  .merge-actions button{padding:7px 12px; border-radius:8px; border:1px solid var(--line); background:#fff; font-size:12.5px; cursor:pointer; font-family:inherit;}
+  .merge-actions .btn-merge{background:var(--accent); color:#fff; border-color:var(--accent); font-weight:600;}
+  .merge-actions .keep-label{font-size:12px; color:var(--ink-soft);}
+  .merge-actions select{padding:6px 8px; border-radius:8px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;}
+
+  .row-deleted{opacity:0.5;}
+  .status-badge{font-size:10.5px; font-weight:700; border-radius:6px; padding:2px 6px; margin-left:6px;}
+  .status-badge.inactive{background:var(--warn-soft); color:var(--warn);}
+  .status-badge.deleted{background:#EEE; color:var(--ink-soft);}
+  .btn-edit{padding:5px 10px; border-radius:7px; border:1px solid var(--line); background:#fff; font-size:12px; cursor:pointer; font-family:inherit;}
+  .check-row{display:flex; align-items:center; gap:6px; font-size:12.5px; color:var(--ink-soft); margin-bottom:10px;}
+
+  .overlay{display:none; position:fixed; inset:0; background:rgba(43,43,39,0.45); align-items:center; justify-content:center; z-index:50; padding:20px;}
+  .overlay.show{display:flex;}
+  .modal{background:#fff; border-radius:16px; padding:22px 24px; width:100%; max-width:560px; max-height:88vh; overflow-y:auto;}
+  .modal h3{font-size:15px; font-weight:700; margin-bottom:14px;}
+  .modal-grid{display:grid; grid-template-columns:1fr 1fr; gap:12px;}
+  .modal-grid label{display:block; font-size:11px; color:var(--ink-soft); margin-bottom:4px;}
+  .modal-grid input[type=text], .modal-grid input[type=number], .modal-grid select, .modal-grid textarea{
+    width:100%; padding:7px 9px; border:1px solid var(--line); border-radius:8px; font-family:inherit; font-size:13px;
+  }
+  .modal-grid textarea{resize:vertical; min-height:56px;}
+  .modal-grid .span2{grid-column:1 / -1;}
+  .modal-checks{display:flex; flex-wrap:wrap; gap:14px; margin-top:14px; font-size:12.5px;}
+  .modal-checks label{display:flex; align-items:center; gap:6px; color:var(--ink);}
+  .modal-readonly{font-size:11.5px; color:var(--ink-faint); margin-top:12px; line-height:1.7;}
+  .modal-actions{display:flex; justify-content:space-between; align-items:center; margin-top:18px; gap:10px; flex-wrap:wrap;}
+  .modal-actions-right{display:flex; gap:8px;}
+  .modal-msg{font-size:12.5px; color:var(--accent);}
+
   @media (max-width:760px){
     .shell.ready{grid-template-columns:1fr;}
     .sidebar{flex-direction:row; flex-wrap:wrap; align-items:center; padding:12px 14px;}
@@ -75,6 +114,9 @@
         <a href="index.html" class="nav-item">📊 ダッシュボード</a>
         <a href="customers.html" class="nav-item active">👥 顧客マスタ</a>
         <a href="reservations.html" class="nav-item">📅 予約データ</a>
+        <a href="shifts.html" class="nav-item">🗓️ シフト管理</a>
+        <a href="staff.html" class="nav-item">🧑‍🤝‍🧑 スタッフ管理</a>
+        <a href="settings.html" class="nav-item">⚙️ 店舗設定</a>
         <a href="../index.html" class="nav-item">🔗 予約画面へ</a>
         <a href="#" id="logoutLink" class="nav-item warn">🚪 ログアウト</a>
       </div>
@@ -86,18 +128,28 @@
         <p>氏名・フリガナ・電話番号で検索できます</p>
       </div>
 
+      <div class="panel merge-panel" id="mergePanel" style="display:none;">
+        <h2>⚠️ 重複の可能性がある顧客</h2>
+        <p style="font-size:12.5px; color:var(--ink-soft); margin-bottom:10px;">電話番号が同じなのに顧客IDが異なる組み合わせです。同一人物なら「統合する」、別人なら「別人として見送る」を選んでください。</p>
+        <div id="mergeList"></div>
+      </div>
+
       <div class="panel">
         <h2>検索</h2>
         <div class="search-row">
           <div class="cm-search"><input type="text" id="qInput" placeholder="例：田中 / タナカ / 090"></div>
           <button class="btn-save" id="searchBtn" type="button">検索</button>
         </div>
+        <div class="check-row">
+          <input type="checkbox" id="includeDeletedChk">
+          <label for="includeDeletedChk">削除済みの顧客も表示する（復元できます）</label>
+        </div>
 
         <table>
           <thead>
             <tr>
               <th>顧客ID</th><th>氏名</th><th>フリガナ</th><th>電話番号</th>
-              <th>最終来店日</th><th>来店回数</th><th>メモ</th>
+              <th>最終来店日</th><th>来店回数</th><th>メモ</th><th></th>
             </tr>
           </thead>
           <tbody id="tbody"></tbody>
@@ -113,6 +165,61 @@
     </div>
   </div>
 
+  <div class="overlay" id="cmOverlay">
+    <div class="modal">
+      <h3 id="cmModalTitle">顧客編集</h3>
+      <div class="modal-grid">
+        <div>
+          <label>氏名</label>
+          <input type="text" id="cm-name">
+        </div>
+        <div>
+          <label>フリガナ</label>
+          <input type="text" id="cm-kana">
+        </div>
+        <div>
+          <label>電話番号</label>
+          <input type="text" id="cm-tel" placeholder="09012345678（ハイフン不要）">
+        </div>
+        <div>
+          <label>来店回数</label>
+          <input type="number" id="cm-visits" min="0">
+        </div>
+        <div>
+          <label>担当スタッフ</label>
+          <input type="text" id="cm-staff">
+        </div>
+        <div>
+          <label>ステータス</label>
+          <select id="cm-status">
+            <option value="active">アクティブ</option>
+            <option value="inactive">非アクティブ（スタッフ選択肢等から除外）</option>
+          </select>
+        </div>
+        <div class="span2">
+          <label>メモ</label>
+          <textarea id="cm-memo"></textarea>
+        </div>
+      </div>
+      <div class="modal-checks">
+        <label><input type="checkbox" id="cm-keep"> キープメンバー</label>
+        <label><input type="checkbox" id="cm-opt"> オプション対応可</label>
+        <label><input type="checkbox" id="cm-block"> 予約ブロック（この顧客からの予約を受け付けない）</label>
+        <label><input type="checkbox" id="cm-notify"> LINE通知を送る</label>
+      </div>
+      <div class="modal-readonly" id="cmReadonlyInfo"></div>
+      <div class="modal-msg" id="cmModalMsg"></div>
+      <div class="err" id="cmModalErr" style="display:none;"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn-save" id="cmDeleteBtn" style="background:var(--warn);">この顧客を削除（論理削除）</button>
+        <div class="modal-actions-right">
+          <button type="button" class="btn-edit" id="cmCancelBtn">キャンセル</button>
+          <button type="button" class="btn-save" id="cmSaveBtn">保存する</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
 <script>
 (function(){
   const limit = 50;
@@ -122,10 +229,14 @@
   const loadingMsg = document.getElementById('loadingMsg');
   const shell = document.getElementById('shell');
 
-  async function adminFetch(url) {
-    const res = await fetch(url);
+  async function adminFetch(url, opts) {
+    const res = await fetch(url, opts);
     if (res.status === 401) throw new Error('UNAUTHORIZED');
-    if (!res.ok) throw new Error('サーバーエラー: ' + res.status);
+    if (!res.ok) {
+      let msg = 'サーバーエラー: ' + res.status;
+      try { const body = await res.json(); if (body && body.message) msg = body.message; } catch (_) {}
+      throw new Error(msg);
+    }
     return res.json();
   }
 
@@ -133,11 +244,76 @@
     try {
       await adminFetch('/api/auth/me');
       await load();
+      await loadMergeCandidates();
       loadingMsg.style.display = 'none';
       shell.classList.add('ready');
     } catch (e) {
       window.location.href = '/admin/login.html';
     }
+  }
+
+  async function loadMergeCandidates() {
+    const data = await adminFetch('/api/admin/customers/merge-candidates');
+    const panel = document.getElementById('mergePanel');
+    const list = document.getElementById('mergeList');
+    const candidates = data.candidates || [];
+    if (candidates.length === 0) {
+      panel.style.display = 'none';
+      return;
+    }
+    panel.style.display = 'block';
+    list.innerHTML = '';
+    candidates.forEach((c) => {
+      const div = document.createElement('div');
+      div.className = 'merge-item';
+      const idA = c.customerA.customer_id, idB = c.customerB.customer_id;
+      div.innerHTML = `
+        <div class="pair">
+          <div class="merge-card">
+            <div class="cid">${esc(idA)}</div>
+            <div class="rn">${esc(c.customerA.realname)}</div>
+            <div class="sub">${esc(c.customerA.kana || '')} ／ ${esc(c.customerA.phone || '')}</div>
+          </div>
+          <div class="merge-card">
+            <div class="cid">${esc(idB)}</div>
+            <div class="rn">${esc(c.customerB.realname)}</div>
+            <div class="sub">${esc(c.customerB.kana || '')} ／ ${esc(c.customerB.phone || '')}</div>
+          </div>
+        </div>
+        <div class="merge-actions">
+          <span class="keep-label">どちらを残す？</span>
+          <select class="keepSelect">
+            <option value="${esc(idA)}">${esc(idA)}（${esc(c.customerA.realname)}）を残す</option>
+            <option value="${esc(idB)}">${esc(idB)}（${esc(c.customerB.realname)}）を残す</option>
+          </select>
+          <button type="button" class="btn-merge" data-a="${esc(idA)}" data-b="${esc(idB)}">統合する</button>
+          <button type="button" class="btn-dismiss" data-a="${esc(idA)}" data-b="${esc(idB)}">別人として見送る</button>
+        </div>
+      `;
+      div.querySelector('.btn-merge').addEventListener('click', async (e) => {
+        const keep = div.querySelector('.keepSelect').value;
+        const mergeId = keep === idA ? idB : idA;
+        if (!confirm(`${mergeId} を ${keep} に統合します。よろしいですか？`)) return;
+        try {
+          await adminFetch('/api/admin/customers/merge', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ keepCustomerId: keep, mergeCustomerId: mergeId })
+          });
+          await load();
+          await loadMergeCandidates();
+        } catch (err) { alert(err.message); }
+      });
+      div.querySelector('.btn-dismiss').addEventListener('click', async () => {
+        try {
+          await adminFetch('/api/admin/customers/merge-candidates/dismiss', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ customerIdA: idA, customerIdB: idB })
+          });
+          await loadMergeCandidates();
+        } catch (err) { alert(err.message); }
+      });
+      list.appendChild(div);
+    });
   }
 
   document.getElementById('logoutLink').addEventListener('click', async (e) => {
@@ -146,13 +322,18 @@
     window.location.href = '/admin/login.html';
   });
 
+  let currentRows = [];
+
   async function load() {
     const q = document.getElementById('qInput') ? document.getElementById('qInput').value.trim() : '';
+    const includeDeleted = document.getElementById('includeDeletedChk').checked;
     // ★storeパラメータは廃止：サーバー側でセッションの店舗に固定される
     const params = new URLSearchParams({ limit, offset });
     if (q) params.set('q', q);
+    if (includeDeleted) params.set('includeDeleted', '1');
     const data = await adminFetch('/api/admin/customers?' + params.toString());
     total = data.total;
+    currentRows = data.customers;
     render(data.customers);
   }
 
@@ -162,15 +343,21 @@
     document.getElementById('emptyMsg').style.display = rows.length === 0 ? 'block' : 'none';
     rows.forEach((c) => {
       const tr = document.createElement('tr');
+      if (c.is_deleted) tr.className = 'row-deleted';
+      let badges = '';
+      if (c.status === 'inactive') badges += '<span class="status-badge inactive">非アクティブ</span>';
+      if (c.is_deleted) badges += '<span class="status-badge deleted">削除済み</span>';
       tr.innerHTML = `
         <td>${esc(c.customer_id)}</td>
-        <td>${esc(c.realname)}</td>
+        <td>${esc(c.realname)}${badges}</td>
         <td>${esc(c.kana || '')}</td>
         <td>${esc(c.phone || '')}</td>
         <td>${esc(c.last_visit_date || '')}</td>
         <td>${esc(c.total_visits)}</td>
         <td class="memo">${esc(c.memo || '')}</td>
+        <td><button type="button" class="btn-edit" data-cid="${esc(c.customer_id)}">編集</button></td>
       `;
+      tr.querySelector('.btn-edit').addEventListener('click', () => openCustomerModal(c.customer_id));
       tbody.appendChild(tr);
     });
     const page = Math.floor(offset / limit) + 1;
@@ -184,10 +371,107 @@
     return String(v == null ? '' : v).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   }
 
+  // ---------- 顧客編集モーダル ----------
+  let cmEditingId = null;
+
+  function openCustomerModal(customerId) {
+    const c = currentRows.find((x) => x.customer_id === customerId);
+    if (!c) return;
+    cmEditingId = customerId;
+    document.getElementById('cmModalTitle').textContent = '顧客編集：' + c.realname;
+    document.getElementById('cm-name').value = c.realname || '';
+    document.getElementById('cm-kana').value = c.kana || '';
+    document.getElementById('cm-tel').value = c.phone || '';
+    document.getElementById('cm-visits').value = c.total_visits || 0;
+    document.getElementById('cm-staff').value = c.staff_name || '';
+    document.getElementById('cm-status').value = c.status === 'inactive' ? 'inactive' : 'active';
+    document.getElementById('cm-memo').value = c.memo || '';
+    document.getElementById('cm-keep').checked = !!c.is_keep_member;
+    document.getElementById('cm-opt').checked = !!c.opt_support;
+    document.getElementById('cm-block').checked = !!c.booking_blocked;
+    document.getElementById('cm-notify').checked = c.notify_enabled !== 0;
+    document.getElementById('cmReadonlyInfo').textContent =
+      `顧客ID：${c.customer_id} ／ LINE：${c.line_name ? c.line_name + '（連携済み）' : '未連携'} ／ 最終更新：${c.updated_by || '(未更新)'} ${c.updated_at ? '(' + c.updated_at + ')' : ''}`;
+    document.getElementById('cmModalMsg').textContent = '';
+    document.getElementById('cmModalErr').style.display = 'none';
+    const delBtn = document.getElementById('cmDeleteBtn');
+    delBtn.textContent = c.is_deleted ? 'この顧客を復元' : 'この顧客を削除（論理削除）';
+    document.getElementById('cmOverlay').classList.add('show');
+  }
+
+  function closeCustomerModal() {
+    document.getElementById('cmOverlay').classList.remove('show');
+    cmEditingId = null;
+  }
+
+  document.getElementById('cmCancelBtn').addEventListener('click', closeCustomerModal);
+  document.getElementById('cmOverlay').addEventListener('click', (e) => {
+    if (e.target.id === 'cmOverlay') closeCustomerModal();
+  });
+
+  document.getElementById('cmSaveBtn').addEventListener('click', async () => {
+    if (!cmEditingId) return;
+    const errBox = document.getElementById('cmModalErr');
+    errBox.style.display = 'none';
+    const name = document.getElementById('cm-name').value.trim();
+    if (!name) {
+      errBox.textContent = '氏名は必須です';
+      errBox.style.display = 'block';
+      return;
+    }
+    try {
+      await adminFetch('/api/admin/customers/' + encodeURIComponent(cmEditingId), {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          realname: name,
+          kana: document.getElementById('cm-kana').value.trim(),
+          phone: document.getElementById('cm-tel').value.trim(),
+          totalVisits: document.getElementById('cm-visits').value,
+          staffName: document.getElementById('cm-staff').value.trim(),
+          status: document.getElementById('cm-status').value,
+          memo: document.getElementById('cm-memo').value,
+          isKeepMember: document.getElementById('cm-keep').checked,
+          optSupport: document.getElementById('cm-opt').checked,
+          bookingBlocked: document.getElementById('cm-block').checked,
+          notifyEnabled: document.getElementById('cm-notify').checked
+        })
+      });
+      document.getElementById('cmModalMsg').textContent = '保存しました';
+      await load();
+    } catch (err) {
+      errBox.textContent = err.message;
+      errBox.style.display = 'block';
+    }
+  });
+
+  document.getElementById('cmDeleteBtn').addEventListener('click', async () => {
+    if (!cmEditingId) return;
+    const c = currentRows.find((x) => x.customer_id === cmEditingId);
+    if (!c) return;
+    const errBox = document.getElementById('cmModalErr');
+    errBox.style.display = 'none';
+    try {
+      if (c.is_deleted) {
+        const data = await adminFetch('/api/admin/customers/' + encodeURIComponent(cmEditingId) + '/restore', { method: 'POST' });
+        document.getElementById('cmModalMsg').textContent = data.message;
+      } else {
+        if (!confirm(`「${c.realname}」を削除しますか？（復元は可能です）`)) return;
+        const data = await adminFetch('/api/admin/customers/' + encodeURIComponent(cmEditingId), { method: 'DELETE' });
+        document.getElementById('cmModalMsg').textContent = data.message;
+      }
+      await load();
+      closeCustomerModal();
+    } catch (err) {
+      errBox.textContent = err.message;
+      errBox.style.display = 'block';
+    }
+  });
+
   document.getElementById('searchBtn').addEventListener('click', () => { offset = 0; load(); });
   document.getElementById('qInput').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { offset = 0; load(); }
   });
+  document.getElementById('includeDeletedChk').addEventListener('change', () => { offset = 0; load(); });
   document.getElementById('prevBtn').addEventListener('click', () => { offset = Math.max(0, offset - limit); load(); });
   document.getElementById('nextBtn').addEventListener('click', () => { offset = offset + limit; load(); });
 

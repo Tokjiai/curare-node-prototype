@@ -27,6 +27,20 @@ async function loadStoreInfo() {
     sel.appendChild(opt);
   });
 
+  // ★2026-09-19追加：メニューマスタで管理している有効なメニューを反映する
+  //   （以前はここに直接4件をハードコードしていた。店舗設定画面から追加・編集した内容が届く）
+  const menuSel = document.getElementById('menuSelect');
+  if (menuSel && Array.isArray(data.menuItems)) {
+    menuSel.innerHTML = '';
+    data.menuItems.forEach((m) => {
+      const opt = document.createElement('option');
+      opt.value = m.name;
+      const priceLabel = m.price ? `　¥${Number(m.price).toLocaleString('ja-JP')}` : '';
+      opt.textContent = m.name + priceLabel;
+      menuSel.appendChild(opt);
+    });
+  }
+
   // 日付の初期値：3日後（GAS版の受付締め切りルールに合わせておく）
   const d = new Date();
   d.setDate(d.getDate() + 3);
