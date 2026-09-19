@@ -26,7 +26,7 @@ const session = require('express-session');
 const db = require('./lib/db');
 const engine = require('./lib/reservationEngine');
 const { initDatabase } = require('./db/init');
-const { verifyPin } = require('./lib/auth');
+const { verifyPin, createPinHash } = require('./lib/auth');
 const { registerLineWebhook } = require('./routes/lineWebhook');
 const { notifyReservationConfirmed } = require('./lib/reservationNotify');
 const { getPlan, listPlans } = require('./lib/plans');
@@ -538,20 +538,120 @@ app.put('/api/admin/reservations/:id', requireOwnerSession, (req, res) => {
 // ★2026-09-19追加：スタッフのシフト管理（オーナー管理画面から操作する用）
 //
 // GET /api/admin/staff
-//   シフト割当のスタッフ選択肢用に、店舗の全スタッフ（見習い・非表示スタッフ含む）を返す。
+//   店舗の全スタッフ（見習い・非表示スタッフ含む）を返す。pin_hash/pin_saltは
+//   絶対に返さない（PINを設定済みかどうかはhasPinの真偽値だけ返す）。
 //   /api/store のgetCustomerStaffList_は「予約フォームに出す人だけ」に絞るフィルタが
-//   入っているため、オーナー向けのシフト管理では別に用意する。
+//   入っているため、オーナー向けの管理画面では別に用意している。
 // ----------------------------------------------------------------------------
 app.get('/api/admin/staff', requireOwnerSession, (req, res) => {
   try {
     const storeId = req.session.staff.storeId;
-    const rows = db.prepare(
-      'SELECT id, name, nickname, role, is_active FROM staff WHERE store_id = ? ORDER BY is_active DESC, name ASC'
-    ).all(storeId);
+    const rows = db.prepare(`
+      SELECT id, name, nickname, role, opt_support, night_restrict, show_in_booking, is_active, is_owner,
+             (pin_hash IS NOT NULL) AS has_pin
+      FROM staff WHERE store_id = ? ORDER BY is_active DESC, name ASC
+    `).all(storeId);
     res.json({ staff: rows });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// ★2026-09-19追加：スタッフマスタ管理（GAS版の「スタッフ管理」画面 admin_ui.html 相当）
+//
+// POST /api/admin/staff
+//   スタッフを新規登録する。{ name, nickname, role, optSupport, nightRestrict,
+//   showInBooking, isOwner, pin }
+//   pinは4桁の数字を想定（GAS版運用＝電話番号下4桁を踏襲）。ハッシュ化して保存し、
+//   平文は保存しない。
+// ----------------------------------------------------------------------------
+app.post('/api/admin/staff', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const data = req.body || {};
+    if (!data.name || !String(data.name).trim()) {
+      return res.status(400).json({ success: false, message: '氏名は必須です' });
+    }
+    if (!data.pin || !/^\d{4}$/.test(String(data.pin))) {
+      return res.status(400).json({ success: false, message: 'PINは4桁の数字で指定してください' });
+    }
+    const dup = db.prepare('SELECT 1 FROM staff WHERE store_id = ? AND name = ? AND is_active = 1').get(storeId, data.name.trim());
+    if (dup) {
+      return res.status(400).json({ success: false, message: '同じ氏名の在籍スタッフが既に存在します' });
+    }
+
+    const { hash, salt } = createPinHash(data.pin);
+    const info = db.prepare(`
+      INSERT INTO staff (store_id, name, nickname, role, opt_support, night_restrict, show_in_booking, is_active, pin_hash, pin_salt, is_owner)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+    `).run(
+      storeId, data.name.trim(), data.nickname || '', data.role || 'スタッフ',
+      data.optSupport ? 1 : 0, data.nightRestrict ? 1 : 0, data.showInBooking === false ? 0 : 1,
+      hash, salt, data.isOwner ? 1 : 0
+    );
+    res.json({ success: true, staffId: info.lastInsertRowid });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// PUT /api/admin/staff/:id
+//   スタッフ情報を更新する。pinが指定された場合のみPINを再設定する（空欄なら変更しない）。
+//   ★安全策：ログイン中の自分自身を「在籍中フラグOFF」にはできないようにする
+//   （唯一のオーナーが自分自身を無効化して誰もログインできなくなる事故を防ぐ）。
+// ----------------------------------------------------------------------------
+app.put('/api/admin/staff/:id', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const id = Number(req.params.id);
+    const data = req.body || {};
+
+    const existing = db.prepare('SELECT * FROM staff WHERE id = ? AND store_id = ?').get(id, storeId);
+    if (!existing) {
+      return res.status(404).json({ success: false, message: '対象のスタッフが見つかりません（他店舗のデータは操作できません）' });
+    }
+    if (!data.name || !String(data.name).trim()) {
+      return res.status(400).json({ success: false, message: '氏名は必須です' });
+    }
+    if (id === req.session.staff.id && data.isActive === false) {
+      return res.status(400).json({ success: false, message: '自分自身を在籍中フラグOFFにはできません（誰もログインできなくなるため）' });
+    }
+
+    let pinClause = '';
+    const params = {
+      id, store_id: storeId,
+      name: data.name.trim(), nickname: data.nickname || '', role: data.role || 'スタッフ',
+      opt_support: data.optSupport ? 1 : 0, night_restrict: data.nightRestrict ? 1 : 0,
+      show_in_booking: data.showInBooking === false ? 0 : 1,
+      is_active: data.isActive === false ? 0 : 1, is_owner: data.isOwner ? 1 : 0
+    };
+    if (data.pin) {
+      if (!/^\d{4}$/.test(String(data.pin))) {
+        return res.status(400).json({ success: false, message: 'PINは4桁の数字で指定してください' });
+      }
+      const { hash, salt } = createPinHash(data.pin);
+      pinClause = ', pin_hash = @pin_hash, pin_salt = @pin_salt';
+      params.pin_hash = hash;
+      params.pin_salt = salt;
+    }
+
+    db.prepare(`
+      UPDATE staff
+      SET name = @name, nickname = @nickname, role = @role,
+          opt_support = @opt_support, night_restrict = @night_restrict, show_in_booking = @show_in_booking,
+          is_active = @is_active, is_owner = @is_owner
+          ${pinClause}
+      WHERE id = @id AND store_id = @store_id
+    `).run(params);
+
+    res.json({ success: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
   }
 });
 

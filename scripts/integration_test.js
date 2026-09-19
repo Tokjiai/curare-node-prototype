@@ -286,6 +286,81 @@ async function main() {
   }
 
   // --------------------------------------------------------------------------
+  // 10. スタッフ管理（★2026-09-19追加）
+  // --------------------------------------------------------------------------
+  console.log('--- 10. スタッフ管理 ---');
+  let newStaffId = null;
+  {
+    const r = await ownerFresh.postJson('/api/admin/staff', {
+      name: '統合テスト新人', nickname: 'てすと', role: '見習い',
+      showInBooking: true, optSupport: false, nightRestrict: false, isOwner: false, pin: '9999'
+    });
+    assert(r.status === 200 && r.body.success === true, '新規スタッフを追加できる');
+    newStaffId = r.body.staffId;
+  }
+  {
+    const r = await ownerFresh.postJson('/api/admin/staff', { pin: '9999' });
+    assert(r.status === 400, '氏名なしでは追加できない');
+  }
+  {
+    const r = await ownerFresh.postJson('/api/admin/staff', { name: '桁不正', pin: '12' });
+    assert(r.status === 400, 'PINが4桁でなければ追加できない');
+  }
+  {
+    const r = await ownerFresh.postJson('/api/admin/staff', { name: '統合テスト新人', pin: '1234' });
+    assert(r.status === 400, '同一店舗内で在籍中の同姓同名は追加できない');
+  }
+  {
+    const r = await ownerFresh.request(`/api/admin/staff/${newStaffId}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: '統合テスト新人', nickname: 'てすと2', role: 'スタッフ', showInBooking: true, optSupport: true, nightRestrict: false, isOwner: false, isActive: true })
+    });
+    assert(r.status === 200 && r.body.success === true, 'スタッフ情報を編集できる');
+  }
+  {
+    const r = await ownerFresh.get('/api/admin/staff');
+    const found = (r.body.staff || []).find((s) => s.id === newStaffId);
+    assert(!!found && found.nickname === 'てすと2' && found.opt_support === 1, '編集内容が一覧に反映される');
+  }
+  {
+    // ログイン中の自分自身を在籍中=falseにはできない
+    const r = await ownerFresh.request('/api/admin/staff/1', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: '寿子', isActive: false })
+    });
+    assert(r.status === 400, 'ログイン中の自分自身は在籍中を外せない');
+  }
+  {
+    const r = await ownerFresh.request(`/api/admin/staff/${newStaffId}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: '' })
+    });
+    assert(r.status === 400, '氏名を空にする編集は拒否される');
+  }
+  {
+    const r = await ownerFresh.request('/api/admin/staff/999999', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'だれか' })
+    });
+    assert(r.status === 404, '存在しないIDの編集は404になる');
+  }
+  {
+    // 他店舗オーナーは他店のスタッフを編集できない
+    const r = await owner2.request(`/api/admin/staff/${newStaffId}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'なりすまし' })
+    });
+    assert(r.status === 404, '他店舗オーナーは他店のスタッフを編集できない（店舗スコープ確認）');
+  }
+  {
+    const r = await ownerFresh.request(`/api/admin/staff/${newStaffId}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: '統合テスト新人', pin: '5555' })
+    });
+    assert(r.status === 200 && r.body.success === true, 'PINをリセットできる');
+  }
+
+  // --------------------------------------------------------------------------
   console.log(`\n=== 結果: PASS ${passCount} / FAIL ${failCount} ===`);
   if (failCount > 0) {
     console.log('\n失敗した項目:');

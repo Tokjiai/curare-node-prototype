@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>オーナー管理画面 - スタッフ管理</title>
+<style>
+  :root{
+    --bg:#F5F4EF; --panel:#ffffff; --ink:#2B2B27; --ink-soft:#75746C; --ink-faint:#A9A79C;
+    --line:#E4E2D9; --accent:#3D6B5C; --accent-soft:#E7EFE9; --warn:#B3542E; --warn-soft:#F7E9E2;
+    --radius:14px;
+  }
+  *{box-sizing:border-box; margin:0; padding:0; font-family:'Hiragino Sans','Yu Gothic',sans-serif;}
+  body{background:var(--bg); color:var(--ink);}
+  .shell{display:none; min-height:100vh;}
+  .shell.ready{display:grid; grid-template-columns:220px 1fr;}
+
+  .sidebar{background:var(--panel); border-right:1px solid var(--line); padding:20px 14px; display:flex; flex-direction:column; gap:16px;}
+  .brand{font-size:14px; font-weight:600; padding:0 8px;}
+  .store-name{background:var(--accent-soft); color:var(--accent); border-radius:8px; padding:9px 10px; font-size:13px; font-weight:700; text-align:center;}
+  .proto-badge{font-size:10.5px; color:var(--warn); background:var(--warn-soft); border-radius:8px; padding:6px 8px; text-align:center; font-weight:700;}
+  .nav{display:flex; flex-direction:column; gap:2px;}
+  .nav-item{display:flex; align-items:center; gap:10px; padding:10px 10px; border-radius:8px; text-decoration:none; font-size:13.5px; color:var(--ink-soft); font-weight:500;}
+  .nav-item.active{background:var(--accent-soft); color:var(--accent);}
+  .nav-item.warn{color:var(--warn); margin-top:auto;}
+
+  .main{padding:28px 32px; max-width:900px;}
+  .page-head{display:flex; align-items:flex-end; justify-content:space-between; gap:16px; flex-wrap:wrap; margin-bottom:20px;}
+  .page-head h1{font-size:19px; font-weight:600; margin-bottom:4px;}
+  .page-head p{font-size:13px; color:var(--ink-soft);}
+  .btn-new{background:var(--accent); color:#fff; border:none; border-radius:10px; padding:11px 18px; font-size:13.5px; font-weight:600; cursor:pointer; white-space:nowrap;}
+
+  .panel{background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:18px 20px; margin-bottom:16px;}
+
+  table{width:100%; border-collapse:collapse; font-size:13px;}
+  th{text-align:left; font-size:11px; color:var(--ink-soft); font-weight:600; padding:8px 6px; border-bottom:1px solid var(--line); white-space:nowrap;}
+  td{padding:9px 6px; border-bottom:1px solid #F1ECE9; vertical-align:middle;}
+  tr:last-child td{border-bottom:none;}
+  tr.inactive td{color:var(--ink-faint);}
+  .badge{display:inline-block; font-size:11px; font-weight:700; padding:3px 8px; border-radius:999px;}
+  .badge.owner{background:var(--accent-soft); color:var(--accent);}
+  .badge.inactive{background:var(--warn-soft); color:var(--warn);}
+  .row-btn{border:1px solid var(--line); background:#fff; border-radius:7px; padding:5px 9px; font-size:11.5px; cursor:pointer; font-family:inherit; color:var(--ink-soft);}
+  .row-btn:hover{background:var(--accent-soft); color:var(--accent); border-color:var(--accent-soft);}
+
+  .modal-overlay{display:none; position:fixed; inset:0; background:rgba(43,43,39,0.45); align-items:center; justify-content:center; z-index:50; padding:16px;}
+  .modal-overlay.open{display:flex;}
+  .modal-box{background:var(--panel); border-radius:var(--radius); padding:22px 22px 18px; width:100%; max-width:400px; box-shadow:0 12px 40px rgba(0,0,0,0.18); max-height:90vh; overflow-y:auto;}
+  .modal-title{font-size:15px; font-weight:700; margin-bottom:14px;}
+  .modal-field{margin-bottom:12px;}
+  .modal-field label{display:block; font-size:11px; color:var(--ink-soft); font-weight:600; margin-bottom:4px;}
+  .modal-field input[type="text"], .modal-field select{width:100%; border:1px solid var(--line); border-radius:8px; padding:9px 10px; font-size:13.5px; font-family:inherit;}
+  .modal-field input[type="text"].pin{letter-spacing:4px; font-weight:700;}
+  .modal-check{display:flex; align-items:center; gap:8px; font-size:13px; margin-bottom:10px;}
+  .modal-check input{width:auto;}
+  .modal-actions{display:flex; justify-content:flex-end; gap:8px; margin-top:16px;}
+  .modal-btn-cancel{background:#fff; border:1px solid var(--line); border-radius:9px; padding:9px 16px; font-size:13px; cursor:pointer; font-family:inherit; color:var(--ink-soft);}
+  .modal-btn-ok{background:var(--accent); color:#fff; border:none; border-radius:9px; padding:9px 16px; font-size:13px; font-weight:600; cursor:pointer; font-family:inherit;}
+  .modal-err{color:var(--warn); font-size:12px; margin-top:8px; display:none;}
+  .modal-hint{font-size:11px; color:var(--ink-faint); margin-top:-6px; margin-bottom:12px;}
+
+  #loadingMsg{text-align:center; color:var(--ink-soft); font-size:13px; padding:60px 0;}
+
+  @media (max-width:760px){
+    .shell.ready{grid-template-columns:1fr;}
+    .sidebar{flex-direction:row; flex-wrap:wrap; align-items:center; padding:12px 14px;}
+    .brand{display:none;}
+    .nav{flex-direction:row; flex-wrap:wrap; gap:6px;}
+    .nav-item.warn{margin-top:0;}
+    .main{padding:18px 16px;}
+    table{font-size:12px;}
+  }
+</style>
+</head>
+<body>
+  <div id="loadingMsg">読み込み中...</div>
+
+  <div class="shell" id="shell">
+    <div class="sidebar">
+      <div class="brand">クラーレ寿 ／ オーナー管理</div>
+      <div class="store-name">クラーレ寿</div>
+      <div class="proto-badge">PROTOTYPE</div>
+      <div class="nav">
+        <a href="index.html" class="nav-item">📊 ダッシュボード</a>
+        <a href="customers.html" class="nav-item">👥 顧客マスタ</a>
+        <a href="reservations.html" class="nav-item">📅 予約データ</a>
+        <a href="shifts.html" class="nav-item">🗓️ シフト管理</a>
+        <a href="staff.html" class="nav-item active">🧑‍🤝‍🧑 スタッフ管理</a>
+        <a href="../index.html" class="nav-item">🔗 予約画面へ</a>
+        <a href="#" id="logoutLink" class="nav-item warn">🚪 ログアウト</a>
+      </div>
+    </div>
+
+    <div class="main">
+      <div class="page-head">
+        <div>
+          <h1>スタッフ管理</h1>
+          <p>新規登録・PINの設定変更・在籍状態の切替ができます</p>
+        </div>
+        <button class="btn-new" type="button" id="newStaffBtn">＋ 新規スタッフ</button>
+      </div>
+
+      <div class="panel">
+        <table>
+          <thead>
+            <tr><th>氏名</th><th>ニックネーム</th><th>役割</th><th>状態</th><th>操作</th></tr>
+          </thead>
+          <tbody id="tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- スタッフ登録・編集モーダル -->
+  <div class="modal-overlay" id="staffModal">
+    <div class="modal-box">
+      <div class="modal-title" id="modalTitle">＋ スタッフを新規登録</div>
+      <div class="modal-field">
+        <label>氏名（本名）</label>
+        <input type="text" id="fName">
+      </div>
+      <div class="modal-field">
+        <label>ニックネーム（お客様向け表示名）</label>
+        <input type="text" id="fNickname">
+      </div>
+      <div class="modal-field">
+        <label>役割</label>
+        <select id="fRole">
+          <option value="オーナー">オーナー</option>
+          <option value="スタッフ" selected>スタッフ</option>
+          <option value="見習い">見習い</option>
+        </select>
+      </div>
+      <div class="modal-check"><input type="checkbox" id="fShowInBooking" checked><label for="fShowInBooking">予約フォームに表示する</label></div>
+      <div class="modal-check"><input type="checkbox" id="fOptSupport"><label for="fOptSupport">オプションメニュー対応可</label></div>
+      <div class="modal-check"><input type="checkbox" id="fNightRestrict"><label for="fNightRestrict">夜間固定枠の対象</label></div>
+      <div class="modal-check"><input type="checkbox" id="fIsOwner"><label for="fIsOwner">オーナー権限（管理画面ログイン可）</label></div>
+      <div class="modal-check"><input type="checkbox" id="fIsActive" checked><label for="fIsActive">在籍中</label></div>
+      <div class="modal-field">
+        <label id="pinLabel">ログインPIN（4桁）</label>
+        <input type="text" id="fPin" class="pin" maxlength="4" placeholder="例：1234" inputmode="numeric">
+      </div>
+      <div class="modal-hint" id="pinHint"></div>
+      <div class="modal-err" id="modalErr"></div>
+      <div class="modal-actions">
+        <button class="modal-btn-cancel" type="button" id="modalCancelBtn">閉じる</button>
+        <button class="modal-btn-ok" type="button" id="modalSaveBtn">保存する</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+(function(){
+  const loadingMsg = document.getElementById('loadingMsg');
+  const shell = document.getElementById('shell');
+  let staffList = [];
+  let editingId = null;
+  let myStaffId = null;
+
+  async function adminFetch(url, opts) {
+    const res = await fetch(url, opts);
+    if (res.status === 401) throw new Error('UNAUTHORIZED');
+    let body = null;
+    try { body = await res.json(); } catch (_) {}
+    if (!res.ok && !opts) throw new Error('サーバーエラー: ' + res.status);
+    return { status: res.status, ok: res.ok, body };
+  }
+
+  async function init() {
+    try {
+      const me = await adminFetch('/api/auth/me');
+      myStaffId = me.body.staff.id;
+      await load();
+      loadingMsg.style.display = 'none';
+      shell.classList.add('ready');
+    } catch (e) {
+      window.location.href = '/admin/login.html';
+    }
+  }
+
+  document.getElementById('logoutLink').addEventListener('click', async (e) => {
+    e.preventDefault();
+    try { await fetch('/api/auth/logout', { method: 'POST' }); } catch (_) {}
+    window.location.href = '/admin/login.html';
+  });
+
+  async function load() {
+    const r = await adminFetch('/api/admin/staff');
+    staffList = r.body.staff;
+    render();
+  }
+
+  function esc(v) { return String(v == null ? '' : v).replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
+
+  function render() {
+    const tbody = document.getElementById('tbody');
+    tbody.innerHTML = '';
+    staffList.forEach((s) => {
+      const tr = document.createElement('tr');
+      if (!s.is_active) tr.className = 'inactive';
+      tr.innerHTML = `
+        <td>${esc(s.name)} ${s.is_owner ? '<span class="badge owner">オーナー</span>' : ''}</td>
+        <td>${esc(s.nickname || '')}</td>
+        <td>${esc(s.role)}</td>
+        <td>${s.is_active ? '在籍中' : '<span class="badge inactive">退職済み</span>'}</td>
+        <td><button class="row-btn" type="button" data-edit="${s.id}">編集</button></td>
+      `;
+      tbody.appendChild(tr);
+    });
+    tbody.querySelectorAll('[data-edit]').forEach((btn) => {
+      btn.addEventListener('click', () => openEdit(Number(btn.dataset.edit)));
+    });
+  }
+
+  function openNew() {
+    editingId = null;
+    document.getElementById('modalTitle').textContent = '＋ スタッフを新規登録';
+    document.getElementById('fName').value = '';
+    document.getElementById('fNickname').value = '';
+    document.getElementById('fRole').value = 'スタッフ';
+    document.getElementById('fShowInBooking').checked = true;
+    document.getElementById('fOptSupport').checked = false;
+    document.getElementById('fNightRestrict').checked = false;
+    document.getElementById('fIsOwner').checked = false;
+    document.getElementById('fIsActive').checked = true;
+    document.getElementById('fPin').value = '';
+    document.getElementById('pinLabel').textContent = 'ログインPIN（4桁・必須）';
+    document.getElementById('pinHint').textContent = '';
+    document.getElementById('modalErr').style.display = 'none';
+    document.getElementById('staffModal').classList.add('open');
+  }
+
+  function openEdit(id) {
+    const s = staffList.find((x) => x.id === id);
+    if (!s) return;
+    editingId = id;
+    document.getElementById('modalTitle').textContent = '✏️ ' + s.name + ' さんを編集';
+    document.getElementById('fName').value = s.name;
+    document.getElementById('fNickname').value = s.nickname || '';
+    document.getElementById('fRole').value = s.role;
+    document.getElementById('fShowInBooking').checked = !!s.show_in_booking;
+    document.getElementById('fOptSupport').checked = !!s.opt_support;
+    document.getElementById('fNightRestrict').checked = !!s.night_restrict;
+    document.getElementById('fIsOwner').checked = !!s.is_owner;
+    document.getElementById('fIsActive').checked = !!s.is_active;
+    document.getElementById('fPin').value = '';
+    document.getElementById('pinLabel').textContent = 'ログインPIN（4桁・変更する場合のみ入力）';
+    document.getElementById('pinHint').textContent = s.has_pin ? '空欄のままにすると、現在のPINを変更しません。' : 'PIN未設定です。ログインさせるには設定してください。';
+    document.getElementById('modalErr').style.display = 'none';
+    document.getElementById('staffModal').classList.add('open');
+
+    // 自分自身は在籍中フラグを外せない（誰もログインできなくなる事故防止）
+    document.getElementById('fIsActive').disabled = (id === myStaffId);
+  }
+
+  document.getElementById('newStaffBtn').addEventListener('click', openNew);
+  document.getElementById('modalCancelBtn').addEventListener('click', () => {
+    document.getElementById('staffModal').classList.remove('open');
+  });
+
+  document.getElementById('modalSaveBtn').addEventListener('click', async () => {
+    const errBox = document.getElementById('modalErr');
+    errBox.style.display = 'none';
+    const payload = {
+      name: document.getElementById('fName').value.trim(),
+      nickname: document.getElementById('fNickname').value.trim(),
+      role: document.getElementById('fRole').value,
+      showInBooking: document.getElementById('fShowInBooking').checked,
+      optSupport: document.getElementById('fOptSupport').checked,
+      nightRestrict: document.getElementById('fNightRestrict').checked,
+      isOwner: document.getElementById('fIsOwner').checked,
+      isActive: document.getElementById('fIsActive').checked,
+      pin: document.getElementById('fPin').value.trim()
+    };
+    try {
+      let res;
+      if (editingId) {
+        res = await fetch(`/api/admin/staff/${editingId}`, {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+        });
+      } else {
+        res = await fetch('/api/admin/staff', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+        });
+      }
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        errBox.textContent = data.message || 'サーバーエラー';
+        errBox.style.display = 'block';
+        return;
+      }
+      document.getElementById('staffModal').classList.remove('open');
+      load();
+    } catch (e) {
+      errBox.textContent = 'エラー: ' + e.message;
+      errBox.style.display = 'block';
+    }
+  });
+
+  init();
+})();
+</script>
+</body>
+</html>
