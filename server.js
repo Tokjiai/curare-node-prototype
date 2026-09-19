@@ -885,6 +885,187 @@ app.delete('/api/admin/shifts/:id', requireOwnerSession, (req, res) => {
   }
 });
 
+// ============================================================================
+// ★2026-09-19追加：店舗設定（GAS版owner_ui.htmlの「店舗設定」パネルに相当）
+//   基本ルール（rule1シート相当）・営業時間帯（zonesシート相当）・
+//   休業日/特別イベント（eventsシート相当）を管理画面から確認・編集できるようにする。
+//   これらはダミーの設定項目ではなく、予約受付ロジック（lib/reservationEngine.js）が
+//   実際に参照している値のため、編集内容はその場で予約可否判定に反映される。
+// ============================================================================
+
+// ----------------------------------------------------------------------------
+// GET /api/admin/settings/rules
+// ----------------------------------------------------------------------------
+app.get('/api/admin/settings/rules', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const rows = db.prepare('SELECT rule_id, memo, value FROM rules WHERE store_id = ? ORDER BY rule_id').all(storeId);
+    res.json({ rules: rows });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// PUT /api/admin/settings/rules/:ruleId  { value }
+//   既存ルールの値のみ更新可能（rule_idの新規追加はこのプロトタイプでは非対応。
+//   GAS版もrule1シートの行自体は固定でvalue列だけを運用で書き換えていたため踏襲）。
+// ----------------------------------------------------------------------------
+app.put('/api/admin/settings/rules/:ruleId', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const ruleId = req.params.ruleId;
+    const value = (req.body || {}).value;
+    if (value === undefined || value === null || String(value).trim() === '') {
+      return res.status(400).json({ success: false, message: '値は必須です' });
+    }
+    if (!/^\d+$/.test(String(value).trim())) {
+      return res.status(400).json({ success: false, message: '数値で指定してください' });
+    }
+    const existing = db.prepare('SELECT id FROM rules WHERE store_id = ? AND rule_id = ?').get(storeId, ruleId);
+    if (!existing) {
+      return res.status(404).json({ success: false, message: '対象のルールが見つかりません: ' + ruleId });
+    }
+    db.prepare('UPDATE rules SET value = ? WHERE store_id = ? AND rule_id = ?').run(String(value).trim(), storeId, ruleId);
+    res.json({ success: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// GET /api/admin/settings/zones
+// ----------------------------------------------------------------------------
+app.get('/api/admin/settings/zones', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const rows = db.prepare('SELECT * FROM zones WHERE store_id = ? ORDER BY start_time').all(storeId);
+    res.json({ zones: rows });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// PUT /api/admin/settings/zones/:zoneKey
+//   { startTime, endTime, isActive, fixedTarget, fixedStart, fixedIntervalMin }
+// ----------------------------------------------------------------------------
+app.put('/api/admin/settings/zones/:zoneKey', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const zoneKey = req.params.zoneKey;
+    const data = req.body || {};
+
+    const existing = db.prepare('SELECT * FROM zones WHERE store_id = ? AND zone_key = ?').get(storeId, zoneKey);
+    if (!existing) {
+      return res.status(404).json({ success: false, message: '対象の営業時間帯が見つかりません: ' + zoneKey });
+    }
+    if (!data.startTime || !data.endTime) {
+      return res.status(400).json({ success: false, message: '開始・終了時刻は必須です' });
+    }
+    if (data.startTime >= data.endTime) {
+      return res.status(400).json({ success: false, message: '終了時刻は開始時刻より後にしてください' });
+    }
+
+    db.prepare(`
+      UPDATE zones SET
+        start_time = @start_time, end_time = @end_time, is_active = @is_active,
+        fixed_target = @fixed_target, fixed_start = @fixed_start, fixed_interval_min = @fixed_interval_min
+      WHERE store_id = @store_id AND zone_key = @zone_key
+    `).run({
+      store_id: storeId, zone_key: zoneKey,
+      start_time: data.startTime, end_time: data.endTime,
+      is_active: data.isActive === false ? 0 : 1,
+      fixed_target: data.fixedTarget ? 1 : 0,
+      fixed_start: data.fixedTarget ? (data.fixedStart || existing.fixed_start || data.startTime) : null,
+      fixed_interval_min: data.fixedTarget ? Number(data.fixedIntervalMin) || existing.fixed_interval_min || 90 : 0
+    });
+    res.json({ success: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// GET /api/admin/events?from=&to=
+//   休業日・特別イベントの一覧（省略時は本日から60日間）
+// ----------------------------------------------------------------------------
+app.get('/api/admin/events', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const fmt = (d) => {
+      const y = d.getFullYear(); const m = String(d.getMonth() + 1).padStart(2, '0'); const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    };
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const from = req.query.from || fmt(today);
+    const toDefault = new Date(today); toDefault.setDate(toDefault.getDate() + 60);
+    const to = req.query.to || fmt(toDefault);
+
+    const rows = db.prepare(`
+      SELECT * FROM events WHERE store_id = ? AND event_date >= ? AND event_date <= ?
+      ORDER BY event_date ASC
+    `).all(storeId, from, to);
+    res.json({ events: rows });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// POST /api/admin/events
+//   { title, date, startTime, endTime, restrictBooking, blockStartTime, blockEndTime }
+// ----------------------------------------------------------------------------
+app.post('/api/admin/events', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const data = req.body || {};
+    if (!data.title || !data.date || !data.startTime || !data.endTime) {
+      return res.status(400).json({ success: false, message: 'title / date / startTime / endTime は必須です' });
+    }
+    if (data.startTime >= data.endTime) {
+      return res.status(400).json({ success: false, message: '終了時刻は開始時刻より後にしてください' });
+    }
+    const info = db.prepare(`
+      INSERT INTO events (store_id, title, event_date, is_active, start_time, end_time, restrict_booking, block_start_time, block_end_time)
+      VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?)
+    `).run(
+      storeId, data.title, data.date, data.startTime, data.endTime,
+      data.restrictBooking ? 1 : 0,
+      data.restrictBooking ? (data.blockStartTime || null) : null,
+      data.restrictBooking ? (data.blockEndTime || null) : null
+    );
+    res.json({ success: true, eventId: info.lastInsertRowid });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// DELETE /api/admin/events/:id
+// ----------------------------------------------------------------------------
+app.delete('/api/admin/events/:id', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const id = Number(req.params.id);
+    const row = db.prepare('SELECT id FROM events WHERE id = ? AND store_id = ?').get(id, storeId);
+    if (!row) {
+      return res.status(404).json({ success: false, message: '対象のイベントが見つかりません' });
+    }
+    db.prepare('DELETE FROM events WHERE id = ?').run(id);
+    res.json({ success: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // ----------------------------------------------------------------------------
 // GET /api/admin/dashboard?store=
 //   オーナー向けダッシュボード用のサマリー数値をまとめて返す。

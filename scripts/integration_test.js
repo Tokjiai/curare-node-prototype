@@ -478,6 +478,85 @@ async function main() {
   }
 
   // --------------------------------------------------------------------------
+  // 13. 店舗設定（基本ルール・営業時間帯・休業日/イベント）（★2026-09-19追加）
+  // --------------------------------------------------------------------------
+  console.log('--- 13. 店舗設定 ---');
+  {
+    const r = await ownerFresh.get('/api/admin/settings/rules');
+    const bedLimit = (r.body.rules || []).find((x) => x.rule_id === 'BED_LIMIT');
+    assert(r.status === 200 && !!bedLimit, '基本ルール一覧が取得できる');
+  }
+  {
+    const r = await ownerFresh.request('/api/admin/settings/rules/BED_LIMIT', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: '4' })
+    });
+    assert(r.status === 200 && r.body.success === true, '基本ルールの値を更新できる');
+  }
+  {
+    const r = await ownerFresh.request('/api/admin/settings/rules/BED_LIMIT', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: 'abc' })
+    });
+    assert(r.status === 400, '数値以外の値は拒否される');
+  }
+  {
+    const r = await ownerFresh.request('/api/admin/settings/rules/NOT_EXIST', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: '1' })
+    });
+    assert(r.status === 404, '存在しないルールIDの更新は404になる');
+  }
+  {
+    const r = await ownerFresh.get('/api/admin/settings/zones');
+    const evZone = (r.body.zones || []).find((z) => z.zone_key === 'ev');
+    assert(r.status === 200 && !!evZone, '営業時間帯（ゾーン）一覧が取得できる');
+  }
+  {
+    const r = await ownerFresh.request('/api/admin/settings/zones/ev', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ startTime: '17:00', endTime: '22:30', isActive: true, fixedTarget: true, fixedStart: '20:00', fixedIntervalMin: 60 })
+    });
+    assert(r.status === 200 && r.body.success === true, '営業時間帯（夜ゾーン）を更新できる');
+  }
+  {
+    const r = await ownerFresh.request('/api/admin/settings/zones/ev', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ startTime: '22:00', endTime: '17:00' })
+    });
+    assert(r.status === 400, '終了時刻が開始時刻より前の指定は拒否される');
+  }
+  {
+    const r = await owner2.request('/api/admin/settings/zones/ev', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ startTime: '10:00', endTime: '11:00' })
+    });
+    assert(r.status === 404, '他店舗のゾーン設定は更新できない（店舗スコープ確認、店2にはevゾーンが存在しないため404）');
+  }
+  let createdEventId = null;
+  {
+    const r = await ownerFresh.postJson('/api/admin/events', {
+      title: '統合テスト休業日', date: '2026-12-28', startTime: '09:00', endTime: '23:00', restrictBooking: true
+    });
+    assert(r.status === 200 && r.body.success === true, '休業日/イベントを追加できる');
+    createdEventId = r.body.eventId;
+  }
+  {
+    const r = await ownerFresh.postJson('/api/admin/events', { title: '', date: '2026-12-29', startTime: '09:00', endTime: '10:00' });
+    assert(r.status === 400, 'タイトルなしでは追加できない');
+  }
+  {
+    const r = await ownerFresh.get('/api/admin/events?from=2026-12-28&to=2026-12-28');
+    const found = (r.body.events || []).some((e) => e.id === createdEventId);
+    assert(r.status === 200 && found, '追加したイベントが期間指定の一覧に反映される');
+  }
+  {
+    const r = await owner2.request(`/api/admin/events/${createdEventId}`, { method: 'DELETE' });
+    assert(r.status === 404, '他店舗オーナーは他店のイベントを削除できない（店舗スコープ確認）');
+  }
+  {
+    const r = await ownerFresh.request(`/api/admin/events/${createdEventId}`, { method: 'DELETE' });
+    assert(r.status === 200 && r.body.success === true, '自店舗のイベントは削除できる');
+  }
+
+  // --------------------------------------------------------------------------
   console.log(`\n=== 結果: PASS ${passCount} / FAIL ${failCount} ===`);
   if (failCount > 0) {
     console.log('\n失敗した項目:');
