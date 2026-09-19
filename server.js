@@ -30,6 +30,7 @@ const { verifyPin, createPinHash } = require('./lib/auth');
 const { registerLineWebhook } = require('./routes/lineWebhook');
 const { notifyReservationConfirmed } = require('./lib/reservationNotify');
 const { getPlan, listPlans } = require('./lib/plans');
+const { runMigrations } = require('./lib/migrate');
 
 // Render無料プランのディスクは再起動で消える（エフェメラル）ため、
 // 起動のたびにスキーマ作成とシードデータ投入をやり直す。
@@ -40,7 +41,12 @@ if (process.env.SKIP_SEED === '1') {
   const fs = require('fs');
   const schemaSql = fs.readFileSync(path.join(__dirname, 'db', 'schema.sql'), 'utf8');
   db.exec(schemaSql); // テーブルが無い場合のみ作成（IF NOT EXISTSなのでデータは消えない）
-  console.log('⏭️  SKIP_SEED=1 のためシードデータの再投入をスキップしました（既存データを保持）');
+  // ★2026-09-19追加：既存のDBファイルを保持するこの経路（SKIP_SEED=1）こそ、
+  //   「テーブルは既にあるが、後から追加された列が無い」事故が最も起きやすい。
+  //   実際に customers テーブルへの列追加が反映されず、顧客マスタ一覧の取得が
+  //   500エラーになる不具合が発生したため、ここで必ずマイグレーションを実行する。
+  runMigrations(db);
+  console.log('⏭️  SKIP_SEED=1 のためシードデータの再投入をスキップしました（既存データを保持・不足列のみ補完）');
 } else {
   initDatabase();
 }

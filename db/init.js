@@ -11,10 +11,15 @@ const fs = require('fs');
 const path = require('path');
 const db = require('../lib/db');
 const { createPinHash } = require('../lib/auth');
+const { runMigrations } = require('../lib/migrate');
 
 function initDatabase() {
   const schemaSql = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
   db.exec(schemaSql);
+  // ★2026-09-19追加：CREATE TABLE IF NOT EXISTSは「テーブルが既にある場合」には
+  //   新しい列を追加してくれないため、後から追加された列を補うマイグレーションを
+  //   必ず実行しておく（詳細はlib/migrate.jsのコメント参照）。
+  runMigrations(db);
   seedData();
 }
 
