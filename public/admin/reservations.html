@@ -101,9 +101,12 @@
     </div>
 
     <div class="main">
-      <div class="page-head">
-        <h1>予約データ</h1>
-        <p>日付範囲・担当・氏名で絞り込みできます</p>
+      <div class="page-head" style="display:flex; align-items:flex-end; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+        <div>
+          <h1>予約データ</h1>
+          <p>日付範囲・担当・氏名で絞り込みできます</p>
+        </div>
+        <button class="btn-save" id="newResBtn" type="button">＋ 新規予約を追加（電話予約など）</button>
       </div>
 
       <div class="panel">
@@ -175,6 +178,47 @@
       <div class="modal-actions">
         <button class="modal-btn-cancel" type="button" id="editCancelBtn">閉じる</button>
         <button class="modal-btn-ok" type="button" id="editSaveBtn">保存する</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 新規予約追加モーダル（電話予約・当日飛び込み対応） -->
+  <div class="modal-overlay" id="newModal">
+    <div class="modal-box">
+      <div class="modal-title">＋ 新規予約を追加</div>
+      <p style="font-size:12px; color:var(--ink-soft); margin-bottom:10px;">電話予約や当日飛び込みなど、お客様ご自身が予約フォームを操作しない場合にここから登録します。</p>
+      <div class="modal-field">
+        <label>お客様氏名</label>
+        <input type="text" id="newRealname">
+      </div>
+      <div class="modal-field">
+        <label>フリガナ（任意）</label>
+        <input type="text" id="newKana">
+      </div>
+      <div class="modal-field">
+        <label>担当スタッフ（本名）</label>
+        <input type="text" id="newStaff">
+      </div>
+      <div class="modal-field">
+        <label>メニュー</label>
+        <input type="text" id="newMenu">
+      </div>
+      <div class="modal-field">
+        <label>日付</label>
+        <input type="date" id="newDate">
+      </div>
+      <div class="modal-field">
+        <label>時刻</label>
+        <input type="time" id="newTime">
+      </div>
+      <div class="modal-field">
+        <label>備考</label>
+        <input type="text" id="newNote">
+      </div>
+      <div class="modal-err" id="newErr"></div>
+      <div class="modal-actions">
+        <button class="modal-btn-cancel" type="button" id="newCancelBtn">閉じる</button>
+        <button class="modal-btn-ok" type="button" id="newSaveBtn">登録する</button>
       </div>
     </div>
   </div>
@@ -337,6 +381,69 @@
       alert('キャンセルに失敗しました: ' + e.message);
     }
   }
+
+  function openNewModal() {
+    document.getElementById('newRealname').value = '';
+    document.getElementById('newKana').value = '';
+    document.getElementById('newStaff').value = '';
+    document.getElementById('newMenu').value = '';
+    document.getElementById('newDate').value = document.getElementById('fromInput').value || '';
+    document.getElementById('newTime').value = '';
+    document.getElementById('newNote').value = '';
+    document.getElementById('newErr').style.display = 'none';
+    document.getElementById('newModal').classList.add('open');
+  }
+  function closeNewModal() {
+    document.getElementById('newModal').classList.remove('open');
+  }
+  document.getElementById('newResBtn').addEventListener('click', openNewModal);
+  document.getElementById('newCancelBtn').addEventListener('click', closeNewModal);
+
+  async function submitNewReservation(ownerOverride) {
+    const errBox = document.getElementById('newErr');
+    errBox.style.display = 'none';
+    const payload = {
+      realname: document.getElementById('newRealname').value.trim(),
+      kana: document.getElementById('newKana').value.trim(),
+      staffName: document.getElementById('newStaff').value.trim(),
+      menu: document.getElementById('newMenu').value.trim(),
+      date: document.getElementById('newDate').value,
+      time: document.getElementById('newTime').value,
+      note: document.getElementById('newNote').value.trim(),
+      ownerOverride: !!ownerOverride
+    };
+    if (!payload.realname || !payload.staffName || !payload.menu || !payload.date || !payload.time) {
+      errBox.textContent = 'お客様氏名・担当スタッフ・メニュー・日付・時刻は必須です';
+      errBox.style.display = 'block';
+      return;
+    }
+    try {
+      const res = await fetch('/api/admin/reservations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (data.isLimitWarning) {
+        if (confirm(data.message + '\n\nこのまま登録しますか？')) {
+          await submitNewReservation(true);
+        }
+        return;
+      }
+      if (!res.ok || !data.success) {
+        errBox.textContent = data.message || 'サーバーエラー';
+        errBox.style.display = 'block';
+        return;
+      }
+      closeNewModal();
+      offset = 0;
+      load();
+    } catch (e) {
+      errBox.textContent = 'エラー: ' + e.message;
+      errBox.style.display = 'block';
+    }
+  }
+  document.getElementById('newSaveBtn').addEventListener('click', () => submitNewReservation(false));
 
   document.getElementById('searchBtn').addEventListener('click', () => { offset = 0; load(); });
   document.getElementById('prevBtn').addEventListener('click', () => { offset = Math.max(0, offset - limit); load(); });

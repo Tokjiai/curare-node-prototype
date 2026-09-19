@@ -434,6 +434,50 @@ async function main() {
   }
 
   // --------------------------------------------------------------------------
+  // 12. 管理画面からの新規予約登録（★2026-09-19追加）
+  // --------------------------------------------------------------------------
+  console.log('--- 12. 管理画面からの新規予約登録 ---');
+  {
+    const r = await ownerFresh.postJson('/api/admin/reservations', {
+      realname: '電話予約テスト太郎', staffName: '花子', menu: 'フェイシャル', date: '2026-12-15', time: '10:00'
+    });
+    assert(r.status === 200 && r.body.success === true, '管理画面から新規予約を登録できる');
+  }
+  {
+    const r = await ownerFresh.postJson('/api/admin/reservations', {
+      realname: '重複テスト', staffName: '花子', menu: 'x', date: '2026-12-15', time: '10:00'
+    });
+    assert(r.status === 409 && r.body.isDoubleBooking === true, '同じ日時・担当が既に埋まっていれば409で拒否される');
+  }
+  {
+    const r = await ownerFresh.postJson('/api/admin/reservations', {
+      realname: '', staffName: '花子', menu: 'x', date: '2026-12-15', time: '11:00'
+    });
+    assert(r.status === 400, 'お客様氏名なしでは登録できない');
+  }
+  {
+    for (const t of ['12:00', '13:00', '14:00']) {
+      await ownerFresh.postJson('/api/admin/reservations', {
+        realname: '上限テスト花子', staffName: '花子', menu: 'x', date: '2026-12-16', time: t
+      });
+    }
+    const r = await ownerFresh.postJson('/api/admin/reservations', {
+      realname: '上限テスト花子', staffName: '花子', menu: 'x', date: '2026-12-16', time: '15:00'
+    });
+    assert(r.status === 200 && r.body.isLimitWarning === true, '確定予約が上限に達していれば警告が返る（この時点では登録しない）');
+  }
+  {
+    const r = await ownerFresh.postJson('/api/admin/reservations', {
+      realname: '上限テスト花子', staffName: '花子', menu: 'x', date: '2026-12-16', time: '15:00', ownerOverride: true
+    });
+    assert(r.status === 200 && r.body.success === true, 'ownerOverride指定で上限警告を無視して登録できる');
+  }
+  {
+    const r = await owner2.get('/api/admin/reservations?from=2026-12-15&to=2026-12-16');
+    assert(r.status === 200 && (r.body.reservations || []).length === 0, '他店舗オーナーには管理画面登録した予約が見えない（店舗スコープ確認）');
+  }
+
+  // --------------------------------------------------------------------------
   console.log(`\n=== 結果: PASS ${passCount} / FAIL ${failCount} ===`);
   if (failCount > 0) {
     console.log('\n失敗した項目:');

@@ -535,6 +535,75 @@ app.put('/api/admin/reservations/:id', requireOwnerSession, (req, res) => {
 });
 
 // ----------------------------------------------------------------------------
+// ★2026-09-19追加：管理画面からの新規予約登録（電話予約・当日飛び込み対応）
+//   GAS版の staff_reservation_form.html に相当。お客様ご自身に予約フォームを
+//   操作してもらうのではなく、電話で受けた予約をスタッフが代わりに登録するための機能。
+//   POST /api/reservations（お客様フォーム用・店舗はbodyのstoreパラメータで指定）とは別に、
+//   セッションの店舗に固定した管理画面専用のエンドポイントとして用意する。
+//   予約上限警告・二重予約防止は既存のお客様フォームと同じ仕組みを再利用する。
+// ----------------------------------------------------------------------------
+app.post('/api/admin/reservations', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const data = req.body || {};
+
+    if (!data.realname || !data.staffName || !data.date || !data.time || !data.menu) {
+      return res.status(400).json({ success: false, message: 'realname / staffName / date / time / menu は必須です' });
+    }
+
+    // ★予約作成時と同じ上限チェック。管理画面からの登録はオーナー自身の判断で
+    //   上限を超えても登録できるよう、ownerOverrideが立っていればスキップする。
+    const limitCheck = engine.checkCustomerReservationLimit(storeId, data.realname, null);
+    if (limitCheck.exceeded && !data.ownerOverride) {
+      return res.status(200).json({
+        success: false,
+        isLimitWarning: true,
+        message: `${data.realname}様の確定予約が${limitCheck.count}件あります（上限${limitCheck.limit}件）。このまま登録しますか？`,
+        count: limitCheck.count,
+        limit: limitCheck.limit
+      });
+    }
+
+    const insert = db.prepare(`
+      INSERT INTO reservations
+        (store_id, realname, kana, line_name, user_id, staff_name, menu, reservation_date, reservation_time, note, editor, line_sent, done, customer_id, status)
+      VALUES
+        (@store_id, @realname, @kana, '', '', @staff_name, @menu, @reservation_date, @reservation_time, @note, @editor, 0, 0, @customer_id, '確定')
+    `);
+
+    let info;
+    try {
+      info = insert.run({
+        store_id: storeId,
+        realname: data.realname,
+        kana: data.kana || '',
+        staff_name: data.staffName,
+        menu: data.menu,
+        reservation_date: data.date,
+        reservation_time: data.time,
+        note: data.note || '',
+        editor: req.session.staff.name + '（管理画面）',
+        customer_id: data.customerId || ''
+      });
+    } catch (constraintErr) {
+      if (String(constraintErr.message).includes('UNIQUE constraint failed')) {
+        return res.status(409).json({
+          success: false,
+          isDoubleBooking: true,
+          message: 'その日時・担当は既に別の予約で埋まっています。別の枠を選んでください。'
+        });
+      }
+      throw constraintErr;
+    }
+
+    res.json({ success: true, message: '✅ 予約を登録しました', reservationId: info.lastInsertRowid });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
 // ★2026-09-19追加：スタッフのシフト管理（オーナー管理画面から操作する用）
 //
 // GET /api/admin/staff
