@@ -614,6 +614,58 @@ async function main() {
   }
 
   // --------------------------------------------------------------------------
+  // 15. ログイン管理（強制ログアウト）（★2026-09-19追加）
+  // --------------------------------------------------------------------------
+  console.log('--- 15. ログイン管理（強制ログアウト） ---');
+  let kotokoStaffId = null;
+  {
+    const r = await ownerFresh.get('/api/admin/staff');
+    const kotoko = (r.body.staff || []).find((s) => s.name === '寿子');
+    kotokoStaffId = kotoko ? kotoko.id : null;
+    assert(!!kotokoStaffId, 'スタッフ一覧から寿子（オーナー）のstaffIdが取得できる');
+  }
+  {
+    const r = await ownerFresh.get('/api/admin/sessions/staff-list');
+    const kotoko = (r.body.staff || []).find((s) => s.id === kotokoStaffId);
+    assert(r.status === 200 && !!kotoko && kotoko.isLoggedIn === true, 'ログイン管理画面用の一覧に、現在ログイン中の寿子がisLoggedIn=trueで含まれる');
+  }
+  // ownerFresh とは別に、同じ寿子でもう1つログインセッションを作る（複数端末ログインを模す）
+  const kotokoOtherDevice = makeSession();
+  {
+    const r = await kotokoOtherDevice.postJson('/api/auth/login', { store: '1', pin: '5678' });
+    assert(r.status === 200 && r.body.success === true, '同じ寿子で別端末からもログインできる（多重ログイン）');
+  }
+  {
+    const r = await kotokoOtherDevice.get('/api/auth/me');
+    assert(r.status === 200, '強制ログアウト前は別端末セッションもまだ有効');
+  }
+  {
+    const r = await owner2.postJson('/api/admin/sessions/force-logout', { staffId: kotokoStaffId });
+    assert(r.status === 404, '他店舗オーナーは他店のスタッフを強制ログアウトできない（店舗スコープ確認）');
+  }
+  {
+    const r = await ownerFresh.postJson('/api/admin/sessions/force-logout', { staffId: kotokoStaffId });
+    assert(r.status === 200 && r.body.success === true && /件/.test(r.body.message), '強制ログアウトが成功する（無効化件数メッセージ付き）');
+  }
+  {
+    const r = await kotokoOtherDevice.get('/api/auth/me');
+    assert(r.status === 401, '強制ログアウト後は別端末セッションが無効になっている');
+  }
+  {
+    const r = await ownerFresh.get('/api/auth/me');
+    assert(r.status === 401, '強制ログアウトは同じスタッフの全セッション（実行者自身の元セッションも含む）を無効化する');
+  }
+  // 以降のテストで ownerFresh を使い続けられるよう、再ログインしておく
+  {
+    const r = await ownerFresh.postJson('/api/auth/login', { store: '1', pin: '5678' });
+    assert(r.status === 200 && r.body.success === true, '強制ログアウト後、再ログインすればownerFreshを引き続き使える');
+  }
+  {
+    const r = await ownerFresh.postJson('/api/admin/sessions/force-logout', { staffId: 999999 });
+    assert(r.status === 404, '存在しないstaffIdの強制ログアウトは404になる');
+  }
+
+  // --------------------------------------------------------------------------
   console.log(`\n=== 結果: PASS ${passCount} / FAIL ${failCount} ===`);
   if (failCount > 0) {
     console.log('\n失敗した項目:');

@@ -71,15 +71,21 @@ const SESSION_SECRET = process.env.SESSION_SECRET || 'dev-only-insecure-session-
 if (!process.env.SESSION_SECRET) {
   console.warn('⚠️  SESSION_SECRET 環境変数が未設定のため、開発用の固定値を使用しています。本番運用前に必ず環境変数で設定してください。');
 }
+// ★2026-09-19追加：ログイン管理（強制ログアウト）機能のため、MemoryStoreの
+//   インスタンスを明示的に保持しておく（後段の /api/admin/sessions/* から
+//   store.all() / store.destroy() で全セッションを横断的に見る必要があるため）。
+//   本番でconnect-mysql2等に差し替える際は、そちらのstoreも同様にall()/destroy()
+//   をサポートしていることを確認すること（connect系ストアは概ね対応している）。
+const sessionStore = new session.MemoryStore();
 app.use(session({
   secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
+  store: sessionStore,
   cookie: {
     httpOnly: true,
     maxAge: 8 * 60 * 60 * 1000 // 8時間
   }
-  // store: 未指定＝デフォルトのMemoryStore（本番では差し替え必須。上記コメント参照）
 }));
 
 app.use(express.static(path.join(__dirname, 'public')));
@@ -1349,6 +1355,98 @@ app.post('/api/admin/plan', requireOwnerSession, (req, res) => {
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// ⑳ ログイン管理（強制ログアウト） - GAS版 owner_ui.html「ログイン管理」タイル相当
+//
+// GAS版はPropertiesServiceに手動でトークンを持つ独自セッション実装（デデュープ／
+// TTL／保持数上限つき）だったが、Node版はexpress-sessionの標準的なCookieセッション
+// を使っているため、同じ仕組みは不要。その代わり、express-sessionのMemoryStoreが
+// 持つ全セッションを横断的に走査し、対象スタッフのセッションを破棄することで
+// 「強制ログアウト」と同等のことを実現する。
+//   ※MemoryStoreは単一プロセス限定（本番でconnect-mysql2等に差し替えた場合も
+//     store.all()/store.destroy()があれば同じロジックで動く）。
+//
+// GET  /api/admin/sessions/staff-list
+//   対象スタッフ選択用に在籍中スタッフの一覧を返す（氏名＋現在ログイン中か否か）。
+// POST /api/admin/sessions/force-logout { staffId }
+//   指定スタッフの現在有効なセッションをすべて破棄する。
+// ----------------------------------------------------------------------------
+
+// MemoryStoreの全セッションを {sid: sessionData} の配列として取得する内部ヘルパー。
+// store.all()はコールバック形式（一部のstoreはPromiseも返すが、ここでは互換性優先でcallback形式に統一）。
+function getAllSessionsAsync_() {
+  return new Promise((resolve, reject) => {
+    sessionStore.all((err, sessions) => {
+      if (err) return reject(err);
+      // MemoryStoreはオブジェクト（{sid: session}）で返すため配列化する
+      const list = [];
+      if (sessions) {
+        Object.keys(sessions).forEach((sid) => {
+          list.push({ sid, data: sessions[sid] });
+        });
+      }
+      resolve(list);
+    });
+  });
+}
+
+app.get('/api/admin/sessions/staff-list', requireOwnerSession, async (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const staffRows = db.prepare(`
+      SELECT id, name FROM staff WHERE store_id = ? AND is_active = 1 ORDER BY name ASC
+    `).all(storeId);
+
+    const sessions = await getAllSessionsAsync_();
+    const loggedInStaffIds = new Set();
+    sessions.forEach(({ data }) => {
+      if (data && data.staff && data.staff.storeId === storeId) {
+        loggedInStaffIds.add(data.staff.id);
+      }
+    });
+
+    res.json({
+      staff: staffRows.map((s) => ({
+        id: s.id,
+        name: s.name,
+        isLoggedIn: loggedInStaffIds.has(s.id)
+      }))
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/admin/sessions/force-logout', requireOwnerSession, async (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const staffId = Number((req.body || {}).staffId);
+    if (!staffId) {
+      return res.status(400).json({ success: false, message: 'staffId は必須です' });
+    }
+    const target = db.prepare('SELECT id, name FROM staff WHERE id = ? AND store_id = ?').get(staffId, storeId);
+    if (!target) {
+      return res.status(404).json({ success: false, message: '対象のスタッフが見つかりません' });
+    }
+
+    const sessions = await getAllSessionsAsync_();
+    const targets = sessions.filter(({ data }) => data && data.staff && data.staff.id === staffId && data.staff.storeId === storeId);
+
+    await Promise.all(targets.map(({ sid }) => new Promise((resolve) => {
+      sessionStore.destroy(sid, () => resolve());
+    })));
+
+    if (targets.length === 0) {
+      return res.json({ success: true, message: 'このスタッフは現在ログインしていません（有効なセッションなし）' });
+    }
+    res.json({ success: true, message: `✅ ログアウトさせました（${targets.length}件のログイン状態を無効化）` });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
   }
 });
 

@@ -188,6 +188,17 @@
         </table>
         <div class="empty" id="eventsEmpty" style="display:none;">登録されている休業日・イベントはありません</div>
       </div>
+
+      <div class="panel">
+        <h2>ログイン管理</h2>
+        <div class="desc">端末の紛失などで、特定のスタッフを強制的にログアウトさせます</div>
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+          <select id="sessionStaffSelect" style="min-width:200px;"></select>
+          <button class="btn" id="forceLogoutBtn" type="button">🔒 このスタッフを強制ログアウトさせる</button>
+          <span class="row-save-msg" id="sessionMsg" style="display:none;"></span>
+        </div>
+        <div class="err" id="sessionErr" style="display:none;"></div>
+      </div>
     </div>
   </div>
 
@@ -221,7 +232,7 @@
   async function init() {
     try {
       await adminFetch('/api/auth/me');
-      await Promise.all([loadMenu(), loadRules(), loadZones(), loadEvents()]);
+      await Promise.all([loadMenu(), loadRules(), loadZones(), loadEvents(), loadSessionStaffList()]);
       loadingMsg.style.display = 'none';
       shell.classList.add('ready');
     } catch (e) {
@@ -480,6 +491,42 @@
       document.getElementById('evTitle').value = '';
       document.getElementById('evDate').value = '';
       await loadEvents();
+    } catch (err) {
+      errBox.textContent = err.message;
+      errBox.style.display = 'block';
+    }
+  });
+
+  // ---------- ログイン管理（強制ログアウト） ----------
+  async function loadSessionStaffList() {
+    const data = await adminFetch('/api/admin/sessions/staff-list');
+    const sel = document.getElementById('sessionStaffSelect');
+    sel.innerHTML = '';
+    (data.staff || []).forEach((s) => {
+      const opt = document.createElement('option');
+      opt.value = s.id;
+      opt.textContent = s.name + (s.isLoggedIn ? '（ログイン中）' : '（未ログイン）');
+      sel.appendChild(opt);
+    });
+  }
+
+  document.getElementById('forceLogoutBtn').addEventListener('click', async () => {
+    const sel = document.getElementById('sessionStaffSelect');
+    const errBox = document.getElementById('sessionErr');
+    const msg = document.getElementById('sessionMsg');
+    errBox.style.display = 'none';
+    msg.style.display = 'none';
+    if (!sel.value) return;
+    const name = sel.options[sel.selectedIndex].textContent;
+    if (!confirm(`${name} を強制的にログアウトさせますか？`)) return;
+    try {
+      const data = await adminFetch('/api/admin/sessions/force-logout', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ staffId: sel.value })
+      });
+      msg.textContent = data.message || '完了しました';
+      msg.style.display = 'inline';
+      await loadSessionStaffList();
     } catch (err) {
       errBox.textContent = err.message;
       errBox.style.display = 'block';
