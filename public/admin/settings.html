@@ -59,6 +59,15 @@
 
   #loadingMsg{text-align:center; color:var(--ink-soft); font-size:13px; padding:60px 0;}
 
+  .msg-tab-btn{opacity:0.7;}
+  .msg-tab-btn.active{opacity:1; background:var(--accent-soft); color:var(--accent); border-color:var(--accent-soft); font-weight:700;}
+  .msg-item{border:1px solid var(--line); border-radius:10px; padding:14px; margin-bottom:14px;}
+  .msg-item-label{font-size:12.5px; font-weight:700; color:var(--ink); margin-bottom:8px;}
+  .msg-bubble{background:#DFF3E1; border-radius:10px; padding:10px 12px; font-size:12.5px; line-height:1.6; white-space:pre-wrap; margin-bottom:10px; max-width:420px;}
+  .msg-field label{display:block; font-size:11px; color:var(--ink-soft); margin-bottom:4px;}
+  .msg-field textarea{width:100%; max-width:520px; border:1px solid var(--line); border-radius:8px; padding:8px 10px; font-family:inherit; font-size:12.5px; resize:vertical;}
+  .msg-field{margin-bottom:10px;}
+
   @media (max-width:760px){
     .shell.ready{grid-template-columns:1fr;}
     .sidebar{flex-direction:row; flex-wrap:wrap; align-items:center; padding:12px 14px;}
@@ -189,6 +198,34 @@
         <div class="empty" id="eventsEmpty" style="display:none;">登録されている休業日・イベントはありません</div>
       </div>
 
+      <div class="panel" id="msgPanel">
+        <h2>メッセージ設定</h2>
+        <div class="desc">LINE通知テンプレートの本文と締めの文を管理します。<span id="msgOptionBadge" style="display:none; color:var(--warn); font-weight:700;">🔒 現在のプランではLINE通知は実送信されません（本文の編集・保存は可能です）</span></div>
+        <div class="hint" style="font-size:11.5px; color:var(--ink-soft); margin-bottom:12px;">本文中の <code>{DATE}{TIME}{MENU}{STAFF}</code> は日時・メニュー・スタッフ名に自動置換されます（あいさつのみ <code>{NICKNAME}</code> がお客様の表示名に置換されます）。プレビューは実際にLINEに届く内容とそのまま一致します。</div>
+
+        <div class="msg-tabs" style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:14px;">
+          <button type="button" class="btn secondary small msg-tab-btn active" data-tab="welcome">👋 あいさつ</button>
+          <button type="button" class="btn secondary small msg-tab-btn" data-tab="confirm">📩 予約確認</button>
+          <button type="button" class="btn secondary small msg-tab-btn" data-tab="change">✏️ 予約変更</button>
+          <button type="button" class="btn secondary small msg-tab-btn" data-tab="cancel">🚫 キャンセル</button>
+          <button type="button" class="btn secondary small msg-tab-btn" data-tab="remind">⏰ 前日リマインド</button>
+        </div>
+
+        <div class="msg-panel-group" data-panel="welcome"></div>
+        <div class="msg-panel-group" data-panel="confirm" style="display:none;">
+          <div class="hint" style="font-size:11.5px; color:var(--ink-soft); margin-bottom:10px;">「予約確認」は送信タイミングごとに4パターンあります。それぞれ個別に本文・締めの文を編集できます。</div>
+        </div>
+        <div class="msg-panel-group" data-panel="change" style="display:none;"></div>
+        <div class="msg-panel-group" data-panel="cancel" style="display:none;"></div>
+        <div class="msg-panel-group" data-panel="remind" style="display:none;"></div>
+
+        <div class="err" id="msgErr" style="display:none;"></div>
+        <div style="display:flex; gap:10px; align-items:center; margin-top:10px;">
+          <button class="btn" id="msgSaveBtn" type="button">変更を保存</button>
+          <span class="row-save-msg" id="msgSaveOk" style="display:none;">✓ 保存しました</span>
+        </div>
+      </div>
+
       <div class="panel">
         <h2>ログイン管理</h2>
         <div class="desc">端末の紛失などで、特定のスタッフを強制的にログアウトさせます</div>
@@ -233,7 +270,7 @@
     try {
       const me = await adminFetch('/api/auth/me');
       if (!me.staff.isOwner) { window.location.href = '/staff/dashboard.html'; return; }
-      await Promise.all([loadMenu(), loadRules(), loadZones(), loadEvents(), loadSessionStaffList()]);
+      await Promise.all([loadMenu(), loadRules(), loadZones(), loadEvents(), loadSessionStaffList(), loadMessages()]);
       loadingMsg.style.display = 'none';
       shell.classList.add('ready');
     } catch (e) {
@@ -533,6 +570,108 @@
       msg.textContent = data.message || '完了しました';
       msg.style.display = 'inline';
       await loadSessionStaffList();
+    } catch (err) {
+      errBox.textContent = err.message;
+      errBox.style.display = 'block';
+    }
+  });
+
+  // ---------- メッセージ設定 ----------
+  const MSG_KEY_TO_TAB = {
+    welcome: 'welcome',
+    confirm_add: 'confirm', confirm_keep: 'confirm', confirm_provisional: 'confirm', confirm_finalize: 'confirm',
+    change: 'change', cancel: 'cancel', remind: 'remind'
+  };
+  // GAS版owner_ui.htmlのMESSAGE_LABELS_CLIENT_相当（「予約確認」タブ内の4パターン見出し用）
+  const MSG_SUB_LABELS = {
+    confirm_add: '①スタッフが手動で予約追加',
+    confirm_keep: '②キープメンバーの予約（即確定）',
+    confirm_provisional: '③仮予約受付（キープメンバー以外）',
+    confirm_finalize: '④スタッフが仮予約を確定操作'
+  };
+  const MSG_PREVIEW_SAMPLE = { DATE: '9/25(金)', TIME: '14:00', MENU: '【フェイシャル(60分)】', STAFF: '田中', NICKNAME: '（お客様の表示名）' };
+
+  function renderMsgPreview(bodyVal, closingVal, key) {
+    let text = bodyVal;
+    Object.keys(MSG_PREVIEW_SAMPLE).forEach((k) => { text = text.split('{' + k + '}').join(MSG_PREVIEW_SAMPLE[k]); });
+    if (closingVal) text += '\n\n' + closingVal;
+    return text;
+  }
+
+  async function loadMessages() {
+    const data = await adminFetch('/api/admin/settings/messages');
+    document.getElementById('msgOptionBadge').style.display = data.lineOptionContract ? 'none' : 'inline';
+
+    // 既存itemを一旦クリアしてから作り直す（再読み込み時に重複しないように）
+    document.querySelectorAll('.msg-panel-group').forEach((g) => {
+      // heading等の固定文言を残すため、msg-itemだけを消す
+      g.querySelectorAll('.msg-item').forEach((el) => el.remove());
+    });
+
+    (data.items || []).forEach((item) => {
+      const tab = MSG_KEY_TO_TAB[item.key];
+      const group = document.querySelector('.msg-panel-group[data-panel="' + tab + '"]');
+      if (!group) return;
+
+      const wrap = document.createElement('div');
+      wrap.className = 'msg-item';
+      wrap.dataset.key = item.key;
+      const subLabel = MSG_SUB_LABELS[item.key];
+      wrap.innerHTML = `
+        ${subLabel ? '<div class="msg-item-label">' + esc(subLabel) + '</div>' : ''}
+        <div class="msg-bubble" data-preview></div>
+        <div class="msg-field">
+          <label>本文テンプレート</label>
+          <textarea rows="4" data-body>${esc(item.body)}</textarea>
+        </div>
+        <div class="msg-field">
+          <label>締めの文（任意）</label>
+          <textarea rows="2" data-closing>${esc(item.closing)}</textarea>
+        </div>
+      `;
+      const bodyEl = wrap.querySelector('[data-body]');
+      const closingEl = wrap.querySelector('[data-closing]');
+      const previewEl = wrap.querySelector('[data-preview]');
+      const updatePreview = () => { previewEl.textContent = renderMsgPreview(bodyEl.value, closingEl.value, item.key); };
+      bodyEl.addEventListener('input', updatePreview);
+      closingEl.addEventListener('input', updatePreview);
+      updatePreview();
+      group.appendChild(wrap);
+    });
+  }
+
+  document.querySelectorAll('.msg-tab-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.msg-tab-btn').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      const tab = btn.dataset.tab;
+      document.querySelectorAll('.msg-panel-group').forEach((g) => {
+        g.style.display = (g.dataset.panel === tab) ? 'block' : 'none';
+      });
+    });
+  });
+
+  document.getElementById('msgSaveBtn').addEventListener('click', async () => {
+    const errBox = document.getElementById('msgErr');
+    const okMsg = document.getElementById('msgSaveOk');
+    errBox.style.display = 'none';
+    okMsg.style.display = 'none';
+    const items = [];
+    document.querySelectorAll('.msg-item').forEach((wrap) => {
+      items.push({
+        key: wrap.dataset.key,
+        body: wrap.querySelector('[data-body]').value.trim(),
+        closing: wrap.querySelector('[data-closing]').value.trim()
+      });
+    });
+    try {
+      await adminFetch('/api/admin/settings/messages', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items })
+      });
+      okMsg.style.display = 'inline';
+      setTimeout(() => { okMsg.style.display = 'none'; }, 2500);
+      await loadMessages();
     } catch (err) {
       errBox.textContent = err.message;
       errBox.style.display = 'block';

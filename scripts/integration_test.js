@@ -55,6 +55,13 @@ function makeSession() {
         body: JSON.stringify(data)
       });
     },
+    async putJson(path, data) {
+      return this.request(path, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+      });
+    },
     async get(path) {
       return this.request(path, { method: 'GET' });
     }
@@ -796,6 +803,55 @@ async function main() {
     const anonStaff = makeSession();
     const r = await anonStaff.get('/api/staff/reservations');
     assert(r.status === 401, '未ログインでは/api/staff/*も401になる');
+  }
+
+  // --------------------------------------------------------------------------
+  // 18. メッセージ設定（GAS版owner_ui.htmlの「メッセージ設定」パネル・
+  //     admin_ui_functions.gsのgetMessageSettings/saveMessageSettingsの移植）
+  // --------------------------------------------------------------------------
+  console.log('--- 18. メッセージ設定 ---');
+  {
+    const r = await anon.get('/api/admin/settings/messages');
+    assert(r.status === 401, '未ログインではメッセージ設定を取得できない');
+  }
+  {
+    const r = await ownerFresh.get('/api/admin/settings/messages');
+    assert(r.status === 200 && Array.isArray(r.body.items) && r.body.items.length === 8, 'メッセージ設定は8キー（あいさつ＋予約確認4種＋変更＋キャンセル＋リマインド）返る');
+    const welcome = r.body.items.find((it) => it.key === 'welcome');
+    assert(!!welcome && welcome.body.includes('{NICKNAME}'), '初期状態は未編集のためデフォルト文言（{NICKNAME}を含むあいさつ文）が返る');
+  }
+  {
+    const r = await ownerFresh.putJson('/api/admin/settings/messages', {
+      items: [
+        { key: 'confirm_add', body: 'ご予約ありがとうございます！\n{DATE} {TIME}\n{MENU}（担当：{STAFF}）', closing: '当日のご来店をお待ちしております。' }
+      ]
+    });
+    assert(r.status === 200 && r.body.success === true, 'メッセージテンプレートを保存できる');
+  }
+  {
+    const r = await ownerFresh.get('/api/admin/settings/messages');
+    const item = r.body.items.find((it) => it.key === 'confirm_add');
+    assert(!!item && item.body.includes('ご予約ありがとうございます') && item.closing === '当日のご来店をお待ちしております。', '保存した内容が次回取得時に反映される（未編集の他キーはデフォルトのまま）');
+    const cancelItem = r.body.items.find((it) => it.key === 'cancel');
+    assert(!!cancelItem && cancelItem.body.includes('キャンセルしました'), '編集していない他のキーは引き続きデフォルト文言のまま');
+  }
+  {
+    const r = await ownerFresh.putJson('/api/admin/settings/messages', { items: [{ key: 'cancel', body: '', closing: '' }] });
+    assert(r.status === 400 && /本文を入力してください/.test(r.body.message), '本文が空のテンプレートは保存できない（バリデーション）');
+  }
+  {
+    const longBody = 'あ'.repeat(501);
+    const r = await ownerFresh.putJson('/api/admin/settings/messages', { items: [{ key: 'remind', body: longBody, closing: '' }] });
+    assert(r.status === 400 && /500文字以内/.test(r.body.message), '本文が500文字を超えるテンプレートは保存できない（バリデーション）');
+  }
+  {
+    // store2（岩田町店）オーナーがstore1のconfirm_addを保存しても、store1側には影響しない（店舗スコープ確認）
+    await owner2.putJson('/api/admin/settings/messages', {
+      items: [{ key: 'confirm_add', body: '岩田町店だけの予約確認メッセージです', closing: '' }]
+    });
+    const r1 = await ownerFresh.get('/api/admin/settings/messages');
+    const item1 = r1.body.items.find((it) => it.key === 'confirm_add');
+    assert(item1.body.includes('ご予約ありがとうございます'), '他店舗オーナーがメッセージを保存してもstore1側のテンプレートは変わらない（店舗スコープ確認）');
   }
 
   // --------------------------------------------------------------------------

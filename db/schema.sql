@@ -273,6 +273,22 @@ CREATE TABLE IF NOT EXISTS menu_items (
 );
 CREATE INDEX IF NOT EXISTS idx_menu_items_store ON menu_items(store_id, display_order);
 
+-- ============================================================================
+-- ★2026-09-20追加：メッセージ設定（GAS版owner_ui.htmlの「メッセージ設定」パネル・
+--   スプレッドシートの「messages」シート相当）。LINE通知テンプレート（本文＋締めの文）
+--   を店舗ごとに保存する。未登録キーは lib/messageTemplates.js の
+--   DEFAULT_MESSAGE_TEMPLATES にフォールバックする（GAS版と同じ方式）。
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS message_templates (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  store_id       INTEGER NOT NULL REFERENCES stores(id),
+  msg_key        VARCHAR(30) NOT NULL,  -- welcome / confirm_add / confirm_keep / confirm_provisional / confirm_finalize / change / cancel / remind
+  body           TEXT NOT NULL DEFAULT '',
+  closing        TEXT NOT NULL DEFAULT '',
+  updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(store_id, msg_key)
+);
+
 -- インデックス（検索性能用。日付・店舗・スタッフでの絞り込みが多いため）
 CREATE INDEX IF NOT EXISTS idx_reservations_store_date ON reservations(store_id, reservation_date);
 CREATE INDEX IF NOT EXISTS idx_reservations_staff_date  ON reservations(store_id, staff_name, reservation_date);
