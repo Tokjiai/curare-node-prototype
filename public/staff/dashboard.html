@@ -57,6 +57,17 @@
 
   .shift-card{background:var(--accent-soft); color:var(--accent); border-radius:10px; padding:10px 14px; font-size:13.5px; font-weight:700; margin-bottom:8px;}
 
+  .cal-grid{display:grid; grid-template-columns:repeat(7,1fr); gap:5px;}
+  .cal-dow{font-size:11px; font-weight:700; color:var(--ink-soft); text-align:center; padding-bottom:4px;}
+  .cal-dow.dow-sun{color:#C0392B;} .cal-dow.dow-sat{color:#2980B9;}
+  .cal-cell{position:relative; aspect-ratio:1/1; border:1px solid var(--line); border-radius:9px; background:#fff; padding:4px; cursor:pointer; display:flex; flex-direction:column; align-items:center; justify-content:flex-start;}
+  .cal-cell.blank{visibility:hidden; cursor:default;}
+  .cal-cell.today{border-color:var(--rose-dark); border-width:2px;}
+  .cal-cell .num{font-size:12px; font-weight:700;}
+  .cal-cell .num.dow-sun{color:#C0392B;} .cal-cell .num.dow-sat{color:#2980B9;}
+  .cal-cell .cnt{margin-top:3px; font-size:10.5px; font-weight:700; color:#fff; background:var(--accent); border-radius:8px; padding:1px 6px; min-width:16px; text-align:center;}
+  .cal-cell .pending-dot{position:absolute; top:3px; right:5px; width:7px; height:7px; border-radius:50%; background:var(--warn);}
+
   .empty{color:var(--ink-faint); font-size:12.5px; text-align:center; padding:18px 0;}
   #loadingMsg{text-align:center; color:var(--ink-soft); font-size:13px; padding:60px 0;}
   .footer-nav{text-align:center; padding:18px 0 30px;}
@@ -80,6 +91,7 @@
     <div class="tabs">
       <button class="tab active" id="tabResBtn" type="button">📋 予約確認</button>
       <button class="tab" id="tabShiftBtn" type="button">📅 シフト管理</button>
+      <button class="tab" id="tabCalBtn" type="button">📆 月間カレンダー</button>
     </div>
 
     <div class="main">
@@ -101,6 +113,16 @@
         <div id="shiftList"></div>
       </div>
 
+      <div class="tab-content" id="tabCal">
+        <div class="week-nav">
+          <button id="calPrevBtn" type="button">← 前月</button>
+          <div class="label" id="calMonthLabel"></div>
+          <button id="calNextBtn" type="button">次月 →</button>
+        </div>
+        <div class="cal-grid" id="calGrid"></div>
+        <div class="empty" style="margin-top:10px;">日付をタップすると📋予約確認タブでその週を表示します</div>
+      </div>
+
       <div class="footer-nav"><a href="#" id="logoutLink">🚪 ログアウト</a></div>
     </div>
   </div>
@@ -111,6 +133,7 @@
   const shell = document.getElementById('shell');
   let resWeekStart = startOfWeek(new Date());
   let shiftWeekStart = startOfWeek(new Date());
+  let calMonth = new Date(); calMonth.setDate(1); calMonth.setHours(0,0,0,0);
 
   function startOfWeek(d) {
     const x = new Date(d); x.setHours(0,0,0,0);
@@ -142,6 +165,7 @@
       document.getElementById('headerStoreName').textContent = storeData.store.name;
       await loadReservations();
       await loadShifts();
+      await loadCalendar();
       loadingMsg.style.display = 'none';
       shell.classList.add('ready');
     } catch (e) {
@@ -237,23 +261,65 @@
     }
   }
 
-  document.getElementById('tabResBtn').addEventListener('click', () => {
-    document.getElementById('tabResBtn').classList.add('active');
-    document.getElementById('tabShiftBtn').classList.remove('active');
-    document.getElementById('tabRes').classList.add('active');
-    document.getElementById('tabShift').classList.remove('active');
-  });
-  document.getElementById('tabShiftBtn').addEventListener('click', () => {
-    document.getElementById('tabShiftBtn').classList.add('active');
-    document.getElementById('tabResBtn').classList.remove('active');
-    document.getElementById('tabShift').classList.add('active');
-    document.getElementById('tabRes').classList.remove('active');
-  });
+  // ---- 📆 月間カレンダータブ ----
+  async function loadCalendar() {
+    const monthStr = `${calMonth.getFullYear()}-${String(calMonth.getMonth()+1).padStart(2,'0')}`;
+    document.getElementById('calMonthLabel').textContent = `${calMonth.getFullYear()}年${calMonth.getMonth()+1}月`;
+    const data = await staffFetch(`/api/staff/reservations/monthly?month=${monthStr}`);
+    const counts = data.counts || {};
+
+    const gridEl = document.getElementById('calGrid');
+    gridEl.innerHTML = '';
+    DOW_LABELS.forEach((label, i) => {
+      const dow = document.createElement('div');
+      dow.className = 'cal-dow ' + (i === 5 ? 'dow-sat' : (i === 6 ? 'dow-sun' : ''));
+      dow.textContent = label;
+      gridEl.appendChild(dow);
+    });
+
+    const firstOfMonth = new Date(calMonth.getFullYear(), calMonth.getMonth(), 1);
+    const leadBlanks = (firstOfMonth.getDay() + 6) % 7; // 月曜始まり
+    const daysInMonth = new Date(calMonth.getFullYear(), calMonth.getMonth() + 1, 0).getDate();
+    const tStr = todayStr();
+
+    for (let i = 0; i < leadBlanks; i++) {
+      const blank = document.createElement('div');
+      blank.className = 'cal-cell blank';
+      gridEl.appendChild(blank);
+    }
+    for (let d = 1; d <= daysInMonth; d++) {
+      const date = new Date(calMonth.getFullYear(), calMonth.getMonth(), d);
+      const dStr = fmt(date);
+      const info = counts[dStr];
+      const cell = document.createElement('div');
+      cell.className = 'cal-cell' + (dStr === tStr ? ' today' : '');
+      cell.innerHTML = `<span class="num ${dowClass(date.getDay())}">${d}</span>` +
+        (info && info.count > 0 ? `<span class="cnt">${info.count}</span>` : '') +
+        (info && info.pending ? '<span class="pending-dot" title="仮予約あり"></span>' : '');
+      cell.addEventListener('click', () => {
+        resWeekStart = startOfWeek(date);
+        loadReservations();
+        switchTab('tabResBtn', 'tabRes');
+      });
+      gridEl.appendChild(cell);
+    }
+  }
+
+  function switchTab(btnId, contentId) {
+    ['tabResBtn', 'tabShiftBtn', 'tabCalBtn'].forEach((id) => document.getElementById(id).classList.toggle('active', id === btnId));
+    ['tabRes', 'tabShift', 'tabCal'].forEach((id) => document.getElementById(id).classList.toggle('active', id === contentId));
+  }
+
+  document.getElementById('tabResBtn').addEventListener('click', () => switchTab('tabResBtn', 'tabRes'));
+  document.getElementById('tabShiftBtn').addEventListener('click', () => switchTab('tabShiftBtn', 'tabShift'));
+  document.getElementById('tabCalBtn').addEventListener('click', () => switchTab('tabCalBtn', 'tabCal'));
 
   document.getElementById('resPrevBtn').addEventListener('click', () => { resWeekStart = addDays(resWeekStart, -7); loadReservations(); });
   document.getElementById('resNextBtn').addEventListener('click', () => { resWeekStart = addDays(resWeekStart, 7); loadReservations(); });
   document.getElementById('shiftPrevBtn').addEventListener('click', () => { shiftWeekStart = addDays(shiftWeekStart, -7); loadShifts(); });
   document.getElementById('shiftNextBtn').addEventListener('click', () => { shiftWeekStart = addDays(shiftWeekStart, 7); loadShifts(); });
+  document.getElementById('calPrevBtn').addEventListener('click', () => { calMonth.setMonth(calMonth.getMonth() - 1); loadCalendar(); });
+  document.getElementById('calNextBtn').addEventListener('click', () => { calMonth.setMonth(calMonth.getMonth() + 1); loadCalendar(); });
 
   document.getElementById('logoutLink').addEventListener('click', async (e) => {
     e.preventDefault();

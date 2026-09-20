@@ -476,6 +476,58 @@ app.get('/api/staff/reservations', requireStaffSession, (req, res) => {
 });
 
 // ----------------------------------------------------------------------------
+// ★2026-09-20追加：月間カレンダー（GAS版staff_dashboard.htmlの
+//   getMonthlyDateCounts_ / getMonthlyReservationCounts_ / getMonthlyPendingStatus_
+//   に相当）。GAS版は「担当スタッフ別の月間件数＋仮予約バッジ」を1か月分まとめて
+//   返し、カレンダーマス目をタップすると📋予約確認タブの該当週へジャンプする作りに
+//   なっていた。
+//   【簡略化】GAS版はオーナーが他スタッフの月間カレンダーを切り替えて見られたが
+//  （ownerFocusStaffName引数）、Node版の/api/staff/*は既存の週次タブと同じく
+//   「本人（session.staff.name）担当分のみ」に統一してある。他スタッフ・店舗全体の
+//   予約状況はオーナー管理画面（/admin/reservations.html）で確認できるため、実害は
+//   小さいと判断した。
+//
+// GET /api/staff/reservations/monthly?month=YYYY-MM
+//   → { month, counts: { 'YYYY-MM-DD': { count, pending } } }
+//   count: その日の自分担当の予約件数（キャンセル除く）
+//   pending: その日に仮予約（status='仮予約'）が1件でもあればtrue
+// ----------------------------------------------------------------------------
+app.get('/api/staff/reservations/monthly', requireStaffSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const staffName = req.session.staff.name;
+    const monthParam = String(req.query.month || '');
+    const m = /^(\d{4})-(\d{2})$/.exec(monthParam);
+    const now = new Date();
+    const year = m ? Number(m[1]) : now.getFullYear();
+    const month = m ? Number(m[2]) : now.getMonth() + 1; // 1-12
+    const pad2 = (n) => String(n).padStart(2, '0');
+    const monthStr = `${year}-${pad2(month)}`;
+    const from = `${monthStr}-01`;
+    const lastDay = new Date(year, month, 0).getDate(); // month is 1-based here → day 0 of next month
+    const to = `${monthStr}-${pad2(lastDay)}`;
+
+    const rows = db.prepare(`
+      SELECT reservation_date, status FROM reservations
+      WHERE store_id = ? AND staff_name = ? AND realname != 'キャンセル'
+        AND reservation_date >= ? AND reservation_date <= ?
+    `).all(storeId, staffName, from, to);
+
+    const counts = {};
+    rows.forEach((r) => {
+      if (!counts[r.reservation_date]) counts[r.reservation_date] = { count: 0, pending: false };
+      counts[r.reservation_date].count++;
+      if (r.status === '仮予約') counts[r.reservation_date].pending = true;
+    });
+
+    res.json({ month: monthStr, from, to, staffName, counts });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
 // ★旧実装（廃止・置き換え済み）：requireAdminPassword
 //   共有パスワード1個をヘッダーで送るだけの簡易認証。/api/admin/* は現在
 //   requireOwnerSession（セッションベース）に置き換わっており、この関数は
@@ -678,11 +730,16 @@ app.post('/api/admin/reservations', requireOwnerSession, (req, res) => {
       });
     }
 
+    // ★2026-09-20追加：「仮予約として登録」チェック（GAS版dashboard_functions.gsの
+    //   仮予約フロー相当）。trueの場合はstatus='仮予約'で登録し、後で担当スタッフが
+    //   確定操作（POST /api/admin/reservations/:id/confirm）を行うまで確定しない。
+    const status = data.provisional ? '仮予約' : '確定';
+
     const insert = db.prepare(`
       INSERT INTO reservations
         (store_id, realname, kana, line_name, user_id, staff_name, menu, reservation_date, reservation_time, note, editor, line_sent, done, customer_id, status)
       VALUES
-        (@store_id, @realname, @kana, '', '', @staff_name, @menu, @reservation_date, @reservation_time, @note, @editor, 0, 0, @customer_id, '確定')
+        (@store_id, @realname, @kana, '', '', @staff_name, @menu, @reservation_date, @reservation_time, @note, @editor, 0, 0, @customer_id, @status)
     `);
 
     let info;
@@ -697,7 +754,8 @@ app.post('/api/admin/reservations', requireOwnerSession, (req, res) => {
         reservation_time: data.time,
         note: data.note || '',
         editor: req.session.staff.name + '（管理画面）',
-        customer_id: data.customerId || ''
+        customer_id: data.customerId || '',
+        status
       });
     } catch (constraintErr) {
       if (String(constraintErr.message).includes('UNIQUE constraint failed')) {
@@ -710,7 +768,57 @@ app.post('/api/admin/reservations', requireOwnerSession, (req, res) => {
       throw constraintErr;
     }
 
-    res.json({ success: true, message: '✅ 予約を登録しました', reservationId: info.lastInsertRowid });
+    res.json({
+      success: true,
+      message: status === '仮予約' ? '✅ 仮予約として登録しました（確定操作が必要です）' : '✅ 予約を登録しました',
+      reservationId: info.lastInsertRowid
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// ★2026-09-20追加：仮予約の確定操作（GAS版dashboard_functions.gsのconfirmReservation
+//   相当）。担当スタッフが「未定」のままでは確定できない（GAS版と同じ安全策）。
+//   確定に伴い、顧客がLINE連携済みであればconfirm_finalizeテンプレートで通知を送る
+//   （LINE通知はあくまで付加機能。失敗しても確定操作自体は成功として扱う）。
+// ----------------------------------------------------------------------------
+app.post('/api/admin/reservations/:id/confirm', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const id = Number(req.params.id);
+    const row = db.prepare('SELECT * FROM reservations WHERE id = ? AND store_id = ?').get(id, storeId);
+    if (!row) {
+      return res.status(404).json({ success: false, message: '対象の予約が見つかりません' });
+    }
+    if (row.status !== '仮予約') {
+      return res.status(400).json({ success: false, message: 'この予約はすでに確定済みです' });
+    }
+    if (!row.staff_name || row.staff_name === '未定') {
+      return res.status(400).json({ success: false, message: '❌ 担当スタッフが未定のため確定できません。先に担当を設定してください' });
+    }
+
+    db.prepare(`UPDATE reservations SET status = '確定', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(id);
+
+    // ★LINE通知はあくまで付加機能。ここでの失敗が確定操作自体を妨げてはならないため、
+    //   awaitせずfire-and-forgetし、例外は.catchで握りつぶしてログにのみ残す。
+    try {
+      if (row.customer_id) {
+        const customer = db.prepare('SELECT * FROM customers WHERE store_id = ? AND customer_id = ?').get(storeId, row.customer_id);
+        const store = db.prepare('SELECT * FROM stores WHERE id = ?').get(storeId);
+        notifyReservationConfirmed(store, customer, {
+          staffName: row.staff_name, menu: row.menu, date: row.reservation_date, time: row.reservation_time
+        }, 'confirm_finalize').catch((notifyErr) => {
+          console.error('LINE通知処理でエラー（確定操作自体は成功しているため無視）:', notifyErr);
+        });
+      }
+    } catch (notifySyncErr) {
+      console.error('LINE通知の呼び出し準備でエラー（確定操作自体は成功しているため無視）:', notifySyncErr);
+    }
+
+    res.json({ success: true, message: '予約を確定しました' });
   } catch (e) {
     console.error(e);
     res.status(500).json({ success: false, error: e.message });

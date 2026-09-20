@@ -909,6 +909,102 @@ async function main() {
   }
 
   // --------------------------------------------------------------------------
+  // 20. 仮予約の確定操作（GAS版dashboard_functions.gsのconfirmReservation相当）
+  // --------------------------------------------------------------------------
+  console.log('--- 20. 仮予約の確定操作 ---');
+  let provisionalId = null;
+  {
+    const d = new Date(); d.setDate(d.getDate() + 30);
+    const dateStr = d.toISOString().slice(0, 10);
+    const r = await ownerFresh.postJson('/api/admin/reservations', {
+      realname: '仮予約統合テスト', staffName: '花子', menu: 'テストメニュー', date: dateStr, time: '13:00', provisional: true
+    });
+    assert(r.status === 200 && r.body.success === true && /仮予約として登録/.test(r.body.message), '「仮予約として登録する」チェックを付けて新規予約を追加すると仮予約状態で登録される');
+    provisionalId = r.body.reservationId;
+  }
+  {
+    const r = await ownerFresh.get('/api/admin/reservations?from=2026-01-01&to=2027-12-31');
+    const row = (r.body.reservations || []).find((x) => x.id === provisionalId);
+    assert(!!row && row.status === '仮予約', '登録直後の予約はstatus=仮予約で取得できる');
+  }
+  {
+    const r = await owner2.postJson('/api/admin/reservations/' + provisionalId + '/confirm', {});
+    assert(r.status === 404, '他店舗オーナーは他店の仮予約を確定できない（店舗スコープ確認）');
+  }
+  {
+    const r = await ownerFresh.postJson('/api/admin/reservations/' + provisionalId + '/confirm', {});
+    assert(r.status === 200 && r.body.success === true, '担当スタッフが設定済みの仮予約は確定操作が成功する');
+  }
+  {
+    const r = await ownerFresh.get('/api/admin/reservations?from=2026-01-01&to=2027-12-31');
+    const row = (r.body.reservations || []).find((x) => x.id === provisionalId);
+    assert(!!row && row.status === '確定', '確定操作後はstatus=確定に変わる');
+  }
+  {
+    const r = await ownerFresh.postJson('/api/admin/reservations/' + provisionalId + '/confirm', {});
+    assert(r.status === 400 && /すでに確定済み/.test(r.body.message), 'すでに確定済みの予約を再度確定操作しようとすると拒否される');
+  }
+  {
+    const r = await ownerFresh.postJson('/api/admin/reservations/999999/confirm', {});
+    assert(r.status === 404, '存在しない予約IDの確定操作は404になる');
+  }
+  {
+    const d = new Date(); d.setDate(d.getDate() + 31);
+    const dateStr = d.toISOString().slice(0, 10);
+    const r = await ownerFresh.postJson('/api/admin/reservations', {
+      realname: '担当未定テスト', staffName: '未定', menu: 'テストメニュー', date: dateStr, time: '13:00', provisional: true
+    });
+    const confirmR = await ownerFresh.postJson('/api/admin/reservations/' + r.body.reservationId + '/confirm', {});
+    assert(confirmR.status === 400 && /担当スタッフが未定/.test(confirmR.body.message), '担当スタッフが「未定」のままの仮予約は確定操作できない（GAS版と同じ安全策）');
+  }
+
+  // --------------------------------------------------------------------------
+  // 21. 月間カレンダー（GAS版staff_dashboard.htmlのgetMonthlyDateCounts_/
+  //     getMonthlyPendingStatus_相当。スタッフ用ダッシュボードの📆月間カレンダータブ）
+  // --------------------------------------------------------------------------
+  console.log('--- 21. 月間カレンダー ---');
+  const hanakoFresh = makeSession();
+  await hanakoFresh.postJson('/api/auth/login', { store: '1', pin: '6789' }); // 花子（is_owner=0）
+  {
+    const r = await fetch(BASE + '/api/staff/reservations/monthly?month=2026-09').then((res) => res.status);
+    assert(r === 401, '未ログインでは月間カレンダーAPIは401になる');
+  }
+  {
+    const r = await hanakoFresh.get('/api/staff/reservations/monthly?month=2026-09');
+    assert(r.status === 200 && r.body.month === '2026-09', '月間カレンダーAPIが200で該当月のデータを返す');
+    assert(r.body.counts['2026-09-24'] && r.body.counts['2026-09-24'].count === 2, 'シードデータの4日後（2件予約）の日付が件数2で集計される（キャンセルは既に別テストで除外確認済みのロジックを流用）');
+    assert(r.body.counts['2026-09-24'].pending === false, '通常予約のみの日はpending=false');
+  }
+  {
+    // monthパラメータ省略時は当月がデフォルトになる（GAS版はページ表示時の当月起点と同等）
+    const r = await hanakoFresh.get('/api/staff/reservations/monthly');
+    assert(r.status === 200 && typeof r.body.month === 'string' && /^\d{4}-\d{2}$/.test(r.body.month), 'monthパラメータ省略時も当月のデータがデフォルトで返る');
+  }
+  {
+    // 仮予約を1件追加すると、その日のpendingフラグがtrueになる
+    const d = new Date(); d.setDate(d.getDate() + 40);
+    const dateStr = d.toISOString().slice(0, 10);
+    const monthStr = dateStr.slice(0, 7);
+    const addR = await ownerFresh.postJson('/api/admin/reservations', {
+      realname: '月間カレンダー仮予約テスト', staffName: '花子', menu: 'テストメニュー', date: dateStr, time: '14:00', provisional: true
+    });
+    assert(addR.status === 200, '月間カレンダーpendingテスト用の仮予約が登録できる');
+    const r = await hanakoFresh.get('/api/staff/reservations/monthly?month=' + monthStr);
+    assert(r.status === 200 && r.body.counts[dateStr] && r.body.counts[dateStr].pending === true, '仮予約が含まれる日はpending=trueになる');
+  }
+  {
+    // 自分（花子）以外が担当の予約は、花子の月間カレンダーには集計されない（既存の週次タブと同じ本人限定スコープ）
+    const d = new Date(); d.setDate(d.getDate() + 41);
+    const dateStr = d.toISOString().slice(0, 10);
+    const monthStr = dateStr.slice(0, 7);
+    await ownerFresh.postJson('/api/admin/reservations', {
+      realname: '他スタッフ担当テスト', staffName: 'ことこ', menu: 'テストメニュー', date: dateStr, time: '14:00'
+    });
+    const r = await hanakoFresh.get('/api/staff/reservations/monthly?month=' + monthStr);
+    assert(r.status === 200 && !r.body.counts[dateStr], '他スタッフ担当の予約は自分の月間カレンダーに集計されない（本人担当分のみのスコープ）');
+  }
+
+  // --------------------------------------------------------------------------
   console.log(`\n=== 結果: PASS ${passCount} / FAIL ${failCount} ===`);
   if (failCount > 0) {
     console.log('\n失敗した項目:');
