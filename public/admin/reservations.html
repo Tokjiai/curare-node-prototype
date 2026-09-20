@@ -242,7 +242,8 @@
 
   async function init() {
     try {
-      await adminFetch('/api/auth/me');
+      const me = await adminFetch('/api/auth/me');
+      if (!me.staff.isOwner) { window.location.href = '/staff/dashboard.html'; return; }
       await load();
       loadingMsg.style.display = 'none';
       shell.classList.add('ready');

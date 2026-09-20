@@ -110,7 +110,11 @@
       const data = await res.json();
       if (data.success) {
         try { localStorage.setItem('curare_last_store', store); } catch (_) {}
-        window.location.href = nextPath;
+        // ★2026-09-20追加：一般スタッフ（isOwner=false）のログインを解放したことに伴い、
+        //   一般スタッフはオーナー用/admin/*配下（nextPathの行き先）ではなく、
+        //   専用のスタッフダッシュボードへ送る。オーナーは従来どおりnextPath（元々
+        //   行こうとしていた/admin/配下のページ、無ければダッシュボード）へ進む。
+        window.location.href = data.isOwner ? nextPath : '/staff/dashboard.html';
       } else {
         loginErr.textContent = data.message || 'ログインに失敗しました';
         loginErr.style.display = 'block';

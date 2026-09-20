@@ -169,7 +169,8 @@
 
   async function init() {
     try {
-      await adminFetch('/api/auth/me');
+      const me = await adminFetch('/api/auth/me');
+      if (!me.staff.isOwner) { window.location.href = '/staff/dashboard.html'; return; }
       const staffData = await adminFetch('/api/admin/staff');
       staffList = (staffData.staff || []).filter((s) => s.is_active);
       const select = document.getElementById('addStaff');

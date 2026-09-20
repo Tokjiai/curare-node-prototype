@@ -313,9 +313,12 @@ app.post('/api/reservations', (req, res) => {
 //   （クライアントから任意の ?store= を渡しても無視し、セッションの店舗を使う。
 //   複数店舗展開時に、あるオーナーが他店のデータを覗けてしまう事故を防ぐため）。
 //
-//   このプロトタイプ段階では is_owner=1 のスタッフのみ管理画面に入れる。
-//   一般スタッフのログイン自体は将来のスタッフ向け画面のための足場として
-//   用意してあるが、現状は明示的にブロックする。
+//   ★2026-09-20追加：以前はis_owner=1のスタッフのみログインを許可し、一般スタッフは
+//   明示的にブロックしていた（将来のスタッフ向け画面のための足場だけ用意した状態）。
+//   GAS版staff_dashboard.htmlの移植（スタッフ用ダッシュボード：予約確認・シフト管理）
+//   に伴い、一般スタッフのログインもここで解放する。オーナー用の/admin/*配下は
+//   引き続きrequireOwnerSessionで保護されたままなので、一般スタッフがログインしても
+//   オーナー専用機能へはアクセスできない（/api/staff/*という新しい別枠のAPI群を用意する）。
 // ============================================================================
 
 // ----------------------------------------------------------------------------
@@ -338,15 +341,6 @@ app.post('/api/auth/login', (req, res) => {
       return res.status(401).json({ success: false, message: 'PINが正しくありません' });
     }
 
-    if (!matched.is_owner) {
-      // ★あえて生成失敗と区別したメッセージを返す：将来の一般スタッフ向け機能が
-      //   実装されたときにこの分岐を外すだけで済むように、扉は開けたまま明示ブロックする。
-      return res.status(403).json({
-        success: false,
-        message: '現在はオーナー権限のみログインできます（プロトタイプ版）'
-      });
-    }
-
     req.session.staff = {
       id: matched.id,
       storeId: matched.store_id,
@@ -365,7 +359,7 @@ app.post('/api/auth/login', (req, res) => {
         console.error('セッション保存エラー:', err);
         return res.status(500).json({ success: false, message: 'セッションの保存に失敗しました' });
       }
-      res.json({ success: true, staffName: matched.name, storeId: matched.store_id });
+      res.json({ success: true, staffName: matched.name, storeId: matched.store_id, isOwner: !!matched.is_owner });
     });
   } catch (e) {
     console.error(e);
@@ -402,6 +396,77 @@ function requireOwnerSession(req, res, next) {
   }
   next();
 }
+
+// ----------------------------------------------------------------------------
+// requireStaffSession : /api/staff/* をセッションのみで保護するミドルウェア
+//   （requireOwnerSessionと違い、オーナー権限は問わない。ログインさえしていれば
+//   一般スタッフでもオーナーでも自分自身のダッシュボードは見られる）
+// ----------------------------------------------------------------------------
+function requireStaffSession(req, res, next) {
+  if (!req.session || !req.session.staff) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  next();
+}
+
+// ----------------------------------------------------------------------------
+// ★2026-09-20追加：スタッフ用ダッシュボード（GAS版staff_dashboard.htmlの移植）
+//   オーナー用の/api/admin/*とは別枠で、ログイン中の本人（req.session.staff.name）
+//   の予約・シフトだけをstoreId・staff_nameの両方で絞り込んで返す。
+//   他のスタッフの予約・シフトは（オーナーでない限り）見えない設計。
+// ----------------------------------------------------------------------------
+function defaultTwoWeekRange(req) {
+  const fmt = (d) => {
+    const y = d.getFullYear(); const m = String(d.getMonth() + 1).padStart(2, '0'); const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  };
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const from = req.query.from || fmt(today);
+  const toDefault = new Date(today); toDefault.setDate(toDefault.getDate() + 13);
+  const to = req.query.to || fmt(toDefault);
+  return { from, to };
+}
+
+// GET /api/staff/shifts?from=&to= : 自分自身のシフトのみ返す
+app.get('/api/staff/shifts', requireStaffSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const staffName = req.session.staff.name;
+    const { from, to } = defaultTwoWeekRange(req);
+
+    const rows = db.prepare(`
+      SELECT * FROM shift_master
+      WHERE store_id = ? AND staff_name = ? AND shift_date >= ? AND shift_date <= ? AND is_active = 1
+      ORDER BY shift_date ASC, start_time ASC
+    `).all(storeId, staffName, from, to);
+
+    res.json({ from, to, staffName, shifts: rows });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/staff/reservations?from=&to= : 自分が担当の予約のみ返す（キャンセル含む。
+//   GAS版と同様にrealname='キャンセル'のまま返し、表示側で取り消し線等を出す）
+app.get('/api/staff/reservations', requireStaffSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const staffName = req.session.staff.name;
+    const { from, to } = defaultTwoWeekRange(req);
+
+    const rows = db.prepare(`
+      SELECT * FROM reservations
+      WHERE store_id = ? AND staff_name = ? AND reservation_date >= ? AND reservation_date <= ?
+      ORDER BY reservation_date ASC, reservation_time ASC
+    `).all(storeId, staffName, from, to);
+
+    res.json({ from, to, staffName, reservations: rows });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // ----------------------------------------------------------------------------
 // ★旧実装（廃止・置き換え済み）：requireAdminPassword

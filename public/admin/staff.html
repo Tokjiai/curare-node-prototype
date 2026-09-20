@@ -171,6 +171,7 @@
     try {
       const me = await adminFetch('/api/auth/me');
       myStaffId = me.body.staff.id;
+      if (!me.body.staff.isOwner) { window.location.href = '/staff/dashboard.html'; return; }
       await load();
       loadingMsg.style.display = 'none';
       shell.classList.add('ready');
