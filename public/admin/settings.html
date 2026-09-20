@@ -145,6 +145,57 @@
       </div>
 
       <div class="panel">
+        <h2>受付ルール・注意書き</h2>
+        <div class="desc">お客様予約フォームに表示する「基本情報」と「注意書き」を管理します</div>
+
+        <div class="rule2-card">
+          <h3 style="font-size:13px; margin-bottom:10px;">基本情報</h3>
+          <table>
+            <tbody>
+              <tr>
+                <td style="width:140px;">電話番号</td>
+                <td colspan="2" id="rule2Phone" style="color:var(--ink-soft);"></td>
+              </tr>
+              <tr>
+                <td>予約受付期間（お知らせ用）</td>
+                <td><input type="number" id="rule2BookingDays" class="rule-value-input" min="0" max="30"> 日先まで</td>
+                <td><button class="btn small" id="rule2InfoSaveBtn" type="button">保存</button><span class="row-save-msg" id="rule2InfoMsg" style="display:none;">保存しました</span></td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="hint" style="font-size:11px; color:var(--ink-soft); margin-top:6px;">電話番号はこの画面からは編集できません。予約受付日数の実際の制御は「基本ルール」の予約受付可能日数を参照します（この値はお客様への案内表示専用です）</div>
+        </div>
+
+        <div class="rule2-card" style="margin-top:18px;">
+          <h3 style="font-size:13px; margin-bottom:10px;">注意書き（お客様向け）</h3>
+          <div class="hint" style="font-size:11px; color:var(--ink-soft); margin-bottom:10px;">お客様予約フォームに表示されます。「全員」向けの注意書きのみ実際にフォームへ反映されます（初回／リピーターの出し分けは今後の拡張候補）</div>
+          <div class="event-form" id="noticeAddForm" style="display:none;">
+            <div>
+              <label>対象</label>
+              <select id="noticeAddTarget"><option value="全員">全員</option><option value="初回">初回</option><option value="リピーター">リピーター</option></select>
+            </div>
+            <div style="grid-column:span 2;">
+              <label>文言</label>
+              <input type="text" id="noticeAddText" placeholder="例：当日キャンセルはお電話にてご連絡ください">
+            </div>
+            <div style="display:flex; gap:6px;">
+              <button class="btn" id="noticeAddSaveBtn" type="button">追加する</button>
+              <button class="btn secondary" id="noticeAddCancelBtn" type="button">キャンセル</button>
+            </div>
+          </div>
+          <div style="margin-bottom:10px;">
+            <button class="btn secondary" id="noticeAddToggleBtn" type="button">＋ 新しい注意書きを追加</button>
+          </div>
+          <div class="err" id="noticeErr" style="display:none;"></div>
+          <table>
+            <thead><tr><th>対象</th><th>文言</th><th>表示</th><th></th></tr></thead>
+            <tbody id="noticeBody"></tbody>
+          </table>
+          <div class="empty" id="noticeEmpty" style="display:none;">登録されている注意書きはありません</div>
+        </div>
+      </div>
+
+      <div class="panel">
         <h2>基本ルール</h2>
         <div class="desc">予約の受付条件に関わる数値設定です</div>
         <table>
@@ -270,7 +321,7 @@
     try {
       const me = await adminFetch('/api/auth/me');
       if (!me.staff.isOwner) { window.location.href = '/staff/dashboard.html'; return; }
-      await Promise.all([loadMenu(), loadRules(), loadZones(), loadEvents(), loadSessionStaffList(), loadMessages()]);
+      await Promise.all([loadMenu(), loadRules(), loadZones(), loadEvents(), loadSessionStaffList(), loadMessages(), loadRule2()]);
       loadingMsg.style.display = 'none';
       shell.classList.add('ready');
     } catch (e) {
@@ -397,6 +448,92 @@
       document.getElementById('menuAddName').value = '';
       document.getElementById('menuAddForm').style.display = 'none';
       await loadMenu();
+    } catch (err) {
+      errBox.textContent = err.message;
+      errBox.style.display = 'block';
+    }
+  });
+
+  // ---------- 受付ルール・注意書き（rule2） ----------
+  async function loadRule2() {
+    const data = await adminFetch('/api/admin/settings/rule2');
+    document.getElementById('rule2Phone').textContent = data.info.phone || '（未設定）';
+    document.getElementById('rule2BookingDays').value = data.info.bookingPeriodInfoDays;
+
+    const tbody = document.getElementById('noticeBody');
+    tbody.innerHTML = '';
+    const rows = data.notices || [];
+    document.getElementById('noticeEmpty').style.display = rows.length === 0 ? 'block' : 'none';
+    rows.forEach((n) => {
+      const tr = document.createElement('tr');
+      const targetSel = document.createElement('select');
+      fillSelect(targetSel, ['全員', '初回', 'リピーター'], n.target);
+      const textInput = document.createElement('input');
+      textInput.type = 'text'; textInput.value = n.text; textInput.style.width = '260px';
+      const activeChk = document.createElement('input');
+      activeChk.type = 'checkbox'; activeChk.checked = !!n.is_active;
+
+      const tdTarget = document.createElement('td'); tdTarget.appendChild(targetSel);
+      const tdText = document.createElement('td'); tdText.appendChild(textInput);
+      const tdActive = document.createElement('td'); tdActive.appendChild(activeChk);
+      const tdBtn = document.createElement('td');
+      const saveBtn = document.createElement('button'); saveBtn.className = 'btn small'; saveBtn.type = 'button'; saveBtn.textContent = '保存';
+      const msg = document.createElement('span'); msg.className = 'row-save-msg'; msg.style.display = 'none'; msg.textContent = '保存しました';
+      tdBtn.appendChild(saveBtn); tdBtn.appendChild(msg);
+      tr.appendChild(tdTarget); tr.appendChild(tdText); tr.appendChild(tdActive); tr.appendChild(tdBtn);
+
+      saveBtn.addEventListener('click', async () => {
+        msg.style.display = 'none';
+        try {
+          await adminFetch('/api/admin/settings/rule2/notices/' + n.id, {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ target: targetSel.value, text: textInput.value.trim(), active: activeChk.checked })
+          });
+          msg.style.display = 'inline';
+          setTimeout(() => { msg.style.display = 'none'; }, 2000);
+        } catch (err) { alert(err.message); }
+      });
+      tbody.appendChild(tr);
+    });
+  }
+
+  document.getElementById('rule2InfoSaveBtn').addEventListener('click', async () => {
+    const msg = document.getElementById('rule2InfoMsg');
+    msg.style.display = 'none';
+    try {
+      await adminFetch('/api/admin/settings/rule2/info', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bookingPeriodInfoDays: document.getElementById('rule2BookingDays').value })
+      });
+      msg.style.display = 'inline';
+      setTimeout(() => { msg.style.display = 'none'; }, 2000);
+    } catch (err) { alert(err.message); }
+  });
+
+  document.getElementById('noticeAddToggleBtn').addEventListener('click', () => {
+    const form = document.getElementById('noticeAddForm');
+    form.style.display = form.style.display === 'none' ? 'grid' : 'none';
+  });
+  document.getElementById('noticeAddCancelBtn').addEventListener('click', () => {
+    document.getElementById('noticeAddForm').style.display = 'none';
+  });
+  document.getElementById('noticeAddSaveBtn').addEventListener('click', async () => {
+    const errBox = document.getElementById('noticeErr');
+    errBox.style.display = 'none';
+    const text = document.getElementById('noticeAddText').value.trim();
+    if (!text) {
+      errBox.textContent = '文言を入力してください';
+      errBox.style.display = 'block';
+      return;
+    }
+    try {
+      await adminFetch('/api/admin/settings/rule2/notices', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target: document.getElementById('noticeAddTarget').value, text })
+      });
+      document.getElementById('noticeAddText').value = '';
+      document.getElementById('noticeAddForm').style.display = 'none';
+      await loadRule2();
     } catch (err) {
       errBox.textContent = err.message;
       errBox.style.display = 'block';

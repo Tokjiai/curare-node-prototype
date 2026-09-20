@@ -48,6 +48,8 @@ CREATE TABLE IF NOT EXISTS stores (
   plan          VARCHAR(20) NOT NULL DEFAULT 'trial', -- 'trial' / 'onecoin' / 'base' / 'line'（プレースホルダー、未使用）
   line_customer_channel_token  VARCHAR(255),    -- お客様向けLINE公式アカウントのチャネルアクセストークン（未設定＝プッシュ通知はシミュレーションのみ）
   line_staff_channel_secret    VARCHAR(255),    -- スタッフ／オーナー向けLINE公式アカウントのチャネルシークレット（Webhook署名検証・店舗判別に使用）
+  phone                        VARCHAR(20),     -- ★2026-09-20追加：店舗の電話番号（お客様予約フォームに表示。rule2「基本情報」カード相当、この画面からは編集不可）
+  booking_period_info_days     INTEGER NOT NULL DEFAULT 14, -- ★2026-09-20追加：予約受付期間の「お知らせ用」表示日数（rule1のBOOKING_LIMIT_DAYSとは別枠の、お客様への案内表示専用の値）
   created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -288,6 +290,25 @@ CREATE TABLE IF NOT EXISTS message_templates (
   updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(store_id, msg_key)
 );
+
+-- ============================================================================
+-- ★2026-09-20追加：受付ルール・注意書き（GAS版owner_ui.htmlの「受付ルール・注意書き」
+--   パネル＝rule2シートの「カード②お客様向け注意書き」相当）。お客様予約フォームの
+--   最終ページに表示する注意事項を、対象（全員／初回／リピーター）ごとに管理する。
+--   GAS版にある「定型文（オーナーは文言編集不可）」「管理者専用の生データ編集欄
+--   （カード③）」は、Node版の予約フォームがまだ新規/リピーター判定を持たないため
+--   今回は簡略化し対象外とした（詳細はREADME_PROTOTYPE.md参照）。
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS booking_notices (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  store_id       INTEGER NOT NULL REFERENCES stores(id),
+  target         VARCHAR(20) NOT NULL DEFAULT '全員',  -- '全員' / '初回' / 'リピーター'
+  text           TEXT NOT NULL,
+  is_active      INTEGER NOT NULL DEFAULT 1,
+  created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_booking_notices_store ON booking_notices(store_id);
 
 -- インデックス（検索性能用。日付・店舗・スタッフでの絞り込みが多いため）
 CREATE INDEX IF NOT EXISTS idx_reservations_store_date ON reservations(store_id, reservation_date);

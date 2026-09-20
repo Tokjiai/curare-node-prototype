@@ -38,13 +38,23 @@ function seedData() {
     DELETE FROM rules;
     DELETE FROM zones;
     DELETE FROM menu_items;
+    DELETE FROM booking_notices;
     DELETE FROM staff;
     DELETE FROM stores;
   `);
 
-  const insertStore = db.prepare('INSERT INTO stores (id, slug, name) VALUES (?, ?, ?)');
-  insertStore.run(1, 'kurare-kotobuki', 'クラーレ寿');
+  const insertStore = db.prepare('INSERT INTO stores (id, slug, name, phone) VALUES (?, ?, ?, ?)');
+  insertStore.run(1, 'kurare-kotobuki', 'クラーレ寿', '097-000-0000');
   const storeId = 1;
+
+  // --- 受付ルール・注意書き（★2026-09-20追加：デモ用の初期値） -------------
+  //   GAS版rule2シートのNOTICE行に相当。実際の文言はオーナーが店舗設定画面から
+  //   いつでも追加・編集できる（ここではデモ用サンプルを投入しているだけ）。
+  const insertNotice = db.prepare(`
+    INSERT INTO booking_notices (store_id, target, text, is_active) VALUES (?, ?, ?, 1)
+  `);
+  insertNotice.run(storeId, '全員', '当日キャンセルの場合はお早めにお電話にてご連絡ください。');
+  insertNotice.run(storeId, '初回', '初めてご来店の方は、ご予約時間の10分前を目安にお越しください。');
 
   // --- スタッフ3名（GASの「マスタ」シート相当） -----------------------------
   // ★2026-09-18追加：ログイン用PIN（電話番号下4桁を想定したダミー値）を付与。

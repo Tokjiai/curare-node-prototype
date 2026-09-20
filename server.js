@@ -131,7 +131,13 @@ app.get('/api/store', (req, res) => {
     SELECT id, category, name, duration_min, price, target FROM menu_items
     WHERE store_id = ? AND is_active = 1 ORDER BY display_order ASC, id ASC
   `).all(storeId);
-  res.json({ store, staffList, zones, menuItems });
+  // ★2026-09-20追加：受付ルール・注意書き（rule2）。お客様予約フォームはまだ
+  //   新規/リピーター判定を持たないため、対象「全員」の有効な注意書きのみを返す
+  //   （初回・リピーター向けの出し分けは今後の拡張候補。README_PROTOTYPE.md参照）。
+  const notices = db.prepare(`
+    SELECT text FROM booking_notices WHERE store_id = ? AND target = '全員' AND is_active = 1 ORDER BY id ASC
+  `).all(storeId).map((r) => r.text);
+  res.json({ store, staffList, zones, menuItems, notices });
 });
 
 // ----------------------------------------------------------------------------
@@ -1436,6 +1442,108 @@ app.put('/api/admin/settings/messages', requireOwnerSession, (req, res) => {
   } catch (e) {
     // ★バリデーションエラー（本文未入力・文字数超過等）はメッセージをそのまま返す
     res.status(400).json({ success: false, message: e.message });
+  }
+});
+
+// ============================================================================
+// ★2026-09-20追加：受付ルール・注意書き（GAS版owner_ui.html「受付ルール・注意書き」
+//   パネル・admin_ui_functions.gsのgetRule2Settings/saveRule2Info/saveRule2Noticeに相当）。
+//   カード①基本情報（電話番号は閲覧のみ・予約受付期間は編集可）＋カード②お客様向け注意書き
+//   （対象別・有効/無効切替）を実装。GAS版カード③（管理者専用の生データ編集欄）と
+//   「定型文（オーナーは文言編集不可）」の区別は、対応する管理者ロールの仕組みが
+//   Node版にまだ無いため今回は対象外とした（README_PROTOTYPE.md参照）。
+// ============================================================================
+
+const BOOKING_NOTICE_TARGETS = ['全員', '初回', 'リピーター'];
+
+// ----------------------------------------------------------------------------
+// GET /api/admin/settings/rule2
+// ----------------------------------------------------------------------------
+app.get('/api/admin/settings/rule2', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const store = db.prepare('SELECT phone, booking_period_info_days FROM stores WHERE id = ?').get(storeId);
+    const notices = db.prepare('SELECT * FROM booking_notices WHERE store_id = ? ORDER BY id ASC').all(storeId);
+    res.json({
+      info: { phone: store ? store.phone : '', bookingPeriodInfoDays: store ? store.booking_period_info_days : 14 },
+      notices
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// PUT /api/admin/settings/rule2/info
+//   { bookingPeriodInfoDays }（電話番号はこの画面からは編集不可＝GAS版のRULE2_INFO_EDITABLEに準拠）
+// ----------------------------------------------------------------------------
+app.put('/api/admin/settings/rule2/info', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const days = Number((req.body || {}).bookingPeriodInfoDays);
+    if (isNaN(days) || days < 0 || days > 30) {
+      return res.status(400).json({ success: false, message: '予約受付期間は0〜30の範囲で入力してください' });
+    }
+    db.prepare('UPDATE stores SET booking_period_info_days = ? WHERE id = ?').run(days, storeId);
+    res.json({ success: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// POST /api/admin/settings/rule2/notices
+//   { target, text } 新規追加（削除はGAS版同様この画面では扱わない）
+// ----------------------------------------------------------------------------
+app.post('/api/admin/settings/rule2/notices', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const data = req.body || {};
+    if (BOOKING_NOTICE_TARGETS.indexOf(data.target) === -1) {
+      return res.status(400).json({ success: false, message: '対象の指定が不正です' });
+    }
+    if (!data.text || !String(data.text).trim()) {
+      return res.status(400).json({ success: false, message: '文言を入力してください' });
+    }
+    const info = db.prepare(`
+      INSERT INTO booking_notices (store_id, target, text, is_active) VALUES (?, ?, ?, 1)
+    `).run(storeId, data.target, String(data.text).trim());
+    res.json({ success: true, noticeId: info.lastInsertRowid });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// PUT /api/admin/settings/rule2/notices/:id
+//   { target, text, active }
+// ----------------------------------------------------------------------------
+app.put('/api/admin/settings/rule2/notices/:id', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const id = Number(req.params.id);
+    const data = req.body || {};
+    const existing = db.prepare('SELECT id FROM booking_notices WHERE id = ? AND store_id = ?').get(id, storeId);
+    if (!existing) {
+      return res.status(404).json({ success: false, message: '対象の注意書きが見つかりません' });
+    }
+    if (BOOKING_NOTICE_TARGETS.indexOf(data.target) === -1) {
+      return res.status(400).json({ success: false, message: '対象の指定が不正です' });
+    }
+    if (!data.text || !String(data.text).trim()) {
+      return res.status(400).json({ success: false, message: '文言を入力してください' });
+    }
+    db.prepare(`
+      UPDATE booking_notices SET target = ?, text = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(data.target, String(data.text).trim(), data.active === false ? 0 : 1, id);
+    res.json({ success: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
   }
 });
 

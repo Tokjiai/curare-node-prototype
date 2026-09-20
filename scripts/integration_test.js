@@ -855,6 +855,60 @@ async function main() {
   }
 
   // --------------------------------------------------------------------------
+  // 19. 受付ルール・注意書き（GAS版owner_ui.htmlの「受付ルール・注意書き」パネル・
+  //     admin_ui_functions.gsのgetRule2Settings/saveRule2Info/saveRule2Noticeの移植）
+  // --------------------------------------------------------------------------
+  console.log('--- 19. 受付ルール・注意書き ---');
+  {
+    const r = await anon.get('/api/admin/settings/rule2');
+    assert(r.status === 401, '未ログインでは受付ルール・注意書きを取得できない');
+  }
+  {
+    const r = await ownerFresh.get('/api/admin/settings/rule2');
+    assert(r.status === 200 && typeof r.body.info.phone === 'string' && Array.isArray(r.body.notices), '基本情報（電話番号・予約受付期間）と注意書き一覧が取得できる');
+    assert(r.body.notices.length >= 2, 'seed投入した注意書き（全員・初回むけの2件）が含まれる');
+  }
+  {
+    const r = await ownerFresh.putJson('/api/admin/settings/rule2/info', { bookingPeriodInfoDays: 21 });
+    assert(r.status === 200 && r.body.success === true, '予約受付期間（お知らせ用）を更新できる');
+    const r2 = await ownerFresh.get('/api/admin/settings/rule2');
+    assert(r2.body.info.bookingPeriodInfoDays === 21, '更新した予約受付期間が次回取得時に反映される');
+  }
+  {
+    const r = await ownerFresh.putJson('/api/admin/settings/rule2/info', { bookingPeriodInfoDays: 99 });
+    assert(r.status === 400 && /0〜30の範囲/.test(r.body.message), '予約受付期間は0〜30の範囲外だと拒否される（バリデーション）');
+  }
+  let addedNoticeId = null;
+  {
+    const r = await ownerFresh.postJson('/api/admin/settings/rule2/notices', { target: 'リピーター', text: '次回のご来店もお待ちしております' });
+    assert(r.status === 200 && r.body.success === true && !!r.body.noticeId, '新しい注意書きを追加できる');
+    addedNoticeId = r.body.noticeId;
+  }
+  {
+    const r = await ownerFresh.postJson('/api/admin/settings/rule2/notices', { target: '存在しない対象', text: 'テスト' });
+    assert(r.status === 400 && /対象の指定が不正/.test(r.body.message), '不正な対象の注意書きは追加できない（バリデーション）');
+  }
+  {
+    const r = await ownerFresh.postJson('/api/admin/settings/rule2/notices', { target: '全員', text: '' });
+    assert(r.status === 400 && /文言を入力/.test(r.body.message), '文言が空の注意書きは追加できない（バリデーション）');
+  }
+  {
+    const r = await ownerFresh.putJson('/api/admin/settings/rule2/notices/' + addedNoticeId, { target: 'リピーター', text: '次回のご来店を心よりお待ちしております', active: false });
+    assert(r.status === 200 && r.body.success === true, '追加した注意書きを編集（無効化含む）できる');
+  }
+  {
+    const r = await owner2.putJson('/api/admin/settings/rule2/notices/' + addedNoticeId, { target: '全員', text: 'なりすまし', active: true });
+    assert(r.status === 404, '他店舗オーナーは他店の注意書きを編集できない（店舗スコープ確認）');
+  }
+  {
+    // 公開の/api/storeには「全員」向けの有効な注意書きのみが反映される（初回/リピーター向けは対象外）
+    const r = await fetch(BASE + '/api/store?store=1').then((res) => res.json());
+    assert(Array.isArray(r.notices) && r.notices.some((t) => t.includes('当日キャンセル')), '公開の/api/storeには「全員」向けの有効な注意書きが反映される');
+    assert(!r.notices.some((t) => t.includes('初めてご来店')), '「初回」向けの注意書きは公開の/api/storeには含まれない（このプロトタイプの簡略化仕様）');
+    assert(r.store.phone === '097-000-0000', '公開の/api/storeに店舗の電話番号が含まれる');
+  }
+
+  // --------------------------------------------------------------------------
   console.log(`\n=== 結果: PASS ${passCount} / FAIL ${failCount} ===`);
   if (failCount > 0) {
     console.log('\n失敗した項目:');

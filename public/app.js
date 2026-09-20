@@ -41,6 +41,23 @@ async function loadStoreInfo() {
     });
   }
 
+  // ★2026-09-20追加：受付ルール・注意書き（rule2「注意書き（お客様向け）」相当）。
+  //   店舗設定画面で編集した内容（対象「全員」の有効な注意書きのみ）をそのまま表示する。
+  const noticeCard = document.getElementById('noticeCard');
+  const noticeList = document.getElementById('noticeList');
+  if (Array.isArray(data.notices) && data.notices.length > 0) {
+    noticeList.innerHTML = '';
+    data.notices.forEach((text) => {
+      const li = document.createElement('li');
+      li.textContent = text;
+      noticeList.appendChild(li);
+    });
+    noticeCard.style.display = 'block';
+  }
+  if (data.store && data.store.phone) {
+    document.getElementById('storePhoneNote').textContent = `お電話でのお問い合わせ：${data.store.phone}`;
+  }
+
   // 日付の初期値：3日後（GAS版の受付締め切りルールに合わせておく）
   const d = new Date();
   d.setDate(d.getDate() + 3);
