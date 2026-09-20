@@ -29,8 +29,9 @@ const { initDatabase } = require('./db/init');
 const { verifyPin, createPinHash } = require('./lib/auth');
 const { registerLineWebhook } = require('./routes/lineWebhook');
 const { notifyReservationConfirmed } = require('./lib/reservationNotify');
-const { getPlan, listPlans } = require('./lib/plans');
+const { getPlan, listPlans, hasFeature } = require('./lib/plans');
 const { runMigrations } = require('./lib/migrate');
+const { getMessageSettings, saveMessageSettings, getMessageTemplate, renderMessageBody } = require('./lib/messageTemplates');
 
 // Render無料プランのディスクは再起動で消える（エフェメラル）ため、
 // 起動のたびにスキーマ作成とシードデータ投入をやり直す。
@@ -1395,6 +1396,46 @@ app.delete('/api/admin/settings/menu/:id', requireOwnerSession, (req, res) => {
   } catch (e) {
     console.error(e);
     res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ============================================================================
+// ★2026-09-20追加：メッセージ設定（GAS版owner_ui.htmlの「メッセージ設定」パネル・
+//   admin_ui_functions.gsのgetMessageSettings/saveMessageSettingsに相当）。
+//   LINE通知テンプレート（本文＋締めの文）の管理。実装は lib/messageTemplates.js。
+// ============================================================================
+
+// ----------------------------------------------------------------------------
+// GET /api/admin/settings/messages
+// ----------------------------------------------------------------------------
+app.get('/api/admin/settings/messages', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const store = db.prepare('SELECT plan FROM stores WHERE id = ?').get(storeId);
+    const settings = getMessageSettings(db, storeId);
+    // ★GAS版のLINE_NOTIFY_OPTION_CONTRACTに相当。このプロトタイプでは⑤課金基盤の
+    //   プラン('line'系)がLINE通知機能を持つかどうかで代用する（lib/plans.js参照）。
+    settings.lineOptionContract = hasFeature(store ? store.plan : 'trial', 'lineNotify');
+    res.json(settings);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// PUT /api/admin/settings/messages
+//   { items: [{ key, body, closing }, ...] }
+// ----------------------------------------------------------------------------
+app.put('/api/admin/settings/messages', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const items = (req.body && req.body.items) || [];
+    const result = saveMessageSettings(db, storeId, items);
+    res.json(result);
+  } catch (e) {
+    // ★バリデーションエラー（本文未入力・文字数超過等）はメッセージをそのまま返す
+    res.status(400).json({ success: false, message: e.message });
   }
 });
 

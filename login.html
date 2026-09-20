@@ -51,13 +51,21 @@
     <div class="login-title">👤 オーナー管理画面</div>
     <div class="login-sub">店舗識別子とPIN（4桁）を入力してください</div>
 
-    <label for="storeInput">店舗（slugまたはID）</label>
-    <input type="text" id="storeInput" placeholder="例：1 または kurare-kotobuki">
+    <!-- ★2026-09-19追加：<form>で囲む。
+         以前はinputが素のまま置かれており、ブラウザのコンソールに
+         「Password field is not contained in a form」という警告が出ていた。
+         これが原因で、一部のパスワード管理系ブラウザ拡張機能がPIN欄に誤って介入し、
+         入力した数字がそばから消えてしまう不具合が起きていたと考えられるため、
+         正式な<form>構造にして、パスワードマネージャー向けの無効化属性も付与する。 -->
+    <form id="loginForm" autocomplete="off">
+      <label for="storeInput">店舗（slugまたはID）</label>
+      <input type="text" id="storeInput" name="curare_store" placeholder="例：1 または kurare-kotobuki" autocomplete="off" data-lpignore="true" data-1p-ignore>
 
-    <label for="pinInput">PIN（4桁）</label>
-    <input type="password" id="pinInput" placeholder="例：5678" maxlength="4" inputmode="numeric" pattern="[0-9]*">
+      <label for="pinInput">PIN（4桁）</label>
+      <input type="text" id="pinInput" name="curare_pin" placeholder="例：5678" maxlength="4" inputmode="numeric" pattern="[0-9]*" autocomplete="off" data-lpignore="true" data-1p-ignore>
 
-    <button id="loginBtn" type="button">ログイン</button>
+      <button id="loginBtn" type="submit">ログイン</button>
+    </form>
     <div class="err" id="loginErr" style="display:none;"></div>
     <div class="note">スタッフの電話番号の下4桁がPINです（実運用と同じ方式）。<br>このプロトタイプ段階ではオーナー権限のスタッフのみログインできます。</div>
   </div>
@@ -67,6 +75,22 @@
   const storeInput = document.getElementById('storeInput');
   const pinInput = document.getElementById('pinInput');
   const loginErr = document.getElementById('loginErr');
+
+  // ★2026-09-19追加：
+  //   ①「顧客マスタ」等を開こうとしてセッション切れでこの画面に飛ばされた場合、
+  //     ログイン後に元のページへ戻れるよう next パラメータを覚えておく（無ければダッシュボード）。
+  //   ②店舗欄が毎回空欄だと、PINだけ入力して送信 → 「店舗とPINを入力してください」で
+  //     何も起きずこの画面に留まり続ける、という「ループしているように見える」現象の
+  //     原因になっていたため、前回ログイン時の店舗をブラウザに記憶して自動入力する。
+  const params = new URLSearchParams(window.location.search);
+  const requestedNext = params.get('next') || '';
+  // ★他サイトへ誘導されるオープンリダイレクトを防ぐため、/admin/配下のパスのみ許可する
+  const nextPath = requestedNext.startsWith('/admin/') ? requestedNext : '/admin/index.html';
+  try {
+    const savedStore = localStorage.getItem('curare_last_store');
+    if (savedStore) storeInput.value = savedStore;
+  } catch (_) { /* localStorageが使えない環境でも動作に支障はない */ }
+  if (storeInput.value) { pinInput.focus(); } else { storeInput.focus(); }
 
   async function doLogin() {
     loginErr.style.display = 'none';
@@ -85,7 +109,12 @@
       });
       const data = await res.json();
       if (data.success) {
-        window.location.href = '/admin/index.html';
+        try { localStorage.setItem('curare_last_store', store); } catch (_) {}
+        // ★2026-09-20追加：一般スタッフ（isOwner=false）のログインを解放したことに伴い、
+        //   一般スタッフはオーナー用/admin/*配下（nextPathの行き先）ではなく、
+        //   専用のスタッフダッシュボードへ送る。オーナーは従来どおりnextPath（元々
+        //   行こうとしていた/admin/配下のページ、無ければダッシュボード）へ進む。
+        window.location.href = data.isOwner ? nextPath : '/staff/dashboard.html';
       } else {
         loginErr.textContent = data.message || 'ログインに失敗しました';
         loginErr.style.display = 'block';
@@ -96,9 +125,11 @@
     }
   }
 
-  document.getElementById('loginBtn').addEventListener('click', doLogin);
-  pinInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
-  storeInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') pinInput.focus(); });
+  // ★フォーム化に伴い、送信はsubmitイベントで一本化する（Enterキーでの送信もこれで自然に効く）
+  document.getElementById('loginForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    doLogin();
+  });
 })();
 </script>
 </body>

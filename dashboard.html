@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>スタッフダッシュボード</title>
+<style>
+  /* ============================================================
+     GAS版 staff_dashboard.html（📋予約確認・📅シフト管理の2タブ構成）の
+     Node移植版。GAS版は独自のグラデーション配色だったが、他の管理画面
+     （owner_ui.html移植分）と使用感を揃えるため、既存のクリーム＋セージ
+     配色トークンに合わせてある（色以外の構成・タブ分けはGAS版を踏襲）。
+     ============================================================ */
+  :root{
+    --bg:#F5F4EF; --panel:#ffffff; --ink:#2B2B27; --ink-soft:#75746C; --ink-faint:#A9A79C;
+    --line:#E4E2D9; --accent:#3D6B5C; --accent-soft:#E7EFE9; --warn:#B3542E; --warn-soft:#F7E9E2;
+    --rose:#d4a5a5; --rose-dark:#c99aa4;
+    --radius:14px;
+  }
+  *{box-sizing:border-box; margin:0; padding:0; font-family:'Hiragino Sans','Yu Gothic',sans-serif;}
+  body{background:var(--bg); color:var(--ink);}
+  .shell{display:none; min-height:100vh;}
+  .shell.ready{display:block;}
+
+  .header{background:linear-gradient(135deg, var(--rose) 0%, var(--rose-dark) 100%); color:#fff; padding:18px 20px;}
+  .header-top{display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;}
+  .header-top h1{font-size:17px; font-weight:700;}
+  .header-user{font-size:12.5px; text-align:right; line-height:1.5;}
+  .header-sub{font-size:12px; opacity:0.9;}
+  .proto-badge{display:inline-block; font-size:10px; font-weight:700; background:rgba(255,255,255,0.25); border-radius:6px; padding:2px 7px; margin-left:6px;}
+
+  .tabs{display:flex; background:#fff; border-bottom:1px solid var(--line); position:sticky; top:0; z-index:5;}
+  .tab{flex:1; padding:13px; background:none; border:none; cursor:pointer; font-family:inherit; font-size:13.5px; font-weight:600; color:var(--ink-soft);}
+  .tab.active{color:var(--rose-dark); border-bottom:3px solid var(--rose-dark);}
+
+  .main{padding:18px 16px; max-width:720px; margin:0 auto;}
+  .tab-content{display:none;}
+  .tab-content.active{display:block;}
+
+  .week-nav{display:flex; align-items:center; justify-content:space-between; margin-bottom:14px;}
+  .week-nav button{padding:8px 14px; border:1px solid var(--line); border-radius:9px; background:#fff; cursor:pointer; font-family:inherit; font-size:12.5px; color:var(--accent); font-weight:600;}
+  .week-nav .label{font-size:13.5px; font-weight:700;}
+
+  .day-block{margin-bottom:14px;}
+  .day-block .day-label{font-size:12px; font-weight:700; color:var(--ink-soft); margin-bottom:6px; padding-left:2px;}
+  .day-block .day-label.today{color:var(--rose-dark);}
+  .day-block .day-label .dow-sun{color:#C0392B;} .day-block .day-label .dow-sat{color:#2980B9;}
+
+  .card{background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px 14px; margin-bottom:8px;}
+  .card.cancelled{opacity:0.55;}
+  .card .row1{display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;}
+  .card .time{font-size:14px; font-weight:700; color:var(--accent);}
+  .card .menu{font-size:12px; color:var(--ink-soft);}
+  .card .customer{font-size:13.5px; font-weight:600;}
+  .card .badge-cancel{font-size:10.5px; color:var(--warn); background:var(--warn-soft); border-radius:6px; padding:2px 6px; font-weight:700;}
+  .card .note{font-size:11.5px; color:var(--ink-faint); margin-top:4px;}
+
+  .shift-card{background:var(--accent-soft); color:var(--accent); border-radius:10px; padding:10px 14px; font-size:13.5px; font-weight:700; margin-bottom:8px;}
+
+  .empty{color:var(--ink-faint); font-size:12.5px; text-align:center; padding:18px 0;}
+  #loadingMsg{text-align:center; color:var(--ink-soft); font-size:13px; padding:60px 0;}
+  .footer-nav{text-align:center; padding:18px 0 30px;}
+  .footer-nav a{font-size:12px; color:var(--ink-soft); text-decoration:none;}
+</style>
+</head>
+<body>
+  <div id="loadingMsg">読み込み中...</div>
+
+  <div class="shell" id="shell">
+    <div class="header">
+      <div class="header-top">
+        <h1>🧑‍🤝‍🧑 スタッフダッシュボード<span class="proto-badge">PROTOTYPE</span></h1>
+        <div class="header-user">
+          <div id="headerStaffName"></div>
+        </div>
+      </div>
+      <div class="header-sub" id="headerStoreName"></div>
+    </div>
+
+    <div class="tabs">
+      <button class="tab active" id="tabResBtn" type="button">📋 予約確認</button>
+      <button class="tab" id="tabShiftBtn" type="button">📅 シフト管理</button>
+    </div>
+
+    <div class="main">
+      <div class="tab-content active" id="tabRes">
+        <div class="week-nav">
+          <button id="resPrevBtn" type="button">← 前週</button>
+          <div class="label" id="resWeekLabel"></div>
+          <button id="resNextBtn" type="button">次週 →</button>
+        </div>
+        <div id="resList"></div>
+      </div>
+
+      <div class="tab-content" id="tabShift">
+        <div class="week-nav">
+          <button id="shiftPrevBtn" type="button">← 前週</button>
+          <div class="label" id="shiftWeekLabel"></div>
+          <button id="shiftNextBtn" type="button">次週 →</button>
+        </div>
+        <div id="shiftList"></div>
+      </div>
+
+      <div class="footer-nav"><a href="#" id="logoutLink">🚪 ログアウト</a></div>
+    </div>
+  </div>
+
+<script>
+(function(){
+  const loadingMsg = document.getElementById('loadingMsg');
+  const shell = document.getElementById('shell');
+  let resWeekStart = startOfWeek(new Date());
+  let shiftWeekStart = startOfWeek(new Date());
+
+  function startOfWeek(d) {
+    const x = new Date(d); x.setHours(0,0,0,0);
+    const dow = (x.getDay() + 6) % 7; // 0=月曜始まり
+    x.setDate(x.getDate() - dow);
+    return x;
+  }
+  function fmt(d) {
+    const y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,'0'), day = String(d.getDate()).padStart(2,'0');
+    return `${y}-${m}-${day}`;
+  }
+  function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate()+n); return x; }
+  const DOW_LABELS = ['月','火','水','木','金','土','日'];
+  function dowClass(jsDay) { return jsDay === 0 ? 'dow-sun' : (jsDay === 6 ? 'dow-sat' : ''); }
+  function todayStr() { return fmt(new Date()); }
+
+  async function staffFetch(url) {
+    const res = await fetch(url);
+    if (res.status === 401) throw new Error('UNAUTHORIZED');
+    if (!res.ok) throw new Error('サーバーエラー: ' + res.status);
+    return res.json();
+  }
+
+  async function init() {
+    try {
+      const me = await staffFetch('/api/auth/me');
+      document.getElementById('headerStaffName').textContent = me.staff.name + (me.staff.isOwner ? '（オーナー）' : '');
+      const storeData = await staffFetch('/api/store');
+      document.getElementById('headerStoreName').textContent = storeData.store.name;
+      await loadReservations();
+      await loadShifts();
+      loadingMsg.style.display = 'none';
+      shell.classList.add('ready');
+    } catch (e) {
+      // ★他の管理画面と同じく、セッション切れ時は元居たこのページへ戻れるよう
+      //   next パラメータを付ける
+      window.location.href = '/admin/login.html?next=' + encodeURIComponent(window.location.pathname);
+    }
+  }
+
+  // ---- 📋 予約確認タブ ----
+  async function loadReservations() {
+    const from = fmt(resWeekStart);
+    const to = fmt(addDays(resWeekStart, 6));
+    document.getElementById('resWeekLabel').textContent = `${from} 〜 ${to}`;
+    const data = await staffFetch(`/api/staff/reservations?from=${from}&to=${to}`);
+
+    const byDate = {};
+    (data.reservations || []).forEach((r) => {
+      (byDate[r.reservation_date] = byDate[r.reservation_date] || []).push(r);
+    });
+
+    const listEl = document.getElementById('resList');
+    listEl.innerHTML = '';
+    let any = false;
+    for (let i = 0; i < 7; i++) {
+      const d = addDays(resWeekStart, i);
+      const dStr = fmt(d);
+      const rows = (byDate[dStr] || []).sort((a, b) => a.reservation_time.localeCompare(b.reservation_time));
+      if (rows.length === 0) continue;
+      any = true;
+      const block = document.createElement('div');
+      block.className = 'day-block';
+      const isToday = dStr === todayStr();
+      block.innerHTML = `<div class="day-label${isToday ? ' today' : ''}">${dStr}（<span class="${dowClass(d.getDay())}">${DOW_LABELS[i]}</span>）${isToday ? ' ・本日' : ''}</div>`;
+      rows.forEach((r) => {
+        const cancelled = r.realname === 'キャンセル';
+        const card = document.createElement('div');
+        card.className = 'card' + (cancelled ? ' cancelled' : '');
+        card.innerHTML = `
+          <div class="row1">
+            <span class="time">${r.reservation_time}〜</span>
+            ${cancelled ? '<span class="badge-cancel">キャンセル</span>' : ''}
+          </div>
+          <div class="customer">${cancelled ? (r.kana || '（顧客名不明）') : r.realname}</div>
+          <div class="menu">${r.menu || ''}</div>
+          ${r.note ? `<div class="note">${r.note}</div>` : ''}
+        `;
+        block.appendChild(card);
+      });
+      listEl.appendChild(block);
+    }
+    if (!any) {
+      listEl.innerHTML = '<div class="empty">この週に担当の予約はありません</div>';
+    }
+  }
+
+  // ---- 📅 シフト管理タブ（自分のシフトの閲覧のみ。追加・削除はオーナー管理画面から） ----
+  async function loadShifts() {
+    const from = fmt(shiftWeekStart);
+    const to = fmt(addDays(shiftWeekStart, 6));
+    document.getElementById('shiftWeekLabel').textContent = `${from} 〜 ${to}`;
+    const data = await staffFetch(`/api/staff/shifts?from=${from}&to=${to}`);
+
+    const byDate = {};
+    (data.shifts || []).forEach((s) => {
+      (byDate[s.shift_date] = byDate[s.shift_date] || []).push(s);
+    });
+
+    const listEl = document.getElementById('shiftList');
+    listEl.innerHTML = '';
+    let any = false;
+    for (let i = 0; i < 7; i++) {
+      const d = addDays(shiftWeekStart, i);
+      const dStr = fmt(d);
+      const rows = byDate[dStr] || [];
+      const isToday = dStr === todayStr();
+      const block = document.createElement('div');
+      block.className = 'day-block';
+      block.innerHTML = `<div class="day-label${isToday ? ' today' : ''}">${dStr}（<span class="${dowClass(d.getDay())}">${DOW_LABELS[i]}</span>）${isToday ? ' ・本日' : ''}</div>`;
+      if (rows.length > 0) {
+        any = true;
+        rows.forEach((s) => {
+          const card = document.createElement('div');
+          card.className = 'shift-card';
+          card.textContent = `${s.start_time} 〜 ${s.end_time}`;
+          block.appendChild(card);
+        });
+        listEl.appendChild(block);
+      }
+    }
+    if (!any) {
+      listEl.innerHTML = '<div class="empty">この週の出勤シフトは登録されていません</div>';
+    }
+  }
+
+  document.getElementById('tabResBtn').addEventListener('click', () => {
+    document.getElementById('tabResBtn').classList.add('active');
+    document.getElementById('tabShiftBtn').classList.remove('active');
+    document.getElementById('tabRes').classList.add('active');
+    document.getElementById('tabShift').classList.remove('active');
+  });
+  document.getElementById('tabShiftBtn').addEventListener('click', () => {
+    document.getElementById('tabShiftBtn').classList.add('active');
+    document.getElementById('tabResBtn').classList.remove('active');
+    document.getElementById('tabShift').classList.add('active');
+    document.getElementById('tabRes').classList.remove('active');
+  });
+
+  document.getElementById('resPrevBtn').addEventListener('click', () => { resWeekStart = addDays(resWeekStart, -7); loadReservations(); });
+  document.getElementById('resNextBtn').addEventListener('click', () => { resWeekStart = addDays(resWeekStart, 7); loadReservations(); });
+  document.getElementById('shiftPrevBtn').addEventListener('click', () => { shiftWeekStart = addDays(shiftWeekStart, -7); loadShifts(); });
+  document.getElementById('shiftNextBtn').addEventListener('click', () => { shiftWeekStart = addDays(shiftWeekStart, 7); loadShifts(); });
+
+  document.getElementById('logoutLink').addEventListener('click', async (e) => {
+    e.preventDefault();
+    try { await fetch('/api/auth/logout', { method: 'POST' }); } catch (_) {}
+    window.location.href = '/admin/login.html';
+  });
+
+  init();
+})();
+</script>
+</body>
+</html>

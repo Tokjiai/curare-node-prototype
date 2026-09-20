@@ -55,6 +55,13 @@ function makeSession() {
         body: JSON.stringify(data)
       });
     },
+    async putJson(path, data) {
+      return this.request(path, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+      });
+    },
     async get(path) {
       return this.request(path, { method: 'GET' });
     }
@@ -84,8 +91,15 @@ async function main() {
     assert(r.status === 200 && r.body.success === true, 'store1オーナー（PIN5678）が正しくログインできる');
   }
   {
-    const r = await owner1.postJson('/api/auth/login', { store: '1', pin: '6789' }); // 花子（is_owner=0）
-    assert(r.status === 403, '一般スタッフPINでのログインは403（オーナー限定メッセージ）になる');
+    // ★2026-09-20更新：以前は一般スタッフのログイン自体を403でブロックしていたが、
+    //   スタッフダッシュボード（17章）の実装に伴いログインを解放したため、
+    //   ここは200・isOwner:falseになる（オーナー専用/admin/*には別途アクセスできない）。
+    //   ★owner1のセッションを上書きしないよう、必ず別セッションで試す
+    //   （以前は403で失敗する想定だったためowner1を流用していたが、今は成功するので
+    //   流用するとowner1が花子のセッションに変わってしまい、以降のテストが壊れる）
+    const hanakoProbe = makeSession();
+    const r = await hanakoProbe.postJson('/api/auth/login', { store: '1', pin: '6789' }); // 花子（is_owner=0）
+    assert(r.status === 200 && r.body.success === true && r.body.isOwner === false, '一般スタッフPINでもログインでき、isOwner:falseが返る');
   }
 
   // --------------------------------------------------------------------------
@@ -739,6 +753,105 @@ async function main() {
       body: JSON.stringify({ realname: 'テスト' })
     });
     assert(r.status === 404, '存在しない顧客IDの編集は404になる');
+  }
+
+  // --------------------------------------------------------------------------
+  // 17. スタッフダッシュボード（GAS版staff_dashboard.htmlの移植：一般スタッフの
+  //     ログイン解放・自分の予約確認・自分のシフト確認）
+  // --------------------------------------------------------------------------
+  console.log('--- 17. スタッフダッシュボード ---');
+  const hanako = makeSession();
+  {
+    const r = await hanako.postJson('/api/auth/login', { store: '1', pin: '6789' }); // 花子（is_owner=0）
+    assert(r.status === 200 && r.body.success === true && r.body.staffName === '花子', '一般スタッフ（花子）がログインできる');
+  }
+  {
+    const r = await hanako.get('/api/admin/customers');
+    assert(r.status === 401, '一般スタッフはログイン済みでもオーナー専用の/api/admin/*にはアクセスできない');
+  }
+  {
+    // ★他のテスト区画（3章の二重予約防止テスト等）も花子名義のダミー予約を
+    //   同じ14日以内の日付に作ることがあるため、件数の完全一致ではなく
+    //   「db/init.jsが投入した花子の2件（田中美穂・佐藤由紀）が両方含まれていて、
+    //   かつ全件が花子名義（他スタッフの予約が紛れ込んでいない）」ことを確認する
+    const r = await hanako.get('/api/staff/reservations');
+    const rows = r.body.reservations || [];
+    const names = rows.map((x) => x.realname);
+    const allHanako = rows.every((x) => x.staff_name === '花子');
+    assert(
+      r.status === 200 && allHanako && names.includes('田中 美穂') && names.includes('佐藤 由紀'),
+      '/api/staff/reservationsは自分（花子）が担当の予約だけを返す（他スタッフの予約は含まない）'
+    );
+  }
+  {
+    const r = await hanako.get('/api/staff/shifts');
+    const rows = r.body.shifts || [];
+    const allHanako = rows.every((s) => s.staff_name === '花子');
+    assert(r.status === 200 && rows.length > 0 && allHanako, '/api/staff/shiftsは自分（花子）のシフトだけを返す（他スタッフのシフトは含まない）');
+  }
+  {
+    // オーナー（寿子）自身も同じ/api/staff/*で自分の予約・シフトを見られる
+    // （寿子はday5に1件のみ予約を持つ、花子の2件とは別）
+    const r = await ownerFresh.get('/api/staff/reservations');
+    const rows = r.body.reservations || [];
+    assert(
+      r.status === 200 && rows.length === 1 && rows[0].realname === '鈴木 花' && rows[0].staff_name === '寿子',
+      'オーナー自身も/api/staff/reservationsで自分の予約（1件・花子分とは別）だけを見られる'
+    );
+  }
+  {
+    const anonStaff = makeSession();
+    const r = await anonStaff.get('/api/staff/reservations');
+    assert(r.status === 401, '未ログインでは/api/staff/*も401になる');
+  }
+
+  // --------------------------------------------------------------------------
+  // 18. メッセージ設定（GAS版owner_ui.htmlの「メッセージ設定」パネル・
+  //     admin_ui_functions.gsのgetMessageSettings/saveMessageSettingsの移植）
+  // --------------------------------------------------------------------------
+  console.log('--- 18. メッセージ設定 ---');
+  {
+    const r = await anon.get('/api/admin/settings/messages');
+    assert(r.status === 401, '未ログインではメッセージ設定を取得できない');
+  }
+  {
+    const r = await ownerFresh.get('/api/admin/settings/messages');
+    assert(r.status === 200 && Array.isArray(r.body.items) && r.body.items.length === 8, 'メッセージ設定は8キー（あいさつ＋予約確認4種＋変更＋キャンセル＋リマインド）返る');
+    const welcome = r.body.items.find((it) => it.key === 'welcome');
+    assert(!!welcome && welcome.body.includes('{NICKNAME}'), '初期状態は未編集のためデフォルト文言（{NICKNAME}を含むあいさつ文）が返る');
+  }
+  {
+    const r = await ownerFresh.putJson('/api/admin/settings/messages', {
+      items: [
+        { key: 'confirm_add', body: 'ご予約ありがとうございます！\n{DATE} {TIME}\n{MENU}（担当：{STAFF}）', closing: '当日のご来店をお待ちしております。' }
+      ]
+    });
+    assert(r.status === 200 && r.body.success === true, 'メッセージテンプレートを保存できる');
+  }
+  {
+    const r = await ownerFresh.get('/api/admin/settings/messages');
+    const item = r.body.items.find((it) => it.key === 'confirm_add');
+    assert(!!item && item.body.includes('ご予約ありがとうございます') && item.closing === '当日のご来店をお待ちしております。', '保存した内容が次回取得時に反映される（未編集の他キーはデフォルトのまま）');
+    const cancelItem = r.body.items.find((it) => it.key === 'cancel');
+    assert(!!cancelItem && cancelItem.body.includes('キャンセルしました'), '編集していない他のキーは引き続きデフォルト文言のまま');
+  }
+  {
+    const r = await ownerFresh.putJson('/api/admin/settings/messages', { items: [{ key: 'cancel', body: '', closing: '' }] });
+    assert(r.status === 400 && /本文を入力してください/.test(r.body.message), '本文が空のテンプレートは保存できない（バリデーション）');
+  }
+  {
+    const longBody = 'あ'.repeat(501);
+    const r = await ownerFresh.putJson('/api/admin/settings/messages', { items: [{ key: 'remind', body: longBody, closing: '' }] });
+    assert(r.status === 400 && /500文字以内/.test(r.body.message), '本文が500文字を超えるテンプレートは保存できない（バリデーション）');
+  }
+  {
+    // store2（岩田町店）オーナーがstore1のconfirm_addを保存しても、store1側には影響しない（店舗スコープ確認）
+    await owner2.putJson('/api/admin/settings/messages', {
+      items: [{ key: 'confirm_add', body: '岩田町店だけの予約確認メッセージです', closing: '' }]
+    });
+    const r1 = await ownerFresh.get('/api/admin/settings/messages');
+    const item1 = r1.body.items.find((it) => it.key === 'confirm_add');
+    assert(item1.body.includes('ご予約ありがとうございます'), '他店舗オーナーがメッセージを保存してもstore1側のテンプレートは変わらない（店舗スコープ確認）');
   }
 
   // --------------------------------------------------------------------------

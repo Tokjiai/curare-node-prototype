@@ -148,14 +148,25 @@
 
   async function init() {
     try {
-      await adminFetch('/api/auth/me'); // ログイン状態確認。401なら下でリダイレクト
+      const me = await adminFetch('/api/auth/me'); // ログイン状態確認。401なら下でリダイレクト
+      // ★2026-09-20追加：一般スタッフ（isOwner=false）のログインを解放したため、
+      //   /admin/配下（オーナー専用）に一般スタッフが迷い込んだ場合は、
+      //   専用のスタッフダッシュボードへ誘導する（そのままだとオーナー専用APIが
+      //   401になり、以前の「顧客マスタに入れない」不具合と同種の見た目のループに
+      //   なってしまうため）
+      if (!me.staff.isOwner) { window.location.href = '/staff/dashboard.html'; return; }
       const data = await adminFetch('/api/admin/dashboard');
       loadingMsg.style.display = 'none';
       shell.classList.add('ready');
       renderDashboard(data);
       loadPlan();
     } catch (e) {
-      window.location.href = '/admin/login.html';
+      // ★2026-09-19追加：セッション切れ等でログイン画面に飛ばされた後、
+      //   ログイン成功時に元居たこのページへ戻れるよう、next パラメータで覚えておく
+      //   （以前は常にダッシュボードへ固定で戻っていたため、例えば「顧客マスタ」を開こうとして
+      //   セッション切れに遭遇すると、ログイン後にダッシュボードへ飛ばされてしまい、
+      //   もう一度「顧客マスタ」を押し直す必要があって分かりにくいという指摘があった）
+      window.location.href = '/admin/login.html?next=' + encodeURIComponent(window.location.pathname);
     }
   }
 

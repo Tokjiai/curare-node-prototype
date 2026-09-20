@@ -171,11 +171,17 @@
     try {
       const me = await adminFetch('/api/auth/me');
       myStaffId = me.body.staff.id;
+      if (!me.body.staff.isOwner) { window.location.href = '/staff/dashboard.html'; return; }
       await load();
       loadingMsg.style.display = 'none';
       shell.classList.add('ready');
     } catch (e) {
-      window.location.href = '/admin/login.html';
+      // ★2026-09-19追加：セッション切れ等でログイン画面に飛ばされた後、
+      //   ログイン成功時に元居たこのページへ戻れるよう、next パラメータで覚えておく
+      //   （以前は常にダッシュボードへ固定で戻っていたため、例えば「顧客マスタ」を開こうとして
+      //   セッション切れに遭遇すると、ログイン後にダッシュボードへ飛ばされてしまい、
+      //   もう一度「顧客マスタ」を押し直す必要があって分かりにくいという指摘があった）
+      window.location.href = '/admin/login.html?next=' + encodeURIComponent(window.location.pathname);
     }
   }
 
