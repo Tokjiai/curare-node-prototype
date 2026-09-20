@@ -119,6 +119,18 @@
       </div>
 
       <div class="panel">
+        <h2>日次メンテナンス（GAS版の自動実行処理・手動実行版）</h2>
+        <p style="margin:0 0 12px;color:#666;font-size:13px;">
+          GAS版は毎日決まった時刻に自動実行していましたが、このプロトタイプはまだ
+          その仕組み（スケジューラ）を用意していないため、ボタンで手動実行する形に
+          しています。①予約日が過ぎた予約を「施術完了」扱いに自動更新し、②完了済みの
+          予約数から顧客ごとの来店回数を再集計します（現在の値より多い場合のみ更新）。
+        </p>
+        <button id="runMaintenanceBtn" class="btn-import">日次メンテナンスを今すぐ実行</button>
+        <div id="maintenanceResult" style="margin-top:10px;font-size:13px;white-space:pre-wrap;"></div>
+      </div>
+
+      <div class="panel">
         <h2>テストB店データの取込（PROTOTYPE専用）</h2>
         <p style="margin:0 0 12px;color:#666;font-size:13px;">
           Renderの無料プランにはShell機能がないため、同梱の sample_data/ 配下のCSV
@@ -222,6 +234,28 @@
       renderPlanFeatures(data.currentPlan);
     } catch (e) {
       alert('プラン切替に失敗しました: ' + e.message);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  document.getElementById('runMaintenanceBtn').addEventListener('click', async () => {
+    const btn = document.getElementById('runMaintenanceBtn');
+    const out = document.getElementById('maintenanceResult');
+    btn.disabled = true;
+    out.textContent = '実行中...';
+    try {
+      const res = await fetch('/api/admin/maintenance/run-daily', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'サーバーエラー');
+      out.textContent =
+        `✅ 完了（${data.today}時点）\n` +
+        `①施術完了に更新した予約：${data.executedUpdated}件\n` +
+        `②来店回数を更新した顧客：${data.visitsUpdated}件（対象${data.customersChecked}名を確認）`;
+      const dash = await adminFetch('/api/admin/dashboard');
+      renderDashboard(dash);
+    } catch (e) {
+      out.textContent = '❌ 失敗: ' + e.message;
     } finally {
       btn.disabled = false;
     }

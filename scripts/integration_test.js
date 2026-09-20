@@ -1018,6 +1018,73 @@ async function main() {
   }
 
   // --------------------------------------------------------------------------
+  // 22. 日次メンテナンス（GAS版コード.gs dailyProcessAll_のupdateExecutedFlags_/
+  //     updateVisitCounts_相当。オーナー管理画面の「日次メンテナンスを今すぐ実行」）
+  // --------------------------------------------------------------------------
+  console.log('--- 22. 日次メンテナンス ---');
+  {
+    const r = await owner2.postJson('/api/admin/maintenance/run-daily', {});
+    assert(r.status === 200 && r.body.success === true, '未ログインではなくセッションがあれば実行できる（店舗スコープは以降の項目で確認）');
+  }
+  // ★seed投入済みのC0001は初期total_visits=12（過去のdone=1実績なしの数値）のため、
+  //   このテストではまず0にリセットしてから、実際に作った完了予約1件で1に増える
+  //   ことを確認する（再集計の「増加分」自体を検証するため、seedの数値に依存しない）
+  db.prepare(`UPDATE customers SET total_visits = 0 WHERE store_id = 1 AND customer_id = 'C0001'`).run();
+  let pastResId = null;
+  {
+    // 過去日・customer_id付き・未完了(done=0)の予約を1件作成
+    const d = new Date(); d.setDate(d.getDate() - 5);
+    const dateStr = d.toISOString().slice(0, 10);
+    const r = await ownerFresh.postJson('/api/admin/reservations', {
+      realname: '日次メンテナンステスト', staffName: '花子', menu: 'テストメニュー', date: dateStr, time: '13:00', customerId: 'C0001'
+    });
+    assert(r.status === 200 && r.body.success === true, '過去日・顧客ID付きのテスト予約を登録できる（メンテナンス対象データの準備）');
+    pastResId = r.body.reservationId;
+  }
+  {
+    const row = db.prepare('SELECT done FROM reservations WHERE id = ?').get(pastResId);
+    assert(row.done === 0, '登録直後は完了（done）フラグが0のまま（自動では立たない）');
+  }
+  const visitsBefore = db.prepare(`SELECT total_visits FROM customers WHERE store_id = 1 AND customer_id = 'C0001'`).get().total_visits;
+  {
+    const r = await ownerFresh.postJson('/api/admin/maintenance/run-daily', {});
+    assert(r.status === 200 && r.body.success === true && r.body.executedUpdated >= 1,
+      '日次メンテナンス実行で①過去日の予約が1件以上「完了」扱いに更新される');
+  }
+  {
+    const row = db.prepare('SELECT done FROM reservations WHERE id = ?').get(pastResId);
+    assert(row.done === 1, 'メンテナンス実行後、対象の予約はdone=1になる');
+  }
+  {
+    const visitsAfter = db.prepare(`SELECT total_visits FROM customers WHERE store_id = 1 AND customer_id = 'C0001'`).get().total_visits;
+    assert(visitsAfter > visitsBefore, '②完了予約の再集計により、対象顧客（C0001）のtotal_visitsが増加する');
+  }
+  {
+    // 2回目の実行では既にdone=1・total_visitsも反映済みのため、対象0件（冪等性の確認）
+    const r = await ownerFresh.postJson('/api/admin/maintenance/run-daily', {});
+    assert(r.status === 200 && r.body.executedUpdated === 0, '同じ予約に対して2回目のメンテナンス実行では①の対象が0件になる（冪等）');
+  }
+  {
+    // total_visitsを手動で意図的に大きい値にしておくと、再集計されても減らされない
+    db.prepare(`UPDATE customers SET total_visits = 9999 WHERE store_id = 1 AND customer_id = 'C0001'`).run();
+    const r = await ownerFresh.postJson('/api/admin/maintenance/run-daily', {});
+    const visitsAfter = db.prepare(`SELECT total_visits FROM customers WHERE store_id = 1 AND customer_id = 'C0001'`).get().total_visits;
+    assert(r.status === 200 && visitsAfter === 9999, '手動で多めに設定された来店回数は、再集計によって減らされない（GAS版と同じ安全策）');
+  }
+  {
+    // キャンセル済みの過去日予約は完了扱いにならない
+    const d = new Date(); d.setDate(d.getDate() - 6);
+    const dateStr = d.toISOString().slice(0, 10);
+    const addR = await ownerFresh.postJson('/api/admin/reservations', {
+      realname: 'キャンセル済みメンテナンステスト', staffName: '花子', menu: 'テストメニュー', date: dateStr, time: '10:00'
+    });
+    await ownerFresh.request(`/api/admin/reservations/${addR.body.reservationId}`, { method: 'DELETE' });
+    await ownerFresh.postJson('/api/admin/maintenance/run-daily', {});
+    const row = db.prepare('SELECT done FROM reservations WHERE id = ?').get(addR.body.reservationId);
+    assert(row.done === 0, 'キャンセル済みの過去日予約はメンテナンスの完了フラグ更新対象にならない');
+  }
+
+  // --------------------------------------------------------------------------
   console.log(`\n=== 結果: PASS ${passCount} / FAIL ${failCount} ===`);
   if (failCount > 0) {
     console.log('\n失敗した項目:');

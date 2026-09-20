@@ -1762,6 +1762,78 @@ app.post('/api/admin/import-sample-data', requireOwnerSession, (req, res) => {
 });
 
 // ----------------------------------------------------------------------------
+// ★2026-09-20追加：日次メンテナンス処理（GAS版コード.gs dailyProcessAll_の一部移植）
+//
+//   GAS版は時間主導トリガーで毎日自動実行され、①実行済み（施術完了）フラグの
+//   自動更新②来店回数の再集計③古いキャンセル予約の削除④シフト自動展開などを
+//   一括で行っていた。このプロトタイプはRenderの無料枠で動いており、Node側に
+//   まだ常駐のスケジューラ（node-cron等）を用意していないため、GAS版と全く同じ
+//   「毎日決まった時刻に自動実行」は今回は対象外とし、まずは効果が分かりやすく
+//   単独で意味のある①②の2ステップだけを、オーナー管理画面から手動実行できる
+//   ボタンとして再現した（本番運用では別途スケジューラの整備が必要。README明記）。
+//
+//   【①実行済み（施術完了）フラグの自動更新】GAS版updateExecutedFlags_相当。
+//   予約日が「今日」より前で、まだ完了扱いになっていない（done=0）有効な予約
+//   （キャンセルを除く）を、自動的に完了（done=1）として扱う。GAS版同様、
+//   スタッフが個別にチェックを付ける運用ではなく、日付が過ぎたら自動で
+//   完了扱いになる設計（施術当日に何もしなくても翌日には反映される）。
+//
+//   【②来店回数の再集計】GAS版updateVisitCounts_相当。完了（done=1・
+//   キャンセル除く）予約を顧客ごとに数え、customers.total_visitsを更新する。
+//   GAS版はLINEのuserIdでしか顧客を紐付けられなかったが、Node版は予約作成時に
+//   customer_idを直接紐付けられるため、customer_idで集計する（LINE未連携の
+//   顧客もカウントされるようになり、GAS版よりも対象が広がっている）。GAS版と
+//   同様、集計結果が現在の値より大きい場合のみ更新する（手動で多めに入力された
+//   数値を誤って減らさないための安全策）。
+//
+// POST /api/admin/maintenance/run-daily
+// ----------------------------------------------------------------------------
+app.post('/api/admin/maintenance/run-daily', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const fmt = (d) => {
+      const y = d.getFullYear(); const m = String(d.getMonth() + 1).padStart(2, '0'); const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    };
+    const todayStr = fmt(new Date());
+
+    // ① 実行済み（施術完了）フラグの自動更新
+    const executedResult = db.prepare(`
+      UPDATE reservations SET done = 1, updated_at = CURRENT_TIMESTAMP
+      WHERE store_id = ? AND realname != 'キャンセル' AND done = 0 AND reservation_date < ?
+    `).run(storeId, todayStr);
+    const executedUpdated = executedResult.changes;
+
+    // ② 来店回数の再集計（customer_idごとに完了予約件数を数え、現在値より大きい場合のみ更新）
+    const counts = db.prepare(`
+      SELECT customer_id, COUNT(*) AS c FROM reservations
+      WHERE store_id = ? AND realname != 'キャンセル' AND done = 1 AND customer_id IS NOT NULL AND customer_id != ''
+      GROUP BY customer_id
+    `).all(storeId);
+    let visitsUpdated = 0;
+    const updateVisit = db.prepare(`
+      UPDATE customers SET total_visits = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE store_id = ? AND customer_id = ? AND total_visits < ?
+    `);
+    counts.forEach((row) => {
+      const result = updateVisit.run(row.c, storeId, row.customer_id, row.c);
+      if (result.changes > 0) visitsUpdated++;
+    });
+
+    res.json({
+      success: true,
+      today: todayStr,
+      executedUpdated,
+      visitsUpdated,
+      customersChecked: counts.length
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
 // ⑤ 課金基盤（プラン管理）の骨組み
 //
 // GET  /api/admin/plan  : 現在ログイン中の店舗のプランと、選べるプラン一覧を返す
