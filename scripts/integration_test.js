@@ -626,6 +626,19 @@ async function main() {
     const found = (r.body.items || []).find((m) => m.id === newMenuId);
     assert(!!found && found.is_active === 0, '削除後も管理画面の一覧にはis_active=0として残っている（物理削除ではない）');
   }
+  {
+    // ★2026-09-20追加：お客様フォーム用APIが返すメニュー一覧に、カテゴリ「メインメニュー」
+    //   以外（施術系オプション／オプション）のシードデータが含まれ、フロント側（app.js）で
+    //   メインメニューの択一選択肢とオプションのチェックボックスに正しく分離できる材料が
+    //   揃っていることを確認する（以前はカテゴリを区別せず全件を1つのセレクトに
+    //   流し込んでいた不具合の修正確認）
+    const r = await fetch(BASE + '/api/store?store=kurare-kotobuki').then((res) => res.json());
+    const mainItems = r.menuItems.filter((m) => m.category === 'メインメニュー');
+    const optItems = r.menuItems.filter((m) => m.category !== 'メインメニュー');
+    assert(mainItems.length >= 4, 'お客様フォーム用メニュー一覧にメインメニューが4件以上含まれる');
+    assert(optItems.length >= 2 && optItems.every((m) => ['施術系オプション', 'オプション'].includes(m.category)),
+      'お客様フォーム用メニュー一覧に施術系オプション／オプションのカテゴリ項目が含まれ、メインメニューとカテゴリで区別できる');
+  }
 
   // --------------------------------------------------------------------------
   // 15. ログイン管理（強制ログアウト）（★2026-09-19追加）

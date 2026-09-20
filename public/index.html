@@ -74,6 +74,14 @@
   .msg.ok{background:var(--pink-light); color:var(--pink-accent); border:1px solid var(--pink-border);}
   .msg.ng{background:#fff0f0; color:#c0392b; border:1px solid #ffb3b3;}
 
+  .option-menu-list{display:flex; flex-direction:column; gap:8px; margin-bottom:6px;}
+  .option-menu-item{display:flex; align-items:center; gap:10px; border:1px solid var(--pink-border); border-radius:8px; padding:10px 12px; cursor:pointer;}
+  .option-menu-item.checked{background:var(--pink-light); border-color:var(--pink-header);}
+  .option-menu-item input{width:auto; margin:0; padding:0;}
+  .option-menu-item .opt-name{flex:1; font-size:14px; color:#333;}
+  .option-menu-item .opt-price{font-size:13px; color:var(--pink-accent); font-weight:600; white-space:nowrap;}
+  .total-price-row{font-size:15px; font-weight:600; color:var(--pink-accent); text-align:right; margin:-4px 0 14px;}
+
   .reserv-list{list-style:none; font-size:14px;}
   .reserv-list li{padding:10px 0; border-bottom:1px solid #F0E0E8;}
   .reserv-list li:last-child{border-bottom:none;}
@@ -115,13 +123,22 @@
       <h2 class="section-title">⑤ お客様情報を入力</h2>
       <label>お名前</label>
       <input type="text" id="nameInput" placeholder="例：山田 花子">
-      <label>メニュー</label>
+      <label>メインメニュー</label>
       <select id="menuSelect">
         <option>フェイシャル(60分)</option>
         <option>フェイシャル(90分)</option>
         <option>ボディ(90分)</option>
         <option>ハンド(45分)</option>
       </select>
+
+      <div id="optionMenuWrap" style="display:none;">
+        <label>オプション（追加可・任意）</label>
+        <div id="optionMenuList" class="option-menu-list"></div>
+      </div>
+      <div id="totalPriceRow" class="total-price-row" style="display:none;">
+        合計目安：<span id="totalPriceValue">¥0</span>
+      </div>
+
       <label>備考（任意）</label>
       <input type="text" id="noteInput" placeholder="ご要望など">
       <button class="primary" id="submitBtn" type="button">この内容で予約する</button>

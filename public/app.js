@@ -8,7 +8,10 @@ const state = {
   staffId: 'nopref',
   date: null,
   selectedZone: null,
-  selectedTime: null
+  selectedTime: null,
+  mainMenuItems: [],
+  optionMenuItems: [],
+  selectedOptionIds: new Set()
 };
 
 async function loadStoreInfo() {
@@ -29,16 +32,27 @@ async function loadStoreInfo() {
 
   // ★2026-09-19追加：メニューマスタで管理している有効なメニューを反映する
   //   （以前はここに直接4件をハードコードしていた。店舗設定画面から追加・編集した内容が届く）
+  // ★2026-09-20更新：以前はカテゴリを区別せず全メニューを1つのセレクトに流し込んでいた
+  //   ため、店舗設定で「施術系オプション」「オプション」を追加すると、メインメニューの
+  //   択一選択肢に紛れ込んでしまう不具合があった。GAS版customer_form.htmlのbuildMenus_
+  //   相当の区分（メインメニューは1つ選択・オプションは複数追加可）に合わせて分離した。
   const menuSel = document.getElementById('menuSelect');
   if (menuSel && Array.isArray(data.menuItems)) {
+    state.mainMenuItems = data.menuItems.filter((m) => m.category === 'メインメニュー');
+    state.optionMenuItems = data.menuItems.filter((m) => m.category !== 'メインメニュー');
+    state.selectedOptionIds = new Set();
+
     menuSel.innerHTML = '';
-    data.menuItems.forEach((m) => {
+    state.mainMenuItems.forEach((m) => {
       const opt = document.createElement('option');
       opt.value = m.name;
       const priceLabel = m.price ? `　¥${Number(m.price).toLocaleString('ja-JP')}` : '';
       opt.textContent = m.name + priceLabel;
       menuSel.appendChild(opt);
     });
+    menuSel.addEventListener('change', updateTotalPrice);
+
+    renderOptionMenu();
   }
 
   // ★2026-09-20追加：受付ルール・注意書き（rule2「注意書き（お客様向け）」相当）。
@@ -62,6 +76,79 @@ async function loadStoreInfo() {
   const d = new Date();
   d.setDate(d.getDate() + 3);
   document.getElementById('dateInput').value = d.toISOString().slice(0, 10);
+}
+
+// ★2026-09-20追加：オプションメニュー（GAS版customer_form.htmlのbuildAddOptionsHtml/
+//   buildOptionCard/selectOptionGroup相当）。「施術系オプション」「オプション」カテゴリの
+//   メニューをチェックボックス形式で複数選択できるようにし、選択中の合計金額を表示する。
+//   【GAS版からの簡略化】GAS版は「施術系オプション」はラジオ形式で1つのみ選択・スタッフの
+//   対応可否によって選択肢を絞り込む（rebuildStaffForOptMenu）が、このプロトタイプでは
+//   カテゴリを区別せずすべてチェックボックス（複数選択可）に統一し、スタッフ絞り込みは
+//   行っていない（README_PROTOTYPE.mdに明記）。
+function renderOptionMenu() {
+  const wrap = document.getElementById('optionMenuWrap');
+  const list = document.getElementById('optionMenuList');
+  if (!wrap || !list) return;
+  list.innerHTML = '';
+
+  if (state.optionMenuItems.length === 0) {
+    wrap.style.display = 'none';
+    updateTotalPrice();
+    return;
+  }
+  wrap.style.display = 'block';
+
+  state.optionMenuItems.forEach((m) => {
+    const item = document.createElement('label');
+    item.className = 'option-menu-item';
+    const priceLabel = m.price ? `+¥${Number(m.price).toLocaleString('ja-JP')}` : '';
+    item.innerHTML = `<input type="checkbox" data-opt-id="${m.id}"><span class="opt-name">${m.name}</span><span class="opt-price">${priceLabel}</span>`;
+    const checkbox = item.querySelector('input');
+    checkbox.addEventListener('change', () => {
+      if (checkbox.checked) {
+        state.selectedOptionIds.add(m.id);
+        item.classList.add('checked');
+      } else {
+        state.selectedOptionIds.delete(m.id);
+        item.classList.remove('checked');
+      }
+      updateTotalPrice();
+    });
+    list.appendChild(item);
+  });
+  updateTotalPrice();
+}
+
+function updateTotalPrice() {
+  const row = document.getElementById('totalPriceRow');
+  const valueEl = document.getElementById('totalPriceValue');
+  if (!row || !valueEl) return;
+
+  const menuSel = document.getElementById('menuSelect');
+  const mainItem = state.mainMenuItems.find((m) => menuSel && m.name === menuSel.value);
+  let total = mainItem ? Number(mainItem.price) || 0 : 0;
+  state.optionMenuItems.forEach((m) => {
+    if (state.selectedOptionIds.has(m.id)) total += Number(m.price) || 0;
+  });
+
+  if (total > 0) {
+    valueEl.textContent = `¥${total.toLocaleString('ja-JP')}`;
+    row.style.display = 'block';
+  } else {
+    row.style.display = 'none';
+  }
+}
+
+// ★選択中のメインメニュー名にチェック済みオプション名を「＋」で連結した文字列を返す
+//   （reservations.menuはフリーテキスト列のため、GAS版同様に組み合わせ結果を1つの
+//   文字列として保存する）
+function buildMenuLabel() {
+  const menuSel = document.getElementById('menuSelect');
+  const parts = [menuSel.value];
+  state.optionMenuItems.forEach((m) => {
+    if (state.selectedOptionIds.has(m.id)) parts.push(m.name);
+  });
+  return parts.join('＋');
 }
 
 async function checkAvailability() {
@@ -133,7 +220,7 @@ async function selectZone(zone, boxEl) {
 
 async function submitReservation() {
   const name = document.getElementById('nameInput').value.trim();
-  const menu = document.getElementById('menuSelect').value;
+  const menu = buildMenuLabel();
   const note = document.getElementById('noteInput').value.trim();
   const msgEl = document.getElementById('submitMsg');
 
