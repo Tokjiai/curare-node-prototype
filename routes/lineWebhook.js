@@ -36,6 +36,22 @@ const { getMessageTemplate, renderMessageBody } = require('../lib/messageTemplat
 //   未設定の場合はボタン付きメッセージを送らず、テキストのみの案内にフォールバックする。
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || '').replace(/\/+$/, '');
 
+// ★2026-09-21追加：LINE_CUSTOMER_CHANNEL_TOKEN 環境変数（安全策）
+//   Renderの無料プランはディスクがエフェメラル（再デプロイのたびに中身が消える
+//   場合がある）という前提のため、stores.line_customer_channel_token（DBに保存する
+//   値、店舗設定「LINE連携設定」パネルから入力）だけに頼ると、再デプロイのたびに
+//   接続設定が消えてしまうリスクがある。LINE_CHANNEL_SECRETと同じく環境変数は
+//   redeployしても確実に維持されるため、DB側の値が未設定の場合のフォールバック先
+//   として使えるようにした（優先順位：DB値 > 環境変数）。
+//   store.line_customer_channel_token を直接参照している箇所は無く、必ず
+//   getCustomerChannelToken(store) 経由で取得する。
+const LINE_CUSTOMER_CHANNEL_TOKEN_FALLBACK = process.env.LINE_CUSTOMER_CHANNEL_TOKEN || '';
+
+function getCustomerChannelToken(store) {
+  if (store && store.line_customer_channel_token) return store.line_customer_channel_token;
+  return LINE_CUSTOMER_CHANNEL_TOKEN_FALLBACK || null;
+}
+
 const LINE_CHANNEL_SECRET = process.env.LINE_CHANNEL_SECRET || '';
 
 if (!process.env.LINE_CHANNEL_SECRET) {
@@ -123,7 +139,7 @@ function handleStaffPinRegistration(storeId, lineUserId, text) {
 async function handleFollow(storeId, lineUserId, replyToken) {
   const store = db.prepare('SELECT * FROM stores WHERE id = ?').get(storeId);
   if (!store) return;
-  const token = store.line_customer_channel_token || null;
+  const token = getCustomerChannelToken(store);
 
   const displayName = await getLineDisplayName(token, lineUserId);
   const result = findOrCreateCustomerFromLine(db, storeId, lineUserId, displayName);
@@ -149,7 +165,7 @@ async function handleFollow(storeId, lineUserId, replyToken) {
 //   スタンプ受信時の定型返信（GAS版handleStickerMessage_相当）
 async function handleSticker(storeId, replyToken) {
   const store = db.prepare('SELECT * FROM stores WHERE id = ?').get(storeId);
-  const token = store ? store.line_customer_channel_token : null;
+  const token = getCustomerChannelToken(store);
   const text = 'スタンプありがとうございます😊\nご予約の方法は下のメニューの「予約」ボタンを押してください。';
   await replyMessage(token, replyToken, text, null);
 }
@@ -162,7 +178,7 @@ async function handleReservationKeyword(storeId, lineUserId, text, replyToken) {
   if (text !== 'エステ予約したい') return;
   const store = db.prepare('SELECT * FROM stores WHERE id = ?').get(storeId);
   if (!store) return;
-  const token = store.line_customer_channel_token || null;
+  const token = getCustomerChannelToken(store);
 
   const customer = db.prepare('SELECT customer_id FROM customers WHERE store_id = ? AND user_id = ?').get(storeId, lineUserId);
   let reserveUrl = null;
@@ -266,4 +282,4 @@ function registerLineWebhook(app) {
   );
 }
 
-module.exports = { registerLineWebhook, resolveStoreIdForWebhook, handleStaffPinRegistration };
+module.exports = { registerLineWebhook, resolveStoreIdForWebhook, handleStaffPinRegistration, getCustomerChannelToken };

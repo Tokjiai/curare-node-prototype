@@ -31,6 +31,7 @@ const { registerLineWebhook } = require('./routes/lineWebhook');
 const { notifyReservationConfirmed } = require('./lib/reservationNotify');
 const { getPlan, listPlans, hasFeature } = require('./lib/plans');
 const { runMigrations } = require('./lib/migrate');
+const SqliteSessionStore = require('./lib/sqliteSessionStore');
 const { getMessageSettings, saveMessageSettings, getMessageTemplate, renderMessageBody } = require('./lib/messageTemplates');
 
 // Render無料プランのディスクは再起動で消える（エフェメラル）ため、
@@ -83,7 +84,14 @@ if (!process.env.SESSION_SECRET) {
 //   store.all() / store.destroy() で全セッションを横断的に見る必要があるため）。
 //   本番でconnect-mysql2等に差し替える際は、そちらのstoreも同様にall()/destroy()
 //   をサポートしていることを確認すること（connect系ストアは概ね対応している）。
-const sessionStore = new session.MemoryStore();
+// ★2026-09-21変更：session.MemoryStore()（プロセスメモリのみ）から
+//   SqliteSessionStore（lib/sqliteSessionStore.js、data/app.db内にセッションを
+//   永続化）へ変更。Renderの無料プランはスリープ後の再起動でプロセスメモリが
+//   消えるため、MemoryStoreのままだとログイン中のセッションが不定期に無効化され
+//   401 Unauthorizedになってしまう問題があった（実際にLINE連携設定パネルの
+//   保存操作で発生と報告あり）。data/app.db自体はデプロイをまたいで永続化されて
+//   いる実績があるため、同じ仕組みでセッションも永続化する。
+const sessionStore = new SqliteSessionStore(db);
 // ★2026-09-19追加：RenderはTLS終端を行うリバースプロキシの背後でアプリを動かすため、
 //   これを明示しないとExpressは「HTTPSで来ている」ことを認識できない
 //   （req.secureが常にfalseになる）。cookie.secure:'auto'と組み合わせて、
@@ -1693,6 +1701,9 @@ app.get('/api/admin/settings/line', requireOwnerSession, (req, res) => {
     res.json({
       customerChannelTokenSet: !!(store && store.line_customer_channel_token),
       customerChannelTokenHint: maskSecretHint(store && store.line_customer_channel_token),
+      // ★2026-09-21追加：DB側が未設定でも環境変数LINE_CUSTOMER_CHANNEL_TOKENの
+      //   フォールバックが効いているかを画面上で分かるようにする（安全策の可視化）
+      customerChannelTokenEnvFallbackSet: !!process.env.LINE_CUSTOMER_CHANNEL_TOKEN,
       staffChannelSecretSet: !!(store && store.line_staff_channel_secret),
       staffChannelSecretHint: maskSecretHint(store && store.line_staff_channel_secret),
       webhookUrl: base ? `${base}/webhook/line` : null

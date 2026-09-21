@@ -304,6 +304,9 @@
         <div class="hint" style="font-size:11.5px; color:var(--ink-soft); margin:10px 0;">
           ⚠️ Webhookの署名検証自体は、サーバー側の環境変数<code>LINE_CHANNEL_SECRET</code>（デプロイ先の環境変数設定画面から入力）を使います。ここで入力するチャネルシークレットは同じ値を保存しておくためのもので、単体では署名検証には使われません（現状は1チャネル運用の前提のため）。
         </div>
+        <div class="hint" id="lineEnvFallbackHint" style="font-size:11.5px; color:var(--ink-soft); margin:10px 0; display:none;">
+          🛡️ 安全策：デプロイ先の環境変数<code>LINE_CUSTOMER_CHANNEL_TOKEN</code>が設定されている場合、ディスクが再デプロイでリセットされてこの画面の保存値が消えても、環境変数の値が自動的に使われます（優先順位：この画面での保存値 &gt; 環境変数）。<span id="lineEnvFallbackStatus"></span>
+        </div>
         <div class="err" id="lineErr" style="display:none;"></div>
         <div style="display:flex; gap:10px; align-items:center; margin-top:10px;">
           <button class="btn" id="lineSaveBtn" type="button">変更を保存</button>
@@ -864,6 +867,16 @@
     secretInput.value = '';
     secretInput.placeholder = data.staffChannelSecretSet ? data.staffChannelSecretHint : '未設定';
     secretStatus.textContent = data.staffChannelSecretSet ? '設定済み（変更する場合のみ入力）' : '未設定';
+
+    const envHint = document.getElementById('lineEnvFallbackHint');
+    const envStatus = document.getElementById('lineEnvFallbackStatus');
+    if (data.customerChannelTokenEnvFallbackSet) {
+      envHint.style.display = 'block';
+      envStatus.textContent = '（現在：環境変数は設定済みです）';
+    } else {
+      envHint.style.display = 'block';
+      envStatus.textContent = '（現在：環境変数は未設定です。設定しておくと安心です）';
+    }
   }
 
   document.getElementById('lineSaveBtn').addEventListener('click', async () => {
