@@ -1151,6 +1151,58 @@ async function main() {
   }
 
   // --------------------------------------------------------------------------
+  // 24. LINE連携設定（GET/PUT /api/admin/settings/line、店舗設定「LINE連携設定」パネル）
+  //     （v28で実装したWebhook機能を実際のLINE公式アカウントに接続する準備として、
+  //      チャネルアクセストークン／チャネルシークレットを管理画面から入力できるようにした）
+  // --------------------------------------------------------------------------
+  console.log('--- 24. LINE連携設定 ---');
+  {
+    const r = await fetch(BASE + '/api/admin/settings/line').then((res) => res.status);
+    assert(r === 401, '未ログインではLINE連携設定を取得できない');
+  }
+  {
+    const r = await ownerFresh.get('/api/admin/settings/line');
+    assert(
+      r.status === 200 && r.body.customerChannelTokenSet === false && r.body.staffChannelSecretSet === false,
+      '初期状態はチャネルアクセストークン・チャネルシークレットともに未設定として返る'
+    );
+  }
+  {
+    const r = await ownerFresh.putJson('/api/admin/settings/line', {});
+    assert(r.status === 400, '両方とも空欄では保存できない（バリデーション）');
+  }
+  {
+    const r = await ownerFresh.putJson('/api/admin/settings/line', { customerChannelToken: 'test-token-abcd1234' });
+    assert(r.status === 200 && r.body.success === true, 'チャネルアクセストークンを保存できる');
+  }
+  {
+    const r = await ownerFresh.get('/api/admin/settings/line');
+    assert(
+      r.status === 200 && r.body.customerChannelTokenSet === true && r.body.customerChannelTokenHint === '••••••••1234',
+      '保存したトークンは設定済み・末尾4文字のヒント付きで返る（平文の全体は返さない）'
+    );
+    assert(r.body.staffChannelSecretSet === false, 'トークンのみ保存してもチャネルシークレットは未設定のまま');
+  }
+  {
+    const r = await ownerFresh.putJson('/api/admin/settings/line', { staffChannelSecret: 'my-test-secret-xyz' });
+    assert(r.status === 200 && r.body.success === true, 'チャネルシークレットを別途保存できる（トークンは上書きされない）');
+    const r2 = await ownerFresh.get('/api/admin/settings/line');
+    assert(
+      r2.body.customerChannelTokenSet === true && r2.body.staffChannelSecretSet === true,
+      'トークン・シークレットの両方が設定済みとして返る'
+    );
+  }
+  {
+    const r = await owner2.putJson('/api/admin/settings/line', { customerChannelToken: 'store2-token-value' });
+    assert(r.status === 200, '岩田町店オーナーも自店のLINE連携設定を保存できる');
+    const r2 = await ownerFresh.get('/api/admin/settings/line');
+    assert(
+      r2.body.customerChannelTokenHint === '••••••••1234',
+      '他店舗オーナーの保存はstore1側のトークンに影響しない（店舗スコープ確認）'
+    );
+  }
+
+  // --------------------------------------------------------------------------
   console.log(`\n=== 結果: PASS ${passCount} / FAIL ${failCount} ===`);
   if (failCount > 0) {
     console.log('\n失敗した項目:');

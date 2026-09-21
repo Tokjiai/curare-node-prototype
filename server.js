@@ -1656,6 +1656,80 @@ app.put('/api/admin/settings/rule2/notices/:id', requireOwnerSession, (req, res)
 });
 
 // ----------------------------------------------------------------------------
+// ★2026-09-21追加：GET/PUT /api/admin/settings/line
+//   LINE公式アカウント接続設定（店舗ごとのチャネルアクセストークン／チャネル
+//   シークレット）を管理画面から入力できるようにする画面。これまでは
+//   stores.line_customer_channel_token / line_staff_channel_secret を直接DBに
+//   書き込む以外に設定する手段が無かった（v28実装時点の既知の制約）ため追加した。
+//
+//   ・チャネルアクセストークン（stores.line_customer_channel_token）：
+//     お客様向けLINE公式アカウントのMessaging APIチャネルアクセストークン。
+//     友だち追加時のあいさつ返信・スタンプ/キーワード返信等の送信に使用する
+//     （lib/lineClient.js の replyMessage / getLineDisplayName）。
+//   ・チャネルシークレット（stores.line_staff_channel_secret）：
+//     Webhookの署名検証に使う値。実際の署名検証自体は環境変数
+//     LINE_CHANNEL_SECRET（Renderの環境変数設定）を使う一本構成のままだが、
+//     ここに同じ値を保存しておくことで、複数店舗展開時に
+//     resolveStoreIdForWebhook_相当の店舗判別ロジックが機能するようになる
+//     （現状は1チャネル運用のため、まずは値を保持できるようにするだけの位置づけ）。
+//
+//   セキュリティ上、GET時は値をそのまま返さず「設定済みかどうか」と末尾4文字の
+//   ヒントのみを返す（画面上に平文のトークンを表示し続けない）。PUT時は空文字
+//   なら「変更しない」として扱う。
+// ----------------------------------------------------------------------------
+function maskSecretHint(value) {
+  if (!value) return null;
+  const tail = String(value).slice(-4);
+  return `••••••••${tail}`;
+}
+
+app.get('/api/admin/settings/line', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const store = db.prepare(
+      'SELECT line_customer_channel_token, line_staff_channel_secret FROM stores WHERE id = ?'
+    ).get(storeId);
+    const base = (process.env.PUBLIC_BASE_URL || '').replace(/\/+$/, '');
+    res.json({
+      customerChannelTokenSet: !!(store && store.line_customer_channel_token),
+      customerChannelTokenHint: maskSecretHint(store && store.line_customer_channel_token),
+      staffChannelSecretSet: !!(store && store.line_staff_channel_secret),
+      staffChannelSecretHint: maskSecretHint(store && store.line_staff_channel_secret),
+      webhookUrl: base ? `${base}/webhook/line` : null
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put('/api/admin/settings/line', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const data = req.body || {};
+    const setClauses = [];
+    const params = {};
+    if (typeof data.customerChannelToken === 'string' && data.customerChannelToken.trim()) {
+      setClauses.push('line_customer_channel_token = @customerChannelToken');
+      params.customerChannelToken = data.customerChannelToken.trim();
+    }
+    if (typeof data.staffChannelSecret === 'string' && data.staffChannelSecret.trim()) {
+      setClauses.push('line_staff_channel_secret = @staffChannelSecret');
+      params.staffChannelSecret = data.staffChannelSecret.trim();
+    }
+    if (setClauses.length === 0) {
+      return res.status(400).json({ success: false, message: '入力欄が空です（変更したい項目だけ入力してください）' });
+    }
+    params.storeId = storeId;
+    db.prepare(`UPDATE stores SET ${setClauses.join(', ')} WHERE id = @storeId`).run(params);
+    res.json({ success: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
 // GET /api/admin/dashboard?store=
 //   オーナー向けダッシュボード用のサマリー数値をまとめて返す。
 // ----------------------------------------------------------------------------
