@@ -983,10 +983,16 @@ async function main() {
     assert(r === 401, '未ログインでは月間カレンダーAPIは401になる');
   }
   {
-    const r = await hanakoFresh.get('/api/staff/reservations/monthly?month=2026-09');
-    assert(r.status === 200 && r.body.month === '2026-09', '月間カレンダーAPIが200で該当月のデータを返す');
-    assert(r.body.counts['2026-09-24'] && r.body.counts['2026-09-24'].count === 2, 'シードデータの4日後（2件予約）の日付が件数2で集計される（キャンセルは既に別テストで除外確認済みのロジックを流用）');
-    assert(r.body.counts['2026-09-24'].pending === false, '通常予約のみの日はpending=false');
+    // ★シードデータの「4日後」はシード投入時点の「今日」基準の相対日付のため、
+    //   実行日によって暦日がずれる。ハードコードせず、実行時に動的計算する
+    //   （2026-09-21時点で09-24固定だったものが翌日以降ずれて失敗していたため修正）。
+    const seedDay = new Date(); seedDay.setDate(seedDay.getDate() + 4);
+    const seedDateStr = seedDay.toISOString().slice(0, 10);
+    const seedMonthStr = seedDateStr.slice(0, 7);
+    const r = await hanakoFresh.get('/api/staff/reservations/monthly?month=' + seedMonthStr);
+    assert(r.status === 200 && r.body.month === seedMonthStr, '月間カレンダーAPIが200で該当月のデータを返す');
+    assert(r.body.counts[seedDateStr] && r.body.counts[seedDateStr].count === 2, 'シードデータの4日後（2件予約）の日付が件数2で集計される（キャンセルは既に別テストで除外確認済みのロジックを流用）');
+    assert(r.body.counts[seedDateStr].pending === false, '通常予約のみの日はpending=false');
   }
   {
     // monthパラメータ省略時は当月がデフォルトになる（GAS版はページ表示時の当月起点と同等）
@@ -1082,6 +1088,66 @@ async function main() {
     await ownerFresh.postJson('/api/admin/maintenance/run-daily', {});
     const row = db.prepare('SELECT done FROM reservations WHERE id = ?').get(addR.body.reservationId);
     assert(row.done === 0, 'キャンセル済みの過去日予約はメンテナンスの完了フラグ更新対象にならない');
+  }
+
+  // --------------------------------------------------------------------------
+  // 23. LINE Webhook：友だち追加・スタンプ・予約キーワード返信
+  //     （GAS版webhook_handler.gsのhandleFollow_/handleStickerMessage_/
+  //      handleTextMessage_の移植）
+  // --------------------------------------------------------------------------
+  console.log('--- 23. LINE Webhook（友だち追加・スタンプ・予約キーワード） ---');
+  const anonWebhook = makeSession();
+  {
+    // トライアルプラン（lineNotify対象外）のままでも、顧客登録自体は行われる
+    const before = db.prepare(`SELECT COUNT(*) AS c FROM customers WHERE store_id = 1 AND user_id = 'Utest_webhook_001'`).get().c;
+    assert(before === 0, 'テスト対象のuserIdはまだ顧客マスタに存在しない（前提確認）');
+    const r = await anonWebhook.postJson('/webhook/line', {
+      destination: 'TEST_DEST',
+      events: [{ type: 'follow', replyToken: 'itest-reply-1', source: { type: 'user', userId: 'Utest_webhook_001' }, timestamp: Date.now() }]
+    });
+    assert(r.status === 200, '友だち追加イベントのWebhookは200を返す');
+    const row = db.prepare(`SELECT customer_id, status FROM customers WHERE store_id = 1 AND user_id = 'Utest_webhook_001'`).get();
+    assert(!!row && row.status === 'inactive', '友だち追加により顧客マスタへ自動登録される（本名未確定のため非アクティブ分類）');
+  }
+  {
+    // 同じuserIdでもう一度follow：新規行が増えず、既存の顧客IDのまま（冪等性）
+    const countBefore = db.prepare(`SELECT COUNT(*) AS c FROM customers WHERE store_id = 1 AND user_id = 'Utest_webhook_001'`).get().c;
+    await anonWebhook.postJson('/webhook/line', {
+      destination: 'TEST_DEST',
+      events: [{ type: 'follow', replyToken: 'itest-reply-2', source: { type: 'user', userId: 'Utest_webhook_001' }, timestamp: Date.now() }]
+    });
+    const countAfter = db.prepare(`SELECT COUNT(*) AS c FROM customers WHERE store_id = 1 AND user_id = 'Utest_webhook_001'`).get().c;
+    assert(countBefore === 1 && countAfter === 1, '同じuserIdで2回目の友だち追加が来ても、顧客マスタの行が重複して増えない（冪等）');
+  }
+  {
+    // スタンプ・予約キーワードのWebhookも200で受理される（実送信はシミュレーションのため、ここではエラーにならないことを確認）
+    const r1 = await anonWebhook.postJson('/webhook/line', {
+      destination: 'TEST_DEST',
+      events: [{ type: 'message', message: { type: 'sticker', stickerId: 1, packageId: 1 }, replyToken: 'itest-reply-3', source: { type: 'user', userId: 'Utest_webhook_001' }, timestamp: Date.now() }]
+    });
+    assert(r1.status === 200, 'スタンプ受信のWebhookは200を返す（定型返信をシミュレーション送信）');
+    const r2 = await anonWebhook.postJson('/webhook/line', {
+      destination: 'TEST_DEST',
+      events: [{ type: 'message', message: { type: 'text', text: 'エステ予約したい' }, replyToken: 'itest-reply-4', source: { type: 'user', userId: 'Utest_webhook_001' }, timestamp: Date.now() }]
+    });
+    assert(r2.status === 200, '「エステ予約したい」キーワードのWebhookは200を返す（予約リンクをシミュレーション送信）');
+    const r3 = await anonWebhook.postJson('/webhook/line', {
+      destination: 'TEST_DEST',
+      events: [{ type: 'message', message: { type: 'text', text: '関係ないメッセージ' }, replyToken: 'itest-reply-5', source: { type: 'user', userId: 'Utest_webhook_001' }, timestamp: Date.now() }]
+    });
+    assert(r3.status === 200, 'キーワード不一致のテキストメッセージも200を返す（無反応でエラーにはならない）');
+  }
+  {
+    // プランをLINE連携プランに切り替えると、あいさつメッセージが実際に組み立てられる経路が通る
+    // （実送信はトークン未設定のためシミュレーションになるが、テンプレート取得〜返信呼び出しまで
+    //   例外なく完走することを確認する）
+    await ownerFresh.postJson('/api/admin/plan', { plan: 'line' });
+    const r = await anonWebhook.postJson('/webhook/line', {
+      destination: 'TEST_DEST',
+      events: [{ type: 'follow', replyToken: 'itest-reply-6', source: { type: 'user', userId: 'Utest_webhook_002' }, timestamp: Date.now() }]
+    });
+    assert(r.status === 200, 'LINE連携プランでの友だち追加も200を返す（あいさつメッセージ組み立て〜送信呼び出しが例外なく完走する）');
+    await ownerFresh.postJson('/api/admin/plan', { plan: 'trial' }); // 後続テストに影響しないよう戻す
   }
 
   // --------------------------------------------------------------------------
