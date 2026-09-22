@@ -180,16 +180,19 @@ function updateTotalPrice() {
   }
 }
 
-// ★選択中のメインメニュー名にチェック済みオプション名を「＋」で連結した文字列を返す
-//   （reservations.menuはフリーテキスト列のため、GAS版同様に組み合わせ結果を1つの
-//   文字列として保存する）
+// ★選択中のメインメニュー名にチェック済みオプション名を「　＋　」（全角スペース+全角プラス+
+//   全角スペース）で連結した文字列を返す（reservations.menuはフリーテキスト列のため、GAS版
+//   reservation_form_assets.htmlのbuildMenuValue()と同じ区切り文字列で保存する。
+//   ★2026-09-22修正：以前は区切りが「＋」のみ（スペース無し）だったため、後から実装した
+//   閲覧専用画面（reservations-view.html等）のsplitMenu()が「　＋　」でしか分割できず、
+//   オプション付き予約の表示が崩れる不整合があった。GAS版の区切りに統一して解消）
 function buildMenuLabel() {
   const menuSel = document.getElementById('menuSelect');
   const parts = [menuSel.value];
   state.optionMenuItems.forEach((m) => {
     if (state.selectedOptionIds.has(m.id)) parts.push(m.name);
   });
-  return parts.join('＋');
+  return parts.join('　＋　');
 }
 
 async function checkAvailability() {

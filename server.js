@@ -928,6 +928,39 @@ app.delete('/api/staff/reservations/:id', requireStaffSession, (req, res) => {
   }
 });
 
+// ----------------------------------------------------------------------------
+// ★2026-09-22追加：GET /api/staff/customers/search?q=
+//   スタッフ用の予約登録フォームから、既存の顧客を検索して選ぶための簡易検索API
+//   （GAS版reservation_form_assets.htmlのopenCustomerModal()相当。GAS版はかな行
+//   インデックス付きの全件ブラウズ方式だったが、Node版はより実用的な部分一致検索
+//   （本名・フリガナ・電話番号）に簡略化した）。GAS版のcustomerModalにオーナー限定の
+//   分岐は無く、ログイン中のスタッフなら誰でも顧客を検索・選択できたため、
+//   requireStaffSessionのみで許可する。受付拒否（booking_blocked）中の顧客も
+//   スタッフ側からの新規予約登録には支障が無いため除外しない（お客様向けフォームの
+//   受付拒否ブロックとは別の話）
+// ----------------------------------------------------------------------------
+app.get('/api/staff/customers/search', requireStaffSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const q = (req.query.q || '').trim();
+    if (!q) {
+      return res.json({ customers: [] });
+    }
+    const like = `%${q}%`;
+    const rows = db.prepare(`
+      SELECT customer_id AS customerId, realname, kana, phone, line_name AS lineName, user_id AS userId
+      FROM customers
+      WHERE store_id = ? AND is_deleted = 0 AND (realname LIKE ? OR kana LIKE ? OR phone LIKE ?)
+      ORDER BY realname ASC
+      LIMIT 20
+    `).all(storeId, like, like, like);
+    res.json({ customers: rows });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // POST /api/staff/customers : 顧客マスタへの新規登録（GAS版registerCustomer相当。
 //   GAS版にオーナー限定の分岐はなく、一般スタッフにも開放されているためrequireStaffSessionのみで許可する）
 app.post('/api/staff/customers', requireStaffSession, (req, res) => {

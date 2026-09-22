@@ -1870,6 +1870,49 @@ async function main() {
   }
 
   // --------------------------------------------------------------------------
+  // 32. スタッフ用の顧客検索（予約フォームでの既存顧客選択、46章の続き）
+  // --------------------------------------------------------------------------
+  console.log('--- 32. スタッフ用の顧客検索 ---');
+  {
+    const anonSearch = makeSession();
+    const r = await anonSearch.get('/api/staff/customers/search?q=田中');
+    assert(r.status === 401, '未ログインでは顧客検索できない');
+  }
+  {
+    const r = await hanako.get('/api/staff/customers/search?q=');
+    assert(r.status === 200 && Array.isArray(r.body.customers) && r.body.customers.length === 0, '検索語が空のときは空配列を返す（全件ブラウズはしない）');
+  }
+  {
+    // ★C0001は他セクションのテストで本名・電話番号が書き換えられている場合があるため
+    //   （テスト全体を通しで実行する都合上）、customerId一致で判定する
+    const r = await hanako.get('/api/staff/customers/search?q=' + encodeURIComponent('田中'));
+    assert(r.status === 200 && r.body.customers.some((c) => c.customerId === 'C0001'), '一般スタッフでも本名の部分一致で既存顧客を検索できる（customerId付き）');
+  }
+  {
+    const r = await hanako.get('/api/staff/customers/search?q=' + encodeURIComponent('タナカ'));
+    assert(r.status === 200 && r.body.customers.some((c) => c.customerId === 'C0001'), 'フリガナの部分一致でも検索できる');
+  }
+  {
+    const r = await hanako.get('/api/staff/customers/search?q=' + encodeURIComponent('1111'));
+    assert(r.status === 200 && r.body.customers.some((c) => c.customerId === 'C0001'), '電話番号の部分一致でも検索できる');
+  }
+  {
+    const r = await owner2.get('/api/staff/customers/search?q=' + encodeURIComponent('田中'));
+    assert(r.status === 200 && r.body.customers.length === 0, '他店舗のスタッフからは検索結果に含まれない（店舗スコープ確認）');
+  }
+  {
+    const d = new Date(); d.setDate(d.getDate() + 36);
+    const dateStr = d.toISOString().slice(0, 10);
+    const r = await hanako.postJson('/api/staff/reservations', {
+      realname: '田中 美穂', customerId: 'C0001', staffName: '花子', menu: 'テストメニュー', date: dateStr, time: '13:00'
+    });
+    assert(r.status === 200 && r.body.success === true, '検索で選択したcustomerIdを付けて予約登録できる（一般スタッフ）');
+    const listR = await hanako.get('/api/staff/reservations?from=2026-01-01&to=2027-12-31');
+    const row = (listR.body.reservations || []).find((x) => x.id === r.body.reservationId);
+    assert(!!row && row.customer_id === 'C0001', '登録した予約にcustomerIdが正しく保存されている');
+  }
+
+  // --------------------------------------------------------------------------
   console.log(`\n=== 結果: PASS ${passCount} / FAIL ${failCount} ===`);
   if (failCount > 0) {
     console.log('\n失敗した項目:');

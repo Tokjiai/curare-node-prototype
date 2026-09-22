@@ -101,6 +101,24 @@
   .modal-btn-cancel{background:#EFEEE8; color:var(--ink-soft);}
   .modal-btn-ok{background:var(--accent); color:#fff;}
   .modal-btn-danger{background:var(--warn); color:#fff;}
+  /* ★2026-09-22：以前はposition:absoluteの重ね表示だったが、モーダル内の他の項目
+     （新規顧客登録トグルや担当スタッフ選択など）を覆い隠してタップできなくなる問題が
+     あったため、通常のフロー内表示（下の項目を押し下げる形）に変更した */
+  .cust-results{margin-top:6px; background:#fff; border:1px solid var(--line); border-radius:8px; max-height:180px; overflow-y:auto;}
+  .cust-results .cust-row{padding:8px 10px; font-size:12.5px; cursor:pointer; border-bottom:1px solid var(--line);}
+  .cust-results .cust-row:last-child{border-bottom:none;}
+  .cust-results .cust-row:hover{background:var(--bg);}
+  .cust-results .cust-row .k{color:var(--ink-faint); font-size:11px; margin-left:6px;}
+  .cust-results .cust-empty{padding:8px 10px; font-size:12px; color:var(--ink-faint);}
+  .cust-selected{margin-top:5px; font-size:11.5px; color:var(--accent); font-weight:700;}
+  .cust-new-toggle{margin-top:6px; background:none; border:none; padding:0; color:var(--accent); font-family:inherit; font-size:11.5px; font-weight:700; cursor:pointer; text-decoration:underline;}
+  .cust-new-box{margin-top:8px; padding:10px; background:var(--bg); border-radius:9px;}
+  .cust-keep-label{display:flex; align-items:center; gap:6px; font-size:12px; font-weight:400; margin-bottom:4px;}
+  .cust-keep-label input{width:auto;}
+  .menu-options{display:flex; flex-direction:column; gap:5px; max-height:120px; overflow-y:auto; border:1px solid var(--line); border-radius:8px; padding:8px 10px;}
+  .menu-options label{display:flex; align-items:center; gap:6px; font-size:12.5px; font-weight:400;}
+  .menu-options label input{width:auto;}
+  .menu-options .empty{font-size:12px; color:var(--ink-faint);}
 
   .popup-row{font-size:13px; margin-bottom:6px; line-height:1.5;}
   .popup-row .k{color:var(--ink-soft); font-size:11px;}
@@ -184,12 +202,28 @@
   <div class="modal-overlay" id="resModal">
     <div class="modal-box">
       <div class="modal-title" id="rmTitle">＋ 予約を追加</div>
-      <div class="modal-field"><label>お客様氏名</label><input type="text" id="rmRealname"></div>
+      <div class="modal-field" style="position:relative;">
+        <label>お客様氏名</label>
+        <input type="text" id="rmRealname" autocomplete="off" placeholder="お名前を入力して既存の顧客から検索...">
+        <input type="hidden" id="rmCustomerId" value="">
+        <div id="rmCustResults" class="cust-results" style="display:none;"></div>
+        <div id="rmCustSelected" class="cust-selected" style="display:none;"></div>
+        <button type="button" id="rmNewCustToggle" class="cust-new-toggle">＋ 新規顧客として登録する</button>
+        <div id="rmNewCustBox" class="cust-new-box" style="display:none;">
+          <div class="modal-field"><label>フリガナ</label><input type="text" id="rmNewCustKana" placeholder="スペース無しで入力"></div>
+          <label class="cust-keep-label"><input type="checkbox" id="rmNewCustKeep"> キープメンバーとして登録する</label>
+          <div class="modal-err" id="rmNewCustErr" style="display:none;"></div>
+          <button type="button" id="rmNewCustSaveBtn" class="modal-btn-ok" style="margin-top:8px;">この内容で顧客を登録する</button>
+        </div>
+      </div>
       <div class="modal-field"><label>担当スタッフ</label>
         <select id="rmStaff"><option value="未定">未定</option></select>
       </div>
-      <div class="modal-field"><label>メニュー</label>
+      <div class="modal-field"><label>メインメニュー</label>
         <select id="rmMenu"></select>
+      </div>
+      <div class="modal-field"><label>オプション（任意・複数可）</label>
+        <div id="rmMenuOptions" class="menu-options"></div>
       </div>
       <div class="modal-field"><label>日付</label><input type="date" id="rmDate"></div>
       <div class="modal-field"><label>時刻</label><input type="time" id="rmTime"></div>
@@ -235,7 +269,7 @@
   let weekCache = {};
   let monthCache = {};
   let staffColors = {}, colorMap = {}, bgMap = {}, txMap = {};
-  let staffList = [], menuItems = [];
+  let staffList = [], menuItems = [], optionMenuItems = [];
   let currentPopupResv = null;
   let currentPopupEvent = null;
   let editingResvId = null;
@@ -267,7 +301,12 @@
       const storeData = await staffFetch('/api/store');
       document.getElementById('headerInfo').textContent = `${storeData.store.name} ／ ${ME.name}${ME.isOwner ? '（オーナー）' : ''}`;
       staffList = storeData.staffList || [];
-      menuItems = (storeData.menuItems || []).filter((m) => m.category === 'メインメニュー');
+      // ★2026-09-22追加：以前はメインメニュー（1択）しか参照していなかったが、GAS版
+      //   （reservation_form_assets.html buildMenuValue()）・お客様向け予約フォーム
+      //   （public/app.js）と同じく、メイン＋オプション（複数可）の組み合わせに対応させた
+      const allMenuItems = storeData.menuItems || [];
+      menuItems = allMenuItems.filter((m) => m.category === 'メインメニュー');
+      optionMenuItems = allMenuItems.filter((m) => m.category !== 'メインメニュー');
       const staffSel = document.getElementById('rmStaff');
       staffList.forEach((s) => {
         const opt = document.createElement('option'); opt.value = s.realName; opt.textContent = s.realName;
@@ -278,6 +317,17 @@
         const opt = document.createElement('option'); opt.value = m.name; opt.textContent = m.name;
         menuSel.appendChild(opt);
       });
+      const optBox = document.getElementById('rmMenuOptions');
+      if (optionMenuItems.length === 0) {
+        optBox.innerHTML = '<div class="empty">オプションメニューは登録されていません</div>';
+      } else {
+        optBox.innerHTML = '';
+        optionMenuItems.forEach((m) => {
+          const label = document.createElement('label');
+          label.innerHTML = `<input type="checkbox" value="${escHtml(m.name)}"> ${escHtml(m.name)}`;
+          optBox.appendChild(label);
+        });
+      }
       await render();
       loadingMsg.style.display = 'none';
       shell.classList.add('ready');
@@ -609,12 +659,106 @@
   });
 
   // ---------------- 予約 追加/編集モーダル ----------------
+  // ---------------- 顧客検索・新規登録（GAS版reservation_form_assets.htmlの
+  //   openCustomerModal()/registerNewCustomer()相当。GAS版はかな行インデックス付きの
+  //   全件ブラウズ方式だったが、Node版は本名・フリガナ・電話番号での部分一致検索に
+  //   簡略化した。検索結果から選ぶと顧客IDが予約に紐付き、見つからなければその場で
+  //   新規顧客として登録できる（GAS版のnewCustomerモードに相当） ----------------
+  let custSearchTimer = null;
+  function resetCustomerPicker() {
+    document.getElementById('rmCustomerId').value = '';
+    document.getElementById('rmCustResults').style.display = 'none';
+    document.getElementById('rmCustSelected').style.display = 'none';
+    document.getElementById('rmNewCustBox').style.display = 'none';
+    document.getElementById('rmNewCustKana').value = '';
+    document.getElementById('rmNewCustKeep').checked = false;
+    document.getElementById('rmNewCustErr').style.display = 'none';
+  }
+  function selectCustomer(c) {
+    document.getElementById('rmRealname').value = c.realname;
+    document.getElementById('rmCustomerId').value = c.customerId;
+    document.getElementById('rmCustResults').style.display = 'none';
+    const sel = document.getElementById('rmCustSelected');
+    sel.textContent = `✓ 既存の顧客を選択済み（フリガナ：${c.kana || '未登録'}）`;
+    sel.style.display = 'block';
+    document.getElementById('rmNewCustBox').style.display = 'none';
+  }
+  document.getElementById('rmRealname').addEventListener('input', () => {
+    // 手入力し直したら「既存顧客を選択済み」の紐付けは一旦解除する（別人の可能性があるため）
+    document.getElementById('rmCustomerId').value = '';
+    document.getElementById('rmCustSelected').style.display = 'none';
+    const q = document.getElementById('rmRealname').value.trim();
+    clearTimeout(custSearchTimer);
+    if (!q) { document.getElementById('rmCustResults').style.display = 'none'; return; }
+    custSearchTimer = setTimeout(async () => {
+      try {
+        const data = await staffFetch('/api/staff/customers/search?q=' + encodeURIComponent(q));
+        const box = document.getElementById('rmCustResults');
+        const rows = data.customers || [];
+        if (rows.length === 0) {
+          box.innerHTML = '<div class="cust-empty">一致する既存の顧客は見つかりません（新規の場合は下の「＋新規顧客として登録する」へ）</div>';
+        } else {
+          box.innerHTML = '';
+          rows.forEach((c) => {
+            const row = document.createElement('div');
+            row.className = 'cust-row';
+            row.innerHTML = `${escHtml(c.realname)}<span class="k">${escHtml(c.kana || '')}${c.phone ? ' ／ ' + escHtml(c.phone) : ''}</span>`;
+            row.addEventListener('click', () => selectCustomer(c));
+            box.appendChild(row);
+          });
+        }
+        box.style.display = 'block';
+      } catch (e) { /* 検索失敗時は静かに無視（必須機能ではないため） */ }
+    }, 300);
+  });
+  document.getElementById('rmNewCustToggle').addEventListener('click', () => {
+    const box = document.getElementById('rmNewCustBox');
+    box.style.display = box.style.display === 'none' ? 'block' : 'none';
+    document.getElementById('rmCustResults').style.display = 'none';
+  });
+  document.getElementById('rmNewCustSaveBtn').addEventListener('click', async () => {
+    const errBox = document.getElementById('rmNewCustErr');
+    errBox.style.display = 'none';
+    const realname = document.getElementById('rmRealname').value.trim();
+    const kana = document.getElementById('rmNewCustKana').value.trim();
+    const isKeepMember = document.getElementById('rmNewCustKeep').checked;
+    if (!realname) {
+      errBox.textContent = 'お客様氏名を入力してください';
+      errBox.style.display = 'block';
+      return;
+    }
+    try {
+      const r = await staffFetch('/api/staff/customers', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ realname, kana, isKeepMember })
+      });
+      if (!r.success) { errBox.textContent = r.message || '登録に失敗しました'; errBox.style.display = 'block'; return; }
+      selectCustomer({ realname, kana, customerId: r.customerId });
+      document.getElementById('rmCustSelected').textContent = '✓ 新規顧客として登録し、この予約に紐付けました';
+    } catch (e) { errBox.textContent = e.message; errBox.style.display = 'block'; }
+  });
+
+  // ---------------- メニュー（メイン＋オプション）の組み立て・分解 ----------------
+  function composeMenu() {
+    const main = document.getElementById('rmMenu').value;
+    const opts = Array.from(document.querySelectorAll('#rmMenuOptions input:checked')).map((el) => el.value);
+    return [main, ...opts].join('　＋　');
+  }
+  function applyMenuToForm(menuStr) {
+    const parts = String(menuStr || '').split('　＋　').map((s) => s.trim()).filter(Boolean);
+    document.getElementById('rmMenu').value = parts[0] || '';
+    const optSet = new Set(parts.slice(1));
+    document.querySelectorAll('#rmMenuOptions input').forEach((el) => { el.checked = optSet.has(el.value); });
+  }
+
   function openAddReservation(date, time) {
     editingResvId = null;
     document.getElementById('rmTitle').textContent = '＋ 予約を追加';
     document.getElementById('rmRealname').value = '';
+    resetCustomerPicker();
     document.getElementById('rmStaff').value = ME.isOwner ? '未定' : (staffList.find((s) => s.realName === ME.name) ? ME.name : '未定');
     document.getElementById('rmMenu').selectedIndex = 0;
+    document.querySelectorAll('#rmMenuOptions input').forEach((el) => { el.checked = false; });
     document.getElementById('rmDate').value = date;
     document.getElementById('rmTime').value = time || '10:00';
     document.getElementById('rmNote').value = '';
@@ -625,8 +769,9 @@
     editingResvId = r.id;
     document.getElementById('rmTitle').textContent = '✏️ 予約を編集';
     document.getElementById('rmRealname').value = r.realname;
+    resetCustomerPicker();
     document.getElementById('rmStaff').value = r.staffName;
-    document.getElementById('rmMenu').value = r.menu;
+    applyMenuToForm(r.menu);
     document.getElementById('rmDate').value = r.date;
     document.getElementById('rmTime').value = r.startTime;
     document.getElementById('rmNote').value = '';
@@ -638,13 +783,14 @@
     const errBox = document.getElementById('rmErr');
     errBox.style.display = 'none';
     const realname = document.getElementById('rmRealname').value.trim();
+    const customerId = document.getElementById('rmCustomerId').value;
     const staffName = document.getElementById('rmStaff').value;
-    const menu = document.getElementById('rmMenu').value;
+    const menu = composeMenu();
     const date = document.getElementById('rmDate').value;
     const time = document.getElementById('rmTime').value;
     const note = document.getElementById('rmNote').value.trim();
-    if (!realname || !staffName || !menu || !date || !time) {
-      errBox.textContent = 'お客様氏名・担当・メニュー・日付・時刻は必須です';
+    if (!realname || !staffName || !document.getElementById('rmMenu').value || !date || !time) {
+      errBox.textContent = 'お客様氏名・担当・メインメニュー・日付・時刻は必須です';
       errBox.style.display = 'block';
       return;
     }
@@ -658,13 +804,13 @@
       } else {
         r = await staffFetch('/api/staff/reservations', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ realname, staffName, menu, date, time, note })
+          body: JSON.stringify({ realname, customerId, staffName, menu, date, time, note })
         });
         if (r.isLimitWarning) {
           if (confirm(r.message + '\n続行しますか？')) {
             r = await staffFetch('/api/staff/reservations', {
               method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ realname, staffName, menu, date, time, note, ownerOverride: true })
+              body: JSON.stringify({ realname, customerId, staffName, menu, date, time, note, ownerOverride: true })
             });
           } else { return; }
         }
