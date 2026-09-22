@@ -101,15 +101,19 @@
   .modal-btn-cancel{background:#EFEEE8; color:var(--ink-soft);}
   .modal-btn-ok{background:var(--accent); color:#fff;}
   .modal-btn-danger{background:var(--warn); color:#fff;}
-  /* ★2026-09-22：以前はposition:absoluteの重ね表示だったが、モーダル内の他の項目
-     （新規顧客登録トグルや担当スタッフ選択など）を覆い隠してタップできなくなる問題が
-     あったため、通常のフロー内表示（下の項目を押し下げる形）に変更した */
-  .cust-results{margin-top:6px; background:#fff; border:1px solid var(--line); border-radius:8px; max-height:180px; overflow-y:auto;}
-  .cust-results .cust-row{padding:8px 10px; font-size:12.5px; cursor:pointer; border-bottom:1px solid var(--line);}
-  .cust-results .cust-row:last-child{border-bottom:none;}
-  .cust-results .cust-row:hover{background:var(--bg);}
-  .cust-results .cust-row .k{color:var(--ink-faint); font-size:11px; margin-left:6px;}
-  .cust-results .cust-empty{padding:8px 10px; font-size:12px; color:var(--ink-faint);}
+  /* ★2026-09-22：社長の指摘によりGAS版と同じ「かな行インデックス付きの全件ブラウズ」
+     方式の顧客選択モーダルに変更した（以前はフリーテキストの部分一致検索だった） */
+  .cust-pick-btn{width:100%; padding:10px; border:1px solid var(--line); border-radius:8px; background:#fff; font-family:inherit; font-size:13.5px; font-weight:700; color:var(--accent); cursor:pointer; text-align:left;}
+  .cust-pick-box{max-width:420px;}
+  .kana-index{display:flex; flex-wrap:wrap; gap:5px; margin:10px 0;}
+  .kana-index button{padding:6px 10px; border:1px solid var(--line); border-radius:7px; background:#fff; font-family:inherit; font-size:12.5px; cursor:pointer;}
+  .kana-index button.active{background:var(--accent); color:#fff; border-color:var(--accent);}
+  .cust-pick-list{max-height:340px; overflow-y:auto; border:1px solid var(--line); border-radius:8px;}
+  .cust-pick-list .cust-row{padding:9px 10px; font-size:13px; cursor:pointer; border-bottom:1px solid var(--line);}
+  .cust-pick-list .cust-row:last-child{border-bottom:none;}
+  .cust-pick-list .cust-row:hover{background:var(--bg);}
+  .cust-pick-list .cust-row .k{color:var(--ink-faint); font-size:11px; margin-left:6px;}
+  .cust-pick-list .cust-empty{padding:10px; font-size:12.5px; color:var(--ink-faint);}
   .cust-selected{margin-top:5px; font-size:11.5px; color:var(--accent); font-weight:700;}
   .cust-hint{margin-top:4px; font-size:11px; color:var(--ink-faint);}
   .cust-new-toggle{margin-top:6px; background:none; border:none; padding:0; color:var(--accent); font-family:inherit; font-size:11.5px; font-weight:700; cursor:pointer; text-decoration:underline;}
@@ -203,15 +207,16 @@
   <div class="modal-overlay" id="resModal">
     <div class="modal-box">
       <div class="modal-title" id="rmTitle">＋ 予約を追加</div>
-      <div class="modal-field" style="position:relative;">
-        <label>お客様氏名（検索して選択、または新規登録）</label>
-        <input type="text" id="rmRealname" autocomplete="off" placeholder="お名前を入力して既存の顧客から検索...">
+      <div class="modal-field">
+        <label>お客様</label>
+        <input type="hidden" id="rmRealname" value="">
         <input type="hidden" id="rmCustomerId" value="">
-        <div id="rmCustResults" class="cust-results" style="display:none;"></div>
+        <button type="button" id="rmCustPickBtn" class="cust-pick-btn">👤 お客様を選択する</button>
         <div id="rmCustSelected" class="cust-selected" style="display:none;"></div>
-        <div class="cust-hint">※ 一覧から選ぶか、下から新規登録してください（自由入力のままでは保存できません）</div>
+        <div class="cust-hint">※ 一覧から選ぶか、新規登録してください（自由入力のままでは保存できません）</div>
         <button type="button" id="rmNewCustToggle" class="cust-new-toggle">＋ 新規顧客として登録する</button>
         <div id="rmNewCustBox" class="cust-new-box" style="display:none;">
+          <div class="modal-field"><label>本名</label><input type="text" id="rmNewCustRealname" placeholder="スペース無しで入力"></div>
           <div class="modal-field"><label>フリガナ</label><input type="text" id="rmNewCustKana" placeholder="スペース無しで入力"></div>
           <label class="cust-keep-label"><input type="checkbox" id="rmNewCustKeep"> キープメンバーとして登録する</label>
           <div class="modal-err" id="rmNewCustErr" style="display:none;"></div>
@@ -235,6 +240,17 @@
         <button class="modal-btn-cancel" id="rmCancelBtn" type="button">閉じる</button>
         <button class="modal-btn-ok" id="rmSaveBtn" type="button">保存する</button>
       </div>
+    </div>
+  </div>
+
+  <!-- お客様選択モーダル（GAS版reservation_form_assets.htmlのopenCustomerModal()相当。
+       かな行インデックス付きの全件ブラウズ方式） -->
+  <div class="modal-overlay" id="custPickModal">
+    <div class="modal-box cust-pick-box">
+      <div class="modal-title">👤 お客様を選択</div>
+      <div class="kana-index" id="kanaIndex"></div>
+      <div class="cust-pick-list" id="custPickList"></div>
+      <div class="modal-actions"><button class="modal-btn-cancel" id="custPickCloseBtn" type="button">閉じる</button></div>
     </div>
   </div>
 
@@ -661,17 +677,30 @@
   });
 
   // ---------------- 予約 追加/編集モーダル ----------------
-  // ---------------- 顧客検索・新規登録（GAS版reservation_form_assets.htmlの
-  //   openCustomerModal()/registerNewCustomer()相当。GAS版はかな行インデックス付きの
-  //   全件ブラウズ方式だったが、Node版は本名・フリガナ・電話番号での部分一致検索に
-  //   簡略化した。検索結果から選ぶと顧客IDが予約に紐付き、見つからなければその場で
-  //   新規顧客として登録できる（GAS版のnewCustomerモードに相当） ----------------
-  let custSearchTimer = null;
+  // ---------------- 顧客選択・新規登録（GAS版reservation_form_assets.htmlの
+  //   openCustomerModal()/registerNewCustomer()相当）。社長の指摘により、GAS版と
+  //   同じ「かな行インデックス（あ/か/さ…の見出しボタン）付きの全件ブラウズ方式」の
+  //   選択モーダルとした。一致する顧客がいなければ、同じ画面内の「新規顧客」欄から
+  //   その場で顧客マスタに登録できる（GAS版のnewCustomerモードに相当） ----------------
+  const KANA_ROWS = [
+    { key: 'あ', chars: 'アイウエオ' }, { key: 'か', chars: 'カキクケコガギグゲゴ' },
+    { key: 'さ', chars: 'サシスセソザジズゼゾ' }, { key: 'た', chars: 'タチツテトダヂヅデド' },
+    { key: 'な', chars: 'ナニヌネノ' }, { key: 'は', chars: 'ハヒフヘホバビブベボパピプペポ' },
+    { key: 'ま', chars: 'マミムメモ' }, { key: 'や', chars: 'ヤユヨ' },
+    { key: 'ら', chars: 'ラリルレロ' }, { key: 'わ', chars: 'ワヲン' }
+  ];
+  let allCustomersCache = null;
+  let kanaFilter = 'すべて';
+  function kanaRowOf(kana) {
+    const c = String(kana || '').charAt(0);
+    const row = KANA_ROWS.find((r) => r.chars.includes(c));
+    return row ? row.key : '他';
+  }
   function resetCustomerPicker() {
     document.getElementById('rmCustomerId').value = '';
-    document.getElementById('rmCustResults').style.display = 'none';
     document.getElementById('rmCustSelected').style.display = 'none';
     document.getElementById('rmNewCustBox').style.display = 'none';
+    document.getElementById('rmNewCustRealname').value = '';
     document.getElementById('rmNewCustKana').value = '';
     document.getElementById('rmNewCustKeep').checked = false;
     document.getElementById('rmNewCustErr').style.display = 'none';
@@ -679,49 +708,67 @@
   function selectCustomer(c) {
     document.getElementById('rmRealname').value = c.realname;
     document.getElementById('rmCustomerId').value = c.customerId;
-    document.getElementById('rmCustResults').style.display = 'none';
     const sel = document.getElementById('rmCustSelected');
-    sel.textContent = `✓ 既存の顧客を選択済み（フリガナ：${c.kana || '未登録'}）`;
+    sel.textContent = `✓ ${c.realname}様を選択済み（フリガナ：${c.kana || '未登録'}）`;
     sel.style.display = 'block';
     document.getElementById('rmNewCustBox').style.display = 'none';
+    document.getElementById('custPickModal').classList.remove('show');
   }
-  document.getElementById('rmRealname').addEventListener('input', () => {
-    // 手入力し直したら「既存顧客を選択済み」の紐付けは一旦解除する（別人の可能性があるため）
-    document.getElementById('rmCustomerId').value = '';
-    document.getElementById('rmCustSelected').style.display = 'none';
-    const q = document.getElementById('rmRealname').value.trim();
-    clearTimeout(custSearchTimer);
-    if (!q) { document.getElementById('rmCustResults').style.display = 'none'; return; }
-    custSearchTimer = setTimeout(async () => {
-      try {
-        const data = await staffFetch('/api/staff/customers/search?q=' + encodeURIComponent(q));
-        const box = document.getElementById('rmCustResults');
-        const rows = data.customers || [];
-        if (rows.length === 0) {
-          box.innerHTML = '<div class="cust-empty">一致する既存の顧客は見つかりません（新規の場合は下の「＋新規顧客として登録する」へ）</div>';
-        } else {
-          box.innerHTML = '';
-          rows.forEach((c) => {
-            const row = document.createElement('div');
-            row.className = 'cust-row';
-            row.innerHTML = `${escHtml(c.realname)}<span class="k">${escHtml(c.kana || '')}${c.phone ? ' ／ ' + escHtml(c.phone) : ''}</span>`;
-            row.addEventListener('click', () => selectCustomer(c));
-            box.appendChild(row);
-          });
-        }
-        box.style.display = 'block';
-      } catch (e) { /* 検索失敗時は静かに無視（必須機能ではないため） */ }
-    }, 300);
+  function renderKanaIndex() {
+    const box = document.getElementById('kanaIndex');
+    box.innerHTML = '';
+    ['すべて', ...KANA_ROWS.map((r) => r.key), '他'].forEach((key) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = key;
+      btn.className = key === kanaFilter ? 'active' : '';
+      btn.addEventListener('click', () => { kanaFilter = key; renderCustPickList(); renderKanaIndex(); });
+      box.appendChild(btn);
+    });
+  }
+  function renderCustPickList() {
+    const box = document.getElementById('custPickList');
+    const rows = (allCustomersCache || []).filter((c) => kanaFilter === 'すべて' || kanaRowOf(c.kana) === kanaFilter);
+    if (rows.length === 0) {
+      box.innerHTML = '<div class="cust-empty">この行に該当する顧客はいません</div>';
+      return;
+    }
+    box.innerHTML = '';
+    rows.forEach((c) => {
+      const row = document.createElement('div');
+      row.className = 'cust-row';
+      row.innerHTML = `${escHtml(c.realname)}<span class="k">${escHtml(c.kana || '')}${c.phone ? ' ／ ' + escHtml(c.phone) : ''}</span>`;
+      row.addEventListener('click', () => selectCustomer(c));
+      box.appendChild(row);
+    });
+  }
+  document.getElementById('rmCustPickBtn').addEventListener('click', async () => {
+    document.getElementById('rmNewCustBox').style.display = 'none';
+    kanaFilter = 'すべて';
+    document.getElementById('custPickList').innerHTML = '<div class="cust-empty">読み込み中…</div>';
+    document.getElementById('custPickModal').classList.add('show');
+    renderKanaIndex();
+    try {
+      const data = await staffFetch('/api/staff/customers/list');
+      allCustomersCache = data.customers || [];
+      renderCustPickList();
+    } catch (e) {
+      document.getElementById('custPickList').innerHTML = '<div class="cust-empty">読み込みに失敗しました</div>';
+    }
   });
+  document.getElementById('custPickCloseBtn').addEventListener('click', () => {
+    document.getElementById('custPickModal').classList.remove('show');
+  });
+  document.getElementById('custPickModal').addEventListener('click', (e) => { if (e.target.id === 'custPickModal') e.currentTarget.classList.remove('show'); });
   document.getElementById('rmNewCustToggle').addEventListener('click', () => {
     const box = document.getElementById('rmNewCustBox');
     box.style.display = box.style.display === 'none' ? 'block' : 'none';
-    document.getElementById('rmCustResults').style.display = 'none';
+    if (box.style.display === 'block') document.getElementById('rmNewCustRealname').focus();
   });
   document.getElementById('rmNewCustSaveBtn').addEventListener('click', async () => {
     const errBox = document.getElementById('rmNewCustErr');
     errBox.style.display = 'none';
-    const realname = document.getElementById('rmRealname').value.trim();
+    const realname = document.getElementById('rmNewCustRealname').value.trim();
     const kana = document.getElementById('rmNewCustKana').value.trim();
     const isKeepMember = document.getElementById('rmNewCustKeep').checked;
     if (!realname) {
@@ -732,13 +779,13 @@
     // ★2026-09-22追加：社長承認事項（README47-5参照）。「＋新規顧客として登録する」は
     //   GAS版には無い簡略化だが、既存に同じ人がいないことが前提のため、登録実行の直前に
     //   もう一度その場で本名の完全一致検索を行い、既存顧客が見つかった場合は登録させず
-    //   検索結果から選ぶよう促す（サーバー側でも本名の重複はcreateCustomerManually()が
+    //   一覧から選ぶよう促す（サーバー側でも本名の重複はcreateCustomerManually()が
     //   409で拒否するため、これは早期に気付かせるための二重チェック）
     try {
       const dupCheck = await staffFetch('/api/staff/customers/search?q=' + encodeURIComponent(realname));
       const exact = (dupCheck.customers || []).find((c) => c.realname === realname);
       if (exact) {
-        errBox.textContent = `既に同名の顧客が登録されています（フリガナ：${exact.kana || '未登録'}）。上の検索結果から選択してください`;
+        errBox.textContent = `既に同名の顧客が登録されています（フリガナ：${exact.kana || '未登録'}）。「👤 お客様を選択する」から選んでください`;
         errBox.style.display = 'block';
         return;
       }
@@ -750,7 +797,8 @@
       });
       if (!r.success) { errBox.textContent = r.message || '登録に失敗しました'; errBox.style.display = 'block'; return; }
       selectCustomer({ realname, kana, customerId: r.customerId });
-      document.getElementById('rmCustSelected').textContent = '✓ 新規顧客として登録し、この予約に紐付けました';
+      document.getElementById('rmCustSelected').textContent = `✓ 新規顧客として登録し、${realname}様をこの予約に紐付けました`;
+      allCustomersCache = null; // 次に選択モーダルを開いたときに最新の一覧を取り直す
     } catch (e) { errBox.textContent = e.message; errBox.style.display = 'block'; }
   });
 
@@ -790,7 +838,7 @@
     //   あれば保持する（無ければ空のままでよい＝新規機能追加前からある旧予約データ）
     if (r.customerId) {
       document.getElementById('rmCustomerId').value = r.customerId;
-      document.getElementById('rmCustSelected').textContent = '✓ 既存の顧客に紐付いています';
+      document.getElementById('rmCustSelected').textContent = `✓ ${r.realname}様（既存の顧客に紐付いています）`;
       document.getElementById('rmCustSelected').style.display = 'block';
     }
     document.getElementById('rmStaff').value = r.staffName;

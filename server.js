@@ -961,6 +961,34 @@ app.get('/api/staff/customers/search', requireStaffSession, (req, res) => {
   }
 });
 
+// ----------------------------------------------------------------------------
+// ★2026-09-22追加：GET /api/staff/customers/list
+//   予約フォームの「お客様を選択」モーダル用に、店舗の在籍顧客を全件返す
+//   （GAS版reservation_form_assets.htmlのopenCustomerModal()相当。GAS版は
+//   かな行インデックス（あ/か/さ…の見出しボタン）付きの全件ブラウズ方式で、
+//   検索ボックスではなくこのリストボックス形式が本来の作りだったため、社長の
+//   指摘を受けて/api/staff/customers/search（部分一致検索）に加えてこちらを
+//   新設し、フロント側の顧客選択UIをかな行インデックス方式に作り直した）。
+//   件数が多くなった場合に備え上限500件（この規模のプロトタイプでは実用上
+//   問題ない。将来件数が増えた場合はページング等の再検討が必要）
+// ----------------------------------------------------------------------------
+app.get('/api/staff/customers/list', requireStaffSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const rows = db.prepare(`
+      SELECT customer_id AS customerId, realname, kana, phone
+      FROM customers
+      WHERE store_id = ? AND is_deleted = 0
+      ORDER BY kana ASC, realname ASC
+      LIMIT 500
+    `).all(storeId);
+    res.json({ customers: rows });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // POST /api/staff/customers : 顧客マスタへの新規登録（GAS版registerCustomer相当。
 //   GAS版にオーナー限定の分岐はなく、一般スタッフにも開放されているためrequireStaffSessionのみで許可する）
 app.post('/api/staff/customers', requireStaffSession, (req, res) => {

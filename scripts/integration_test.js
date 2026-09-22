@@ -1913,6 +1913,29 @@ async function main() {
   }
 
   // --------------------------------------------------------------------------
+  // 33. スタッフ用の顧客一覧（かな行インデックス選択モーダル用、47-6章）
+  // --------------------------------------------------------------------------
+  console.log('--- 33. スタッフ用の顧客一覧 ---');
+  {
+    const anonList = makeSession();
+    const r = await anonList.get('/api/staff/customers/list');
+    assert(r.status === 401, '未ログインでは顧客一覧を取得できない');
+  }
+  {
+    const r = await hanako.get('/api/staff/customers/list');
+    assert(r.status === 200 && Array.isArray(r.body.customers) && r.body.customers.length > 0, '一般スタッフでも在籍顧客の全件一覧を取得できる');
+    assert(r.body.customers.some((c) => c.customerId === 'C0001'), '一覧にcustomerId付きで顧客が含まれる');
+  }
+  {
+    // 注：customer_idは店舗ごとに独立採番されるため、店1のC0001と店2の
+    // 新規登録顧客がたまたま同じID「C0001」になり得る（それ自体は店舗分離の
+    // バグではない）。よって「customerId===店1のC0001」ではなく、店1の
+    // シードにしか存在しない実名（田中）が混入していないかで判定する。
+    const r = await owner2.get('/api/staff/customers/list');
+    assert(r.status === 200 && !r.body.customers.some((c) => c.realname && c.realname.startsWith('田中')), '他店舗のスタッフの一覧には自店舗以外の顧客が含まれない（店舗スコープ確認）');
+  }
+
+  // --------------------------------------------------------------------------
   console.log(`\n=== 結果: PASS ${passCount} / FAIL ${failCount} ===`);
   if (failCount > 0) {
     console.log('\n失敗した項目:');
