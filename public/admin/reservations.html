@@ -384,6 +384,8 @@
       }
       closeEditModal();
       load();
+      // ★2026-09-22追加：GAS版と同じく、LINE通知の実行結果を操作者に表示する
+      if (data.message) alert(data.message);
     } catch (e) {
       errBox.textContent = 'エラー: ' + e.message;
       errBox.style.display = 'block';
@@ -401,6 +403,7 @@
         return;
       }
       load();
+      if (data.message) alert(data.message);
     } catch (e) {
       alert('キャンセルに失敗しました: ' + e.message);
     }
@@ -481,6 +484,7 @@
       closeNewModal();
       offset = 0;
       load();
+      if (data.message) alert(data.message);
     } catch (e) {
       errBox.textContent = 'エラー: ' + e.message;
       errBox.style.display = 'block';

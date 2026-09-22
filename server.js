@@ -34,6 +34,44 @@ const { runMigrations } = require('./lib/migrate');
 const SqliteSessionStore = require('./lib/sqliteSessionStore');
 const { getMessageSettings, saveMessageSettings, getMessageTemplate, renderMessageBody } = require('./lib/messageTemplates');
 
+// ----------------------------------------------------------------------------
+// ★2026-09-22追加：スタッフ・オーナーが手動で行う予約の新規登録／編集／キャンセルに
+//   ついて、GAS版（reservation_form_functions.js addReservationUnified_body_ /
+//   updateReservation_body_ / cancelReservation_body_）と同じく、LINE連携済みの
+//   顧客がひも付いていればLINE通知（confirm_add / change / cancel）を送り、
+//   結果を操作者への成功メッセージに「📱LINEに通知しました／⚠️LINE通知に失敗しました／
+//   ℹ️LINE IDが未登録のため通知できませんでした」という形で表示する。
+//   これまで（〜v42）はこの3操作でLINE通知自体を一切送っておらず、GAS版との差分だった。
+//   ここではLINE通知の完了を待ってから結果テキストを組み立てるが、通知処理自体で例外が
+//   出ても予約操作の成功自体は妨げない（catchして「失敗」文言にフォールバックするのみ）。
+//   なお「仮予約として登録」する新規登録では、確定操作時に別途confirm_finalizeで
+//   通知するため、二重通知を避けるためここでは送らない（呼び出し側でstatusを見て判断）。
+//   ※社長の要望により、担当スタッフへの社内通知（GAS版notifyStaff_相当）は対象外とした。
+// ----------------------------------------------------------------------------
+async function notifyAndBuildResultText(storeId, customerId, reservation, messageKey) {
+  if (!customerId) {
+    return '\nℹ️ お客様マスタに未連携のため、LINE通知はスキップされました';
+  }
+  try {
+    const customer = db.prepare('SELECT * FROM customers WHERE store_id = ? AND customer_id = ?').get(storeId, customerId);
+    const store = db.prepare('SELECT * FROM stores WHERE id = ?').get(storeId);
+    const result = await notifyReservationConfirmed(store, customer, reservation, messageKey);
+    if (result && result.skipped) {
+      return '\nℹ️ LINE IDが未登録のため通知できませんでした';
+    }
+    if (result && result.simulated) {
+      return '\n📱 LINE通知を実行しました（LINE連携未設定のためシミュレーションです）';
+    }
+    if (result && result.ok) {
+      return '\n📱 LINEに通知しました';
+    }
+    return '\n⚠️ LINE通知に失敗しました';
+  } catch (notifyErr) {
+    console.error('LINE通知処理でエラー（予約操作自体は成功しているため無視）:', notifyErr);
+    return '\n⚠️ LINE通知に失敗しました';
+  }
+}
+
 // Render無料プランのディスクは再起動で消える（エフェメラル）ため、
 // 起動のたびにスキーマ作成とシードデータ投入をやり直す。
 // プロトタイプなのでデータの永続性は割り切っている。
@@ -766,7 +804,7 @@ app.delete('/api/staff/shifts/:id', requireStaffSession, (req, res) => {
 // ----------------------------------------------------------------------------
 
 // POST /api/staff/reservations : 新規予約登録（電話予約・当日飛び込み対応、一般スタッフ向け）
-app.post('/api/staff/reservations', requireStaffSession, (req, res) => {
+app.post('/api/staff/reservations', requireStaffSession, async (req, res) => {
   try {
     const storeId = req.session.staff.storeId;
     const staffName = req.session.staff.name;
@@ -839,9 +877,17 @@ app.post('/api/staff/reservations', requireStaffSession, (req, res) => {
       throw constraintErr;
     }
 
+    let message = status === '仮予約' ? '✅ 仮予約として登録しました（確定操作が必要です）' : '✅ 予約を登録しました';
+    // ★仮予約は確定操作時にconfirm_finalizeで通知するため、二重通知を避けここでは送らない
+    if (status === '確定') {
+      message += await notifyAndBuildResultText(storeId, data.customerId, {
+        staffName: data.staffName, menu: data.menu, date: data.date, time: data.time
+      }, 'confirm_add');
+    }
+
     res.json({
       success: true,
-      message: status === '仮予約' ? '✅ 仮予約として登録しました（確定操作が必要です）' : '✅ 予約を登録しました',
+      message,
       reservationId: info.lastInsertRowid
     });
   } catch (e) {
@@ -851,7 +897,7 @@ app.post('/api/staff/reservations', requireStaffSession, (req, res) => {
 });
 
 // PUT /api/staff/reservations/:id : 予約の変更（元の担当が自分か未定の予約のみ／オーナーは制限なし）
-app.put('/api/staff/reservations/:id', requireStaffSession, (req, res) => {
+app.put('/api/staff/reservations/:id', requireStaffSession, async (req, res) => {
   try {
     const storeId = req.session.staff.storeId;
     const staffName = req.session.staff.name;
@@ -897,7 +943,13 @@ app.put('/api/staff/reservations/:id', requireStaffSession, (req, res) => {
       throw constraintErr;
     }
 
-    res.json({ success: true, message: '✅ 予約を変更しました' });
+    let editMessage = '✅ 予約を変更しました';
+    if (existing.customer_id) {
+      editMessage += await notifyAndBuildResultText(storeId, existing.customer_id, {
+        staffName: data.staffName, menu: data.menu, date: data.date, time: data.time
+      }, 'change');
+    }
+    res.json({ success: true, message: editMessage });
   } catch (e) {
     console.error(e);
     res.status(500).json({ success: false, error: e.message });
@@ -905,7 +957,7 @@ app.put('/api/staff/reservations/:id', requireStaffSession, (req, res) => {
 });
 
 // DELETE /api/staff/reservations/:id : キャンセル（担当が自分か未定の予約のみ／オーナーは制限なし）
-app.delete('/api/staff/reservations/:id', requireStaffSession, (req, res) => {
+app.delete('/api/staff/reservations/:id', requireStaffSession, async (req, res) => {
   try {
     const storeId = req.session.staff.storeId;
     const staffName = req.session.staff.name;
@@ -921,7 +973,14 @@ app.delete('/api/staff/reservations/:id', requireStaffSession, (req, res) => {
     }
 
     db.prepare(`UPDATE reservations SET realname = 'キャンセル', editor = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(staffName, id);
-    res.json({ success: true, message: '✅ キャンセルしました' });
+
+    let cancelMessage = '✅ キャンセルしました';
+    if (row.customer_id) {
+      cancelMessage += await notifyAndBuildResultText(storeId, row.customer_id, {
+        staffName: row.staff_name, menu: row.menu, date: row.reservation_date, time: row.reservation_time
+      }, 'cancel');
+    }
+    res.json({ success: true, message: cancelMessage });
   } catch (e) {
     console.error(e);
     res.status(500).json({ success: false, error: e.message });
@@ -1312,7 +1371,7 @@ app.get('/api/admin/reservations', requireOwnerSession, (req, res) => {
 //   GAS版のキャンセル運用（realname列に'キャンセル'を入れる方式）を踏襲。
 //   物理削除はしない（履歴を残す・元のGAS運用と挙動を合わせるため）。
 // ----------------------------------------------------------------------------
-app.delete('/api/admin/reservations/:id', requireOwnerSession, (req, res) => {
+app.delete('/api/admin/reservations/:id', requireOwnerSession, async (req, res) => {
   try {
     const storeId = req.session.staff.storeId;
     const id = Number(req.params.id);
@@ -1324,7 +1383,14 @@ app.delete('/api/admin/reservations/:id', requireOwnerSession, (req, res) => {
     }
 
     db.prepare(`UPDATE reservations SET realname = 'キャンセル', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(id);
-    res.json({ success: true });
+
+    let cancelMessage = '';
+    if (row.customer_id) {
+      cancelMessage = await notifyAndBuildResultText(storeId, row.customer_id, {
+        staffName: row.staff_name, menu: row.menu, date: row.reservation_date, time: row.reservation_time
+      }, 'cancel');
+    }
+    res.json({ success: true, message: cancelMessage || undefined });
   } catch (e) {
     console.error(e);
     res.status(500).json({ success: false, error: e.message });
@@ -1338,7 +1404,7 @@ app.delete('/api/admin/reservations/:id', requireOwnerSession, (req, res) => {
 //   日付・時間・担当を変える場合は、二重予約防止のUNIQUE制約に必ず引っかかるように
 //   （予約作成時と同じ仕組みで）保護する。
 // ----------------------------------------------------------------------------
-app.put('/api/admin/reservations/:id', requireOwnerSession, (req, res) => {
+app.put('/api/admin/reservations/:id', requireOwnerSession, async (req, res) => {
   try {
     const storeId = req.session.staff.storeId;
     const id = Number(req.params.id);
@@ -1378,7 +1444,13 @@ app.put('/api/admin/reservations/:id', requireOwnerSession, (req, res) => {
       throw constraintErr;
     }
 
-    res.json({ success: true, message: '✅ 予約を変更しました' });
+    let adminEditMessage = '✅ 予約を変更しました';
+    if (existing.customer_id) {
+      adminEditMessage += await notifyAndBuildResultText(storeId, existing.customer_id, {
+        staffName: data.staffName, menu: data.menu, date: data.date, time: data.time
+      }, 'change');
+    }
+    res.json({ success: true, message: adminEditMessage });
   } catch (e) {
     console.error(e);
     res.status(500).json({ success: false, error: e.message });
@@ -1393,7 +1465,7 @@ app.put('/api/admin/reservations/:id', requireOwnerSession, (req, res) => {
 //   セッションの店舗に固定した管理画面専用のエンドポイントとして用意する。
 //   予約上限警告・二重予約防止は既存のお客様フォームと同じ仕組みを再利用する。
 // ----------------------------------------------------------------------------
-app.post('/api/admin/reservations', requireOwnerSession, (req, res) => {
+app.post('/api/admin/reservations', requireOwnerSession, async (req, res) => {
   try {
     const storeId = req.session.staff.storeId;
     const data = req.body || {};
@@ -1453,9 +1525,16 @@ app.post('/api/admin/reservations', requireOwnerSession, (req, res) => {
       throw constraintErr;
     }
 
+    let adminNewMessage = status === '仮予約' ? '✅ 仮予約として登録しました（確定操作が必要です）' : '✅ 予約を登録しました';
+    if (status === '確定') {
+      adminNewMessage += await notifyAndBuildResultText(storeId, data.customerId, {
+        staffName: data.staffName, menu: data.menu, date: data.date, time: data.time
+      }, 'confirm_add');
+    }
+
     res.json({
       success: true,
-      message: status === '仮予約' ? '✅ 仮予約として登録しました（確定操作が必要です）' : '✅ 予約を登録しました',
+      message: adminNewMessage,
       reservationId: info.lastInsertRowid
     });
   } catch (e) {

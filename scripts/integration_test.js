@@ -1936,6 +1936,71 @@ async function main() {
   }
 
   // --------------------------------------------------------------------------
+  // 34. 予約の追加・編集・キャンセルでのLINE通知拡張（GAS版confirm_add/change/cancel、
+  //     47-7章参照。社長より「顧客への通知のみ拡張」の方針で承認を得て実装）
+  // --------------------------------------------------------------------------
+  console.log('--- 34. 予約の追加・編集・キャンセルでのLINE通知拡張 ---');
+  let notifyTestResvId = null;
+  {
+    // 顧客未連携（customerIdなし）での新規登録は、LINE通知がスキップされた旨が
+    // メッセージに含まれる（GAS版の「ℹ️LINE IDが未登録のため通知できませんでした」相当）
+    const r = await hanako.postJson('/api/staff/reservations', {
+      realname: 'LINE通知テスト太郎', staffName: '花子', menu: 'テストメニュー',
+      date: '2026-12-20', time: '10:00'
+    });
+    assert(r.status === 200 && r.body.success && /ℹ️/.test(r.body.message), '顧客未連携の新規登録ではLINE通知スキップの案内がメッセージに含まれる');
+  }
+  {
+    // customerId='C0001'（LINE連携済み、user_id='U0001'）を指定した新規登録では、
+    // 店舗にLINEチャネルトークンが未設定のためシミュレーション扱いになるが、
+    // その旨（📱）がメッセージに含まれる
+    const r = await hanako.postJson('/api/staff/reservations', {
+      realname: '田中 美穂（改）', customerId: 'C0001', staffName: '花子', menu: 'テストメニュー',
+      date: '2026-12-21', time: '10:00'
+    });
+    assert(r.status === 200 && r.body.success && /📱/.test(r.body.message), 'LINE連携済み顧客の新規登録ではLINE通知実行の案内（📱）がメッセージに含まれる');
+    notifyTestResvId = r.body.reservationId;
+  }
+  {
+    // 仮予約として登録した場合は、確定操作時にconfirm_finalizeで別途通知するため、
+    // 新規登録時点ではLINE通知の案内文言を含まない（二重通知防止）
+    const r = await hanako.postJson('/api/staff/reservations', {
+      realname: '田中 美穂（改）', customerId: 'C0001', staffName: '花子', menu: 'テストメニュー',
+      date: '2026-12-21', time: '11:00', provisional: true
+    });
+    assert(r.status === 200 && r.body.success && !/📱|⚠️|ℹ️/.test(r.body.message), '仮予約としての新規登録ではLINE通知の案内文言を含まない（確定操作時に別途通知するため）');
+  }
+  {
+    // 上で作成した確定予約を編集すると、change通知の実行結果がメッセージに含まれる
+    const r = await hanako.putJson('/api/staff/reservations/' + notifyTestResvId, {
+      staffName: '花子', menu: 'テストメニュー（変更後）', date: '2026-12-21', time: '10:30', note: 'LINE通知拡張テスト'
+    });
+    assert(r.status === 200 && r.body.success && /📱/.test(r.body.message), '予約編集ではLINE通知（change）実行の案内がメッセージに含まれる');
+  }
+  {
+    // 同じ予約をキャンセルすると、cancel通知の実行結果がメッセージに含まれる
+    const r = await hanako.del('/api/staff/reservations/' + notifyTestResvId);
+    assert(r.status === 200 && r.body.success && /📱/.test(r.body.message), '予約キャンセルではLINE通知（cancel）実行の案内がメッセージに含まれる');
+  }
+  {
+    // オーナー管理画面からの新規登録・編集・キャンセルでも同様にLINE通知結果が含まれる
+    const rNew = await ownerFresh.postJson('/api/admin/reservations', {
+      realname: '田中 美穂（改）', customerId: 'C0001', staffName: '寿子', menu: 'テストメニュー',
+      date: '2026-12-22', time: '10:00'
+    });
+    assert(rNew.status === 200 && rNew.body.success && /📱/.test(rNew.body.message), 'オーナー管理画面からの新規登録でもLINE通知の案内がメッセージに含まれる');
+    const adminResvId = rNew.body.reservationId;
+
+    const rEdit = await ownerFresh.putJson('/api/admin/reservations/' + adminResvId, {
+      staffName: '寿子', menu: 'テストメニュー（変更後）', date: '2026-12-22', time: '10:30'
+    });
+    assert(rEdit.status === 200 && rEdit.body.success && /📱/.test(rEdit.body.message), 'オーナー管理画面からの編集でもLINE通知の案内がメッセージに含まれる');
+
+    const rCancel = await ownerFresh.del('/api/admin/reservations/' + adminResvId);
+    assert(rCancel.status === 200 && rCancel.body.success && /📱/.test(rCancel.body.message), 'オーナー管理画面からのキャンセルでもLINE通知の案内がメッセージに含まれる');
+  }
+
+  // --------------------------------------------------------------------------
   console.log(`\n=== 結果: PASS ${passCount} / FAIL ${failCount} ===`);
   if (failCount > 0) {
     console.log('\n失敗した項目:');

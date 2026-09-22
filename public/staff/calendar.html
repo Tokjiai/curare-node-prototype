@@ -654,6 +654,7 @@
       document.getElementById('resPopup').classList.remove('show');
       weekCache = {}; monthCache = {};
       render();
+      if (r.message) alert(r.message);
     } catch (e) { alert(e.message); }
   });
 
@@ -900,6 +901,9 @@
       document.getElementById('resModal').classList.remove('show');
       weekCache = {}; monthCache = {};
       render();
+      // ★2026-09-22追加：GAS版と同じく、LINE通知の実行結果（📱送信済み／⚠️失敗／
+      //   ℹ️未登録）を含む結果メッセージを操作者に表示する
+      if (r.message) alert(r.message);
     } catch (e) { errBox.textContent = e.message; errBox.style.display = 'block'; }
   });
 
