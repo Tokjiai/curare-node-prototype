@@ -64,6 +64,9 @@ function makeSession() {
     },
     async get(path) {
       return this.request(path, { method: 'GET' });
+    },
+    async del(path) {
+      return this.request(path, { method: 'DELETE' });
     }
   };
 }
@@ -1330,6 +1333,161 @@ async function main() {
       r2.body.customerChannelTokenHint === '••••••••1234',
       '他店舗オーナーの保存はstore1側のトークンに影響しない（店舗スコープ確認）'
     );
+  }
+
+  // --------------------------------------------------------------------------
+  // 26. 顧客マスタへの新規登録（GAS版reservation_form_functions.gs registerCustomer
+  //     相当。お客様予約フォームを介さない、スタッフによる直接登録）
+  // --------------------------------------------------------------------------
+  console.log('--- 26. 顧客マスタへの新規登録 ---');
+  {
+    const r = await fetch(BASE + '/api/admin/customers', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ realname: '未ログインテスト' })
+    }).then((res) => res.status);
+    assert(r === 401, '未ログインでは顧客マスタへの新規登録はできない');
+  }
+  {
+    const r = await ownerFresh.postJson('/api/admin/customers', {});
+    assert(r.status === 400, '本名が空では登録できない');
+  }
+  {
+    const r = await ownerFresh.postJson('/api/admin/customers', { realname: '山田 花子' });
+    assert(r.status === 400, '本名にスペースが含まれる場合は登録できない（GAS版と同じバリデーション）');
+  }
+  let newCustomerId = null;
+  {
+    const r = await ownerFresh.postJson('/api/admin/customers', { realname: '新規登録花子', kana: 'シンキトウロクハナコ' });
+    assert(r.status === 200 && r.body.success === true && !!r.body.customerId, '本名のみで新規顧客を登録できる（Cxxxx形式の顧客IDが発行される）');
+    newCustomerId = r.body.customerId;
+    const row = db.prepare('SELECT total_visits, is_keep_member, status FROM customers WHERE store_id = 1 AND customer_id = ?').get(newCustomerId);
+    assert(!!row && row.total_visits === 0 && row.is_keep_member === 0 && row.status === 'active', 'キープメンバーを指定しない場合、来店回数は0・ステータスはactiveで登録される');
+  }
+  {
+    const r = await ownerFresh.postJson('/api/admin/customers', { realname: '新規登録花子' });
+    assert(r.status === 409, '既に登録済みの本名を再度登録しようとすると409で拒否される');
+  }
+  {
+    const r = await ownerFresh.postJson('/api/admin/customers', { realname: 'キープ登録次郎', isKeepMember: true });
+    assert(r.status === 200 && r.body.success === true, '「キープメンバーとして登録する」を指定して新規登録できる');
+    const row = db.prepare('SELECT total_visits, is_keep_member FROM customers WHERE store_id = 1 AND customer_id = ?').get(r.body.customerId);
+    assert(!!row && row.total_visits === 1 && row.is_keep_member === 1, 'キープメンバー指定時は来店回数の初期値が1になる（GAS版と同じ挙動）');
+  }
+  {
+    // LINE友だち追加で仮登録された行（本名未確定）に、後からスタッフが本名を登録するケース
+    const fakeUserId = 'Utest-manual-register-001';
+    db.prepare(`
+      INSERT INTO customers (store_id, customer_id, realname, kana, line_name, user_id, total_visits, status, notify_enabled)
+      VALUES (1, 'C0900', '', '', 'てすと表示名', ?, 0, 'inactive', 1)
+    `).run(fakeUserId);
+    const r = await ownerFresh.postJson('/api/admin/customers', { realname: '本登録太郎', userId: fakeUserId, isKeepMember: true });
+    assert(r.status === 200 && r.body.success === true && r.body.customerId === 'C0900' && r.body.merged === true,
+      'LINE USER IDが既存の仮登録行と一致する場合は、新規作成ではなくその行への統合になる');
+    const row = db.prepare('SELECT realname, total_visits, status FROM customers WHERE store_id = 1 AND customer_id = ?').get('C0900');
+    assert(!!row && row.realname === '本登録太郎' && row.total_visits === 1 && row.status === 'active',
+      '統合された行の本名・来店回数（キープ指定により1）・ステータス（active）が更新される');
+  }
+  {
+    // 店舗スコープ：他店舗オーナーが登録した顧客は自店にしか影響しない
+    const r = await owner2.postJson('/api/admin/customers', { realname: '新規登録花子' });
+    assert(r.status === 200 && r.body.success === true,
+      '他店舗オーナーは、自店に同名の顧客がいなければ同じ本名でも新規登録できる（店舗ごとに独立した重複チェック）');
+  }
+
+  // --------------------------------------------------------------------------
+  // 27. スタッフダッシュボードの「直近の予約」・シフト自己編集
+  //     （GAS版dashboard_functions.gs getUpcomingReservations /
+  //      addShiftRow_body_ / saveWeeklyShifts_body_ / deleteShiftRow_body_ の移植）
+  // --------------------------------------------------------------------------
+  console.log('--- 27. 直近の予約・シフト自己編集 ---');
+  const pad2_ = (n) => String(n).padStart(2, '0');
+  const fmtDate_ = (d) => `${d.getFullYear()}-${pad2_(d.getMonth() + 1)}-${pad2_(d.getDate())}`;
+  const today27 = new Date(); today27.setHours(0, 0, 0, 0);
+  const nearDate27 = fmtDate_(new Date(today27.getTime() + 1 * 86400000));   // 明日（3日以内）
+  // ★他のテスト区画が予約登録に使う相対日付（多くはBOOKING_LIMIT_DAYS=49日以内）と
+  //   衝突しないよう、十分に先の日付を使う
+  const farDate27 = fmtDate_(new Date(today27.getTime() + 500 * 86400000));  // 3日より先・他区画と衝突しない遠い未来日
+  {
+    const r = await fetch(BASE + '/api/staff/reservations/upcoming').then((res) => res.status);
+    assert(r === 401, '未ログインでは/api/staff/reservations/upcomingを取得できない');
+  }
+  {
+    const r = await hanako.get('/api/staff/reservations/upcoming');
+    assert(r.status === 200 && r.body.rangeDays === 15 && Array.isArray(r.body.reservations),
+      '/api/staff/reservations/upcomingは既定15日分の担当予約一覧を返す');
+    const allHanako = (r.body.reservations || []).every((x) => x.staff_name === '花子');
+    assert(allHanako, '/api/staff/reservations/upcomingは自分（花子）担当分のみを返す');
+  }
+  {
+    const r = await fetch(BASE + '/api/staff/shifts', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ date: farDate27, startTime: '10:00', endTime: '18:00' })
+    }).then((res) => res.status);
+    assert(r === 401, '未ログインでは/api/staff/shiftsへのシフト追加はできない');
+  }
+  {
+    const r = await hanako.postJson('/api/staff/shifts', { date: nearDate27, startTime: '10:00', endTime: '18:00' });
+    assert(r.status === 400, '一般スタッフは3日以内の日付にシフトを追加できない');
+  }
+  {
+    const r = await hanako.postJson('/api/staff/shifts', { date: farDate27, startTime: '18:00', endTime: '10:00' });
+    assert(r.status === 400, '開始時間が終了時間より後の場合はシフトを追加できない');
+  }
+  let hanakoShiftId27 = null;
+  {
+    const r = await hanako.postJson('/api/staff/shifts', { date: farDate27, startTime: '10:00', endTime: '18:00' });
+    assert(r.status === 200 && r.body.success === true, '一般スタッフは3日より先の自分のシフトを追加できる');
+    const row = db.prepare(
+      'SELECT * FROM shift_master WHERE store_id = 1 AND staff_name = ? AND shift_date = ? AND start_time = ?'
+    ).get('花子', farDate27, '10:00');
+    assert(!!row, '追加したシフトがshift_masterに保存されている');
+    hanakoShiftId27 = row.id;
+  }
+  {
+    // オーナーは3日以内でもシフトを追加できる（本人分のみに限定した簡略化のもと、オーナー自身は制限を免除）
+    const r = await ownerFresh.postJson('/api/staff/shifts', { date: nearDate27, startTime: '09:00', endTime: '12:00' });
+    assert(r.status === 200 && r.body.success === true, 'オーナーは3日以内でも自分のシフトを追加できる（3日前ルール免除）');
+    db.prepare(`DELETE FROM shift_master WHERE store_id = 1 AND staff_name = '寿子' AND shift_date = ? AND start_time = '09:00'`).run(nearDate27);
+  }
+  {
+    // 他スタッフのシフトIDを直接挿入し、花子が編集しようとしても対象外（404）になることを確認
+    const other = db.prepare(`
+      INSERT INTO shift_master (store_id, staff_name, shift_date, start_time, end_time, is_active)
+      VALUES (1, '寿子', ?, '10:00', '18:00', 1)
+    `).run(farDate27);
+    const r = await hanako.putJson(`/api/staff/shifts/${other.lastInsertRowid}`, { startTime: '11:00', endTime: '17:00' });
+    assert(r.status === 404, '一般スタッフは他スタッフのシフトを編集できない（自分のシフトのみ対象）');
+    db.prepare('DELETE FROM shift_master WHERE id = ?').run(other.lastInsertRowid);
+  }
+  {
+    const r = await hanako.putJson(`/api/staff/shifts/${hanakoShiftId27}`, { startTime: '11:00', endTime: '19:00' });
+    assert(r.status === 200 && r.body.success === true, '一般スタッフは3日より先の自分のシフトを変更できる');
+    const row = db.prepare('SELECT start_time, end_time FROM shift_master WHERE id = ?').get(hanakoShiftId27);
+    assert(!!row && row.start_time === '11:00' && row.end_time === '19:00', '変更後のシフト時間が保存されている');
+  }
+  {
+    // この時間帯に予約を入れてから、予約時間をはみ出す変更を試みると拒否される
+    db.prepare(`
+      INSERT INTO reservations (store_id, realname, staff_name, menu, reservation_date, reservation_time, status)
+      VALUES (1, '直近予約テスト客', '花子', 'テストメニュー', ?, '12:00', '確定')
+    `).run(farDate27);
+    const r = await hanako.putJson(`/api/staff/shifts/${hanakoShiftId27}`, { startTime: '13:00', endTime: '19:00' });
+    assert(r.status === 400, '予約時間をシフト範囲から外す変更は拒否される');
+  }
+  {
+    const r = await hanako.del(`/api/staff/shifts/${hanakoShiftId27}`);
+    assert(r.status === 400, 'この時間帯に予約が入っているシフトは削除できない');
+  }
+  {
+    db.prepare(`DELETE FROM reservations WHERE store_id = 1 AND realname = '直近予約テスト客' AND reservation_date = ?`).run(farDate27);
+    const r = await hanako.del(`/api/staff/shifts/${hanakoShiftId27}`);
+    assert(r.status === 200 && r.body.success === true, '予約が無くなれば自分のシフトを削除できる');
+    const row = db.prepare('SELECT id FROM shift_master WHERE id = ?').get(hanakoShiftId27);
+    assert(!row, '削除したシフトがshift_masterから消えている');
+  }
+  {
+    const r = await hanako.del('/api/staff/shifts/999999');
+    assert(r.status === 404, '存在しないシフトIDの削除は404になる');
   }
 
   // --------------------------------------------------------------------------

@@ -139,6 +139,7 @@
         <div class="search-row">
           <div class="cm-search"><input type="text" id="qInput" placeholder="例：田中 / タナカ / 090"></div>
           <button class="btn-save" id="searchBtn" type="button">検索</button>
+          <button class="btn-edit" id="openNewCustomerBtn" type="button">＋ 新規顧客を登録</button>
         </div>
         <div class="check-row">
           <input type="checkbox" id="includeDeletedChk">
@@ -215,6 +216,45 @@
         <div class="modal-actions-right">
           <button type="button" class="btn-edit" id="cmCancelBtn">キャンセル</button>
           <button type="button" class="btn-save" id="cmSaveBtn">保存する</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ★2026-09-22追加：顧客マスタへの新規登録モーダル（GAS版registerCustomer相当） -->
+  <div class="overlay" id="ncOverlay">
+    <div class="modal">
+      <h3>新規顧客を登録</h3>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin:-6px 0 14px;">
+        お客様予約フォームを介さず、電話予約や来店受付の際にスタッフが顧客マスタへ直接登録します。
+      </p>
+      <div class="modal-grid">
+        <div>
+          <label>本名*</label>
+          <input type="text" id="nc-name" placeholder="例：山田花子">
+          <div class="err" id="ncDuplicateMsg" style="display:none; margin-top:4px;"></div>
+        </div>
+        <div>
+          <label>フリガナ</label>
+          <input type="text" id="nc-kana" placeholder="例：ヤマダハナコ">
+        </div>
+        <div>
+          <label>LINE名（任意）</label>
+          <input type="text" id="nc-lineName" placeholder="LINEをお持ちの場合のみ">
+        </div>
+        <div>
+          <label>LINE USER ID（任意）</label>
+          <input type="text" id="nc-userId" placeholder="LINEをお持ちの場合のみ">
+        </div>
+      </div>
+      <div class="modal-checks">
+        <label><input type="checkbox" id="nc-keep"> キープメンバーとして登録する（来店回数の初期値が1になります）</label>
+      </div>
+      <div class="err" id="ncModalErr" style="display:none;"></div>
+      <div class="modal-actions">
+        <div class="modal-actions-right">
+          <button type="button" class="btn-edit" id="ncCancelBtn">キャンセル</button>
+          <button type="button" class="btn-save" id="ncSaveBtn">顧客マスタに登録</button>
         </div>
       </div>
     </div>
@@ -480,6 +520,72 @@
   document.getElementById('includeDeletedChk').addEventListener('change', () => { offset = 0; load(); });
   document.getElementById('prevBtn').addEventListener('click', () => { offset = Math.max(0, offset - limit); load(); });
   document.getElementById('nextBtn').addEventListener('click', () => { offset = offset + limit; load(); });
+
+  // ---------- 新規顧客登録（GAS版registerCustomer相当） ----------
+  function openNewCustomerModal() {
+    document.getElementById('nc-name').value = '';
+    document.getElementById('nc-kana').value = '';
+    document.getElementById('nc-lineName').value = '';
+    document.getElementById('nc-userId').value = '';
+    document.getElementById('nc-keep').checked = false;
+    document.getElementById('ncDuplicateMsg').style.display = 'none';
+    document.getElementById('ncModalErr').style.display = 'none';
+    document.getElementById('ncOverlay').classList.add('show');
+  }
+  function closeNewCustomerModal() {
+    document.getElementById('ncOverlay').classList.remove('show');
+  }
+  document.getElementById('openNewCustomerBtn').addEventListener('click', openNewCustomerModal);
+  document.getElementById('ncCancelBtn').addEventListener('click', closeNewCustomerModal);
+  document.getElementById('ncOverlay').addEventListener('click', (e) => {
+    if (e.target.id === 'ncOverlay') closeNewCustomerModal();
+  });
+
+  // ★GAS版は既に画面へ読み込み済みの顧客一覧に対してクライアント側で重複チェックしていたが、
+  //   このNode版の顧客マスタは検索結果のみをページングして持つため、その場では全件と
+  //   比較できない。代わりに登録ボタン押下時にサーバー側でチェックし、409が返ったら
+  //   その場でメッセージを表示する（最終的な整合性はGAS版と同じくサーバー側で保証される）。
+  document.getElementById('ncSaveBtn').addEventListener('click', async () => {
+    const errBox = document.getElementById('ncModalErr');
+    const dupBox = document.getElementById('ncDuplicateMsg');
+    errBox.style.display = 'none';
+    dupBox.style.display = 'none';
+    const realname = document.getElementById('nc-name').value.trim();
+    if (!realname) {
+      errBox.textContent = '本名は必須です';
+      errBox.style.display = 'block';
+      return;
+    }
+    try {
+      const res = await fetch('/api/admin/customers', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          realname,
+          kana: document.getElementById('nc-kana').value.trim(),
+          lineName: document.getElementById('nc-lineName').value.trim(),
+          userId: document.getElementById('nc-userId').value.trim(),
+          isKeepMember: document.getElementById('nc-keep').checked
+        })
+      });
+      const data = await res.json();
+      if (res.status === 409) {
+        dupBox.textContent = '⚠️ ' + data.message + '（同姓同名の場合はオーナーにご確認ください）';
+        dupBox.style.display = 'block';
+        return;
+      }
+      if (!res.ok || !data.success) {
+        errBox.textContent = data.message || 'サーバーエラー';
+        errBox.style.display = 'block';
+        return;
+      }
+      closeNewCustomerModal();
+      offset = 0;
+      await load();
+    } catch (err) {
+      errBox.textContent = err.message;
+      errBox.style.display = 'block';
+    }
+  });
 
   init();
 })();

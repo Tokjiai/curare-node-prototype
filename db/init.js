@@ -89,6 +89,7 @@ function seedData() {
   insertRule.run(storeId, 'MAX_RESERVATIONS_PER_CUSTOMER', '1顧客あたりの確定予約上限', '3');
   insertRule.run(storeId, 'CANCEL_DELETE_DAYS', 'キャンセル済み予約を自動削除するまでの日数', '60');
   insertRule.run(storeId, 'SHIFT_EXPAND_DAYS', 'シフトを何日先まで自動展開するか', '49');
+  insertRule.run(storeId, 'UPCOMING_RESERVATION_DAYS', 'スタッフダッシュボードの「直近の予約」に表示する日数', '15');
 
   // --- ゾーン設定（zonesシート相当。GASのデフォルト値と同じ） -----------------
   const insertZone = db.prepare(`

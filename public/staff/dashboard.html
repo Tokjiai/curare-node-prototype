@@ -72,6 +72,23 @@
   #loadingMsg{text-align:center; color:var(--ink-soft); font-size:13px; padding:60px 0;}
   .footer-nav{text-align:center; padding:18px 0 30px;}
   .footer-nav a{font-size:12px; color:var(--ink-soft); text-decoration:none;}
+
+  .section-title{font-size:13px; font-weight:700; color:var(--ink-soft); margin:2px 0 8px;}
+  .shift-add-btn{width:100%; padding:10px; border:1px dashed var(--rose-dark); border-radius:10px; background:#fff; color:var(--rose-dark); font-weight:700; font-size:13px; cursor:pointer; margin-bottom:14px;}
+  .shift-card{cursor:pointer;}
+  .modal-overlay{display:none; position:fixed; inset:0; background:rgba(0,0,0,0.4); z-index:50; align-items:center; justify-content:center; padding:16px;}
+  .modal-overlay.open{display:flex;}
+  .modal-box{background:#fff; border-radius:14px; padding:18px; width:100%; max-width:340px;}
+  .modal-title{font-size:15px; font-weight:700; margin-bottom:14px;}
+  .modal-field{margin-bottom:12px;}
+  .modal-label{font-size:12px; color:var(--ink-soft); margin-bottom:4px; font-weight:600;}
+  .modal-field input{width:100%; padding:9px 10px; border:1px solid var(--line); border-radius:8px; font-family:inherit; font-size:13.5px;}
+  .modal-msg{font-size:12px; color:var(--warn); margin-bottom:8px; min-height:14px;}
+  .modal-actions{display:flex; gap:8px; margin-top:14px;}
+  .modal-btn{flex:1; padding:10px; border-radius:9px; border:none; font-weight:700; font-size:13px; cursor:pointer; font-family:inherit;}
+  .modal-btn-cancel{background:#f0efe9; color:var(--ink-soft);}
+  .modal-btn-ok{background:var(--rose-dark); color:#fff;}
+  .modal-btn-delete{width:100%; margin-top:10px; padding:10px; background:var(--warn-soft); color:var(--warn); border:1px solid #e9b3b3; border-radius:9px; font-weight:700; font-size:13px; cursor:pointer; font-family:inherit;}
 </style>
 </head>
 <body>
@@ -96,6 +113,9 @@
 
     <div class="main">
       <div class="tab-content active" id="tabRes">
+        <div class="section-title">📋 直近の予約</div>
+        <div id="upcomingList" style="margin-bottom:18px;"></div>
+
         <div class="week-nav">
           <button id="resPrevBtn" type="button">← 前週</button>
           <div class="label" id="resWeekLabel"></div>
@@ -105,6 +125,7 @@
       </div>
 
       <div class="tab-content" id="tabShift">
+        <button class="shift-add-btn" id="shiftAddOpenBtn" type="button">＋ シフトを追加</button>
         <div class="week-nav">
           <button id="shiftPrevBtn" type="button">← 前週</button>
           <div class="label" id="shiftWeekLabel"></div>
@@ -124,6 +145,54 @@
       </div>
 
       <div class="footer-nav"><a href="#" id="logoutLink">🚪 ログアウト</a></div>
+    </div>
+  </div>
+
+  <!-- ＋ シフトを追加 モーダル -->
+  <div class="modal-overlay" id="shiftAddModal">
+    <div class="modal-box">
+      <div class="modal-title">＋ シフトを追加</div>
+      <div class="modal-msg" id="shiftAddMsg"></div>
+      <div class="modal-field">
+        <div class="modal-label">日付</div>
+        <input type="date" id="addDate">
+      </div>
+      <div class="modal-field">
+        <div class="modal-label">開始時間</div>
+        <input type="time" id="addStart" value="10:00">
+      </div>
+      <div class="modal-field">
+        <div class="modal-label">終了時間</div>
+        <input type="time" id="addEnd" value="19:00">
+      </div>
+      <div class="modal-actions">
+        <button class="modal-btn modal-btn-cancel" id="shiftAddCancelBtn" type="button">キャンセル</button>
+        <button class="modal-btn modal-btn-ok" id="shiftAddSaveBtn" type="button">追加する</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ✏️ シフトを変更 モーダル -->
+  <div class="modal-overlay" id="shiftEditModal">
+    <div class="modal-box">
+      <div class="modal-title">✏️ シフトを変更</div>
+      <div class="modal-msg" id="shiftEditMsg"></div>
+      <div class="modal-field">
+        <div class="modal-label" id="shiftEditDateLabel"></div>
+      </div>
+      <div class="modal-field">
+        <div class="modal-label">開始時間</div>
+        <input type="time" id="editStart">
+      </div>
+      <div class="modal-field">
+        <div class="modal-label">終了時間</div>
+        <input type="time" id="editEnd">
+      </div>
+      <div class="modal-actions">
+        <button class="modal-btn modal-btn-cancel" id="shiftEditCancelBtn" type="button">キャンセル</button>
+        <button class="modal-btn modal-btn-ok" id="shiftEditSaveBtn" type="button">保存する</button>
+      </div>
+      <button class="modal-btn-delete" id="shiftEditDeleteBtn" type="button">🗑️ このシフトを削除する</button>
     </div>
   </div>
 
@@ -163,6 +232,7 @@
       document.getElementById('headerStaffName').textContent = me.staff.name + (me.staff.isOwner ? '（オーナー）' : '');
       const storeData = await staffFetch('/api/store');
       document.getElementById('headerStoreName').textContent = storeData.store.name;
+      await loadUpcoming();
       await loadReservations();
       await loadShifts();
       await loadCalendar();
@@ -172,6 +242,35 @@
       // ★他の管理画面と同じく、セッション切れ時は元居たこのページへ戻れるよう
       //   next パラメータを付ける
       window.location.href = '/admin/login.html?next=' + encodeURIComponent(window.location.pathname);
+    }
+  }
+
+  // ---- 📋 直近の予約（GAS版dashboard_functions.gs getUpcomingReservationsの移植） ----
+  async function loadUpcoming() {
+    const el = document.getElementById('upcomingList');
+    try {
+      const data = await staffFetch('/api/staff/reservations/upcoming');
+      const rows = data.reservations || [];
+      if (rows.length === 0) {
+        el.innerHTML = `<div class="empty">今後${data.rangeDays || 15}日以内の担当予約はありません</div>`;
+        return;
+      }
+      el.innerHTML = '';
+      rows.forEach((r) => {
+        const card = document.createElement('div');
+        card.className = 'card';
+        card.innerHTML = `
+          <div class="row1">
+            <span class="time">${r.reservation_date} ${r.reservation_time}〜</span>
+            ${r.status === '仮予約' ? '<span class="badge-cancel">仮予約</span>' : ''}
+          </div>
+          <div class="customer">${r.realname}</div>
+          <div class="menu">${r.menu || ''}</div>
+        `;
+        el.appendChild(card);
+      });
+    } catch (e) {
+      el.innerHTML = '<div class="empty">読み込みに失敗しました</div>';
     }
   }
 
@@ -251,6 +350,7 @@
           const card = document.createElement('div');
           card.className = 'shift-card';
           card.textContent = `${s.start_time} 〜 ${s.end_time}`;
+          card.addEventListener('click', () => openShiftEditModal(s, dStr));
           block.appendChild(card);
         });
         listEl.appendChild(block);
@@ -304,6 +404,95 @@
       gridEl.appendChild(cell);
     }
   }
+
+  // ---- シフト追加・変更・削除モーダル（GAS版staff_dashboard.htmlの
+  //   ①シフト追加モーダル・②シフト編集モーダル相当。自分自身のシフトのみ対象） ----
+  let _editingShiftId = null;
+
+  function openShiftAddModal() {
+    document.getElementById('shiftAddMsg').textContent = '';
+    document.getElementById('addDate').value = fmt(shiftWeekStart);
+    document.getElementById('addStart').value = '10:00';
+    document.getElementById('addEnd').value = '19:00';
+    document.getElementById('shiftAddModal').classList.add('open');
+  }
+  function closeShiftAddModal() {
+    document.getElementById('shiftAddModal').classList.remove('open');
+  }
+  async function submitShiftAdd() {
+    const msgEl = document.getElementById('shiftAddMsg');
+    msgEl.textContent = '';
+    const date = document.getElementById('addDate').value;
+    const startTime = document.getElementById('addStart').value;
+    const endTime = document.getElementById('addEnd').value;
+    if (!date || !startTime || !endTime) { msgEl.textContent = '日付・時間を入力してください'; return; }
+    try {
+      const res = await fetch('/api/staff/shifts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ date, startTime, endTime })
+      });
+      const data = await res.json();
+      if (!data.success) { msgEl.textContent = data.message || '追加に失敗しました'; return; }
+      closeShiftAddModal();
+      await loadShifts();
+    } catch (e) {
+      msgEl.textContent = '通信エラーが発生しました';
+    }
+  }
+
+  function openShiftEditModal(shift, dStr) {
+    _editingShiftId = shift.id;
+    document.getElementById('shiftEditMsg').textContent = '';
+    document.getElementById('shiftEditDateLabel').textContent = `${dStr}（${shift.start_time} 〜 ${shift.end_time}）`;
+    document.getElementById('editStart').value = shift.start_time;
+    document.getElementById('editEnd').value = shift.end_time;
+    document.getElementById('shiftEditModal').classList.add('open');
+  }
+  function closeShiftEditModal() {
+    document.getElementById('shiftEditModal').classList.remove('open');
+    _editingShiftId = null;
+  }
+  async function submitShiftEdit() {
+    const msgEl = document.getElementById('shiftEditMsg');
+    msgEl.textContent = '';
+    const startTime = document.getElementById('editStart').value;
+    const endTime = document.getElementById('editEnd').value;
+    if (!startTime || !endTime) { msgEl.textContent = '時間を入力してください'; return; }
+    try {
+      const res = await fetch(`/api/staff/shifts/${_editingShiftId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ startTime, endTime })
+      });
+      const data = await res.json();
+      if (!data.success) { msgEl.textContent = data.message || '変更に失敗しました'; return; }
+      closeShiftEditModal();
+      await loadShifts();
+    } catch (e) {
+      msgEl.textContent = '通信エラーが発生しました';
+    }
+  }
+  async function submitShiftDelete() {
+    const msgEl = document.getElementById('shiftEditMsg');
+    msgEl.textContent = '';
+    try {
+      const res = await fetch(`/api/staff/shifts/${_editingShiftId}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (!data.success) { msgEl.textContent = data.message || '削除に失敗しました'; return; }
+      closeShiftEditModal();
+      await loadShifts();
+    } catch (e) {
+      msgEl.textContent = '通信エラーが発生しました';
+    }
+  }
+
+  document.getElementById('shiftAddOpenBtn').addEventListener('click', openShiftAddModal);
+  document.getElementById('shiftAddCancelBtn').addEventListener('click', closeShiftAddModal);
+  document.getElementById('shiftAddSaveBtn').addEventListener('click', submitShiftAdd);
+  document.getElementById('shiftEditCancelBtn').addEventListener('click', closeShiftEditModal);
+  document.getElementById('shiftEditSaveBtn').addEventListener('click', submitShiftEdit);
+  document.getElementById('shiftEditDeleteBtn').addEventListener('click', submitShiftDelete);
 
   function switchTab(btnId, contentId) {
     ['tabResBtn', 'tabShiftBtn', 'tabCalBtn'].forEach((id) => document.getElementById(id).classList.toggle('active', id === btnId));

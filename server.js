@@ -536,6 +536,175 @@ app.get('/api/staff/reservations/monthly', requireStaffSession, (req, res) => {
 });
 
 // ----------------------------------------------------------------------------
+// ★2026-09-22追加：GAS版dashboard_functions.gs getUpcomingReservationsの移植。
+//   スタッフダッシュボードの「📋 直近の予約」カード用に、本人担当の予約のうち
+//   「今日から UPCOMING_RESERVATION_DAYS 日以内」のものだけを日時順で返す。
+//   GAS版はオーナーなら全スタッフ分・未定担当分も含めていたが、Node版の/api/staff/*は
+//   既存の週次・月間タブと同じ方針（本人担当分のみに統一、簡略化）に合わせてある。
+// GET /api/staff/reservations/upcoming
+// ----------------------------------------------------------------------------
+app.get('/api/staff/reservations/upcoming', requireStaffSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const staffName = req.session.staff.name;
+    let rangeDays = Number(engine.getRuleValue_(storeId, 'UPCOMING_RESERVATION_DAYS'));
+    if (!rangeDays || Number.isNaN(rangeDays)) rangeDays = 15;
+
+    const pad2 = (n) => String(n).padStart(2, '0');
+    const fmt = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const endDate = new Date(today); endDate.setDate(today.getDate() + rangeDays);
+    const from = fmt(today);
+    const to = fmt(endDate);
+
+    const rows = db.prepare(`
+      SELECT * FROM reservations
+      WHERE store_id = ? AND staff_name = ? AND realname != 'キャンセル'
+        AND reservation_date >= ? AND reservation_date <= ?
+      ORDER BY reservation_date ASC, reservation_time ASC
+    `).all(storeId, staffName, from, to);
+
+    res.json({ from, to, rangeDays, staffName, reservations: rows });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// ★2026-09-22追加：GAS版dashboard_functions.gs addShiftRow_body_ /
+//   saveWeeklyShifts_body_ / deleteShiftRow_body_ の移植。スタッフダッシュボードの
+//   「② シフト編集モーダル」相当で、一般スタッフが自分自身のシフトを直接
+//   追加・変更・削除できるようにする（他スタッフのシフトは対象外）。
+//   GAS版は「オーナーなら3日前ルールを免除・他スタッフも編集可」だったが、
+//   Node版の/api/staff/*は既存方針（本人分のみに統一）に合わせ、オーナーが
+//   自分自身の分を編集する場合のみ3日前ルールを免除する（他スタッフの代理編集は
+//   従来通り管理画面 /admin/shifts.html を使う）。
+//   予約との重複チェック（この時間帯に既に本人担当の予約が入っていないか）も
+//   GAS版と同様に行う。
+// ----------------------------------------------------------------------------
+const STAFF_SHIFT_EDIT_LOCK_DAYS = 3;
+
+function staffShiftEditDateOk_(isOwner, dateStr) {
+  if (isOwner) return true;
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const limit = new Date(today); limit.setDate(today.getDate() + STAFF_SHIFT_EDIT_LOCK_DAYS);
+  const target = new Date(String(dateStr).replace(/\//g, '-') + 'T00:00:00');
+  return target >= limit;
+}
+
+// ★指定スタッフ・日付・時間帯に、本人担当の予約（キャンセル除く）が重なっていないか確認する
+function staffHasBookingConflict_(storeId, staffName, dateStr, startTime, endTime) {
+  const rows = db.prepare(`
+    SELECT reservation_time FROM reservations
+    WHERE store_id = ? AND staff_name = ? AND reservation_date = ? AND realname != 'キャンセル'
+  `).all(storeId, staffName, dateStr);
+  const newStart = engine.toMin_(startTime);
+  const newEnd = engine.toMin_(endTime);
+  return rows.some((r) => {
+    const resStart = engine.toMin_(r.reservation_time);
+    const resEnd = resStart + 90; // ★施術時間は既存コードと同じ固定90分想定
+    return resStart < newEnd && resEnd > newStart;
+  });
+}
+
+// POST /api/staff/shifts : 自分自身のシフトを新規追加する
+app.post('/api/staff/shifts', requireStaffSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const staffName = req.session.staff.name;
+    const isOwner = !!req.session.staff.isOwner;
+    const { date, startTime, endTime } = req.body || {};
+    if (!date || !startTime || !endTime) {
+      return res.status(400).json({ success: false, message: '日付・開始時間・終了時間は必須です' });
+    }
+    if (!staffShiftEditDateOk_(isOwner, date)) {
+      return res.status(400).json({ success: false, message: `${STAFF_SHIFT_EDIT_LOCK_DAYS}日以内のシフトは追加できません` });
+    }
+    if (engine.toMin_(startTime) >= engine.toMin_(endTime)) {
+      return res.status(400).json({ success: false, message: '開始時間は終了時間より前にしてください' });
+    }
+    db.prepare(`
+      INSERT INTO shift_master (store_id, staff_name, shift_date, start_time, end_time, is_active)
+      VALUES (?, ?, ?, ?, ?, 1)
+    `).run(storeId, staffName, date, startTime, endTime);
+    res.json({ success: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// PUT /api/staff/shifts/:id : 自分自身のシフトの時間帯を変更する
+app.put('/api/staff/shifts/:id', requireStaffSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const staffName = req.session.staff.name;
+    const isOwner = !!req.session.staff.isOwner;
+    const { id } = req.params;
+    const { startTime, endTime } = req.body || {};
+    if (!startTime || !endTime) {
+      return res.status(400).json({ success: false, message: '開始時間・終了時間は必須です' });
+    }
+    const row = db.prepare(
+      'SELECT * FROM shift_master WHERE id = ? AND store_id = ? AND staff_name = ?'
+    ).get(id, storeId, staffName);
+    if (!row) return res.status(404).json({ success: false, message: '対象のシフトが見つかりません（自分自身のシフトのみ変更できます）' });
+    if (!staffShiftEditDateOk_(isOwner, row.shift_date)) {
+      return res.status(400).json({ success: false, message: `${STAFF_SHIFT_EDIT_LOCK_DAYS}日以内のシフトは変更できません` });
+    }
+    if (engine.toMin_(startTime) >= engine.toMin_(endTime)) {
+      return res.status(400).json({ success: false, message: '開始時間は終了時間より前にしてください' });
+    }
+    // ★予約が新しい時間帯の外にはみ出す場合は変更を拒否する（GAS版のhasBooking判定相当）
+    const conflictRows = db.prepare(`
+      SELECT reservation_time FROM reservations
+      WHERE store_id = ? AND staff_name = ? AND reservation_date = ? AND realname != 'キャンセル'
+    `).all(storeId, staffName, row.shift_date);
+    const newStart = engine.toMin_(startTime);
+    const newEnd = engine.toMin_(endTime);
+    const outOfRange = conflictRows.some((r) => {
+      const resStart = engine.toMin_(r.reservation_time);
+      const resEnd = resStart + 90;
+      return resStart < newStart || resEnd > newEnd;
+    });
+    if (outOfRange) {
+      return res.status(400).json({ success: false, message: 'この日に入っている予約の時間帯を含められないため変更できません' });
+    }
+    db.prepare('UPDATE shift_master SET start_time = ?, end_time = ? WHERE id = ?').run(startTime, endTime, id);
+    res.json({ success: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// DELETE /api/staff/shifts/:id : 自分自身のシフトを削除する
+app.delete('/api/staff/shifts/:id', requireStaffSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const staffName = req.session.staff.name;
+    const isOwner = !!req.session.staff.isOwner;
+    const { id } = req.params;
+    const row = db.prepare(
+      'SELECT * FROM shift_master WHERE id = ? AND store_id = ? AND staff_name = ?'
+    ).get(id, storeId, staffName);
+    if (!row) return res.status(404).json({ success: false, message: '対象のシフトが見つかりません（自分自身のシフトのみ削除できます）' });
+    if (!staffShiftEditDateOk_(isOwner, row.shift_date)) {
+      return res.status(400).json({ success: false, message: `${STAFF_SHIFT_EDIT_LOCK_DAYS}日以内のシフトは削除できません` });
+    }
+    if (staffHasBookingConflict_(storeId, staffName, row.shift_date, row.start_time, row.end_time)) {
+      return res.status(400).json({ success: false, message: 'この時間帯に予約が入っているため削除できません' });
+    }
+    db.prepare('DELETE FROM shift_master WHERE id = ?').run(id);
+    res.json({ success: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
 // ★旧実装（廃止・置き換え済み）：requireAdminPassword
 //   共有パスワード1個をヘッダーで送るだけの簡易認証。/api/admin/* は現在
 //   requireOwnerSession（セッションベース）に置き換わっており、この関数は
@@ -960,7 +1129,31 @@ app.put('/api/admin/staff/:id', requireOwnerSession, (req, res) => {
 //   統合（片方に情報を集約して片方を論理削除）または「別人」として見送るかを
 //   オーナーが判断できるようにする。
 // ============================================================================
-const { normalizePhoneDigits, findMergeCandidates, mergeCustomerRecords } = require('./lib/customerMerge');
+const { normalizePhoneDigits, findMergeCandidates, mergeCustomerRecords, createCustomerManually } = require('./lib/customerMerge');
+
+// ----------------------------------------------------------------------------
+// ★2026-09-22追加：顧客マスタへの新規登録（GAS版reservation_form_functions.gs
+//   registerCustomer相当）。お客様予約フォームを介さず、電話予約や来店受付の際に
+//   スタッフが顧客マスタへ直接1件登録できるようにする。GAS版と同じく、①本名の
+//   重複チェック（拒否）②LINE USER IDが既存の仮登録行と一致する場合はその行へ
+//   統合③「キープメンバーとして登録する」チェックで来店回数の初期値を1にする、
+//   という挙動をlib/customerMerge.jsのcreateCustomerManuallyに実装している。
+//
+// POST /api/admin/customers  { realname, kana, lineName, userId, isKeepMember }
+// ----------------------------------------------------------------------------
+app.post('/api/admin/customers', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const result = createCustomerManually(db, storeId, req.body || {});
+    if (!result.success) {
+      return res.status(result.status || 400).json({ success: false, message: result.message });
+    }
+    res.json({ success: true, customerId: result.customerId, merged: result.merged });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
 
 // ----------------------------------------------------------------------------
 // GET /api/admin/customers/merge-candidates
