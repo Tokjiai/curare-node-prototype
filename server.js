@@ -127,6 +127,31 @@ function resolveStoreId(storeSlugOrId) {
 // ----------------------------------------------------------------------------
 // GET /api/store : 店舗情報・スタッフ一覧・ゾーン設定をまとめて返す
 // ----------------------------------------------------------------------------
+// ★2026-09-22追加：GAS版reservation_form_functions.gsのgetCustomerFormDataの移植。
+//   お客様予約フォームにURLの?cid=顧客IDが付いている場合（LINEから個別リンクで
+//   開いた想定）、顧客マスタと照合して①本名・フリガナを事前に特定できるようにし
+//   ②「予約フォーム受付拒否」フラグが立っている顧客は、入力を始める前にブロックする。
+//   GAS版は新規/キープ/ビジターでテーマ色・メニュー・注意書きの出し分けまで行うが、
+//   Node版はそこまでは行わず「本人特定・受付拒否チェック」のみに絞った簡略版とする
+//   （README_PROTOTYPE.md参照）。
+function getCustomerFormInfo_(storeId, cid) {
+  if (!cid) return null;
+  const row = db.prepare(
+    'SELECT * FROM customers WHERE store_id = ? AND customer_id = ? AND is_deleted = 0'
+  ).get(storeId, String(cid));
+  if (!row) return { found: false, customerId: String(cid), bookingBlocked: false };
+  return {
+    found: true,
+    customerId: row.customer_id,
+    realname: row.realname || '',
+    kana: row.kana || '',
+    lineName: row.line_name || '',
+    visitCount: row.total_visits || 0,
+    isKeepMember: !!row.is_keep_member,
+    bookingBlocked: !!row.booking_blocked
+  };
+}
+
 app.get('/api/store', (req, res) => {
   const storeId = resolveStoreId(req.query.store);
   const store = db.prepare('SELECT * FROM stores WHERE id = ?').get(storeId);
@@ -145,7 +170,8 @@ app.get('/api/store', (req, res) => {
   const notices = db.prepare(`
     SELECT text FROM booking_notices WHERE store_id = ? AND target = '全員' AND is_active = 1 ORDER BY id ASC
   `).all(storeId).map((r) => r.text);
-  res.json({ store, staffList, zones, menuItems, notices });
+  const customer = getCustomerFormInfo_(storeId, req.query.cid);
+  res.json({ store, staffList, zones, menuItems, notices, customer });
 });
 
 // ----------------------------------------------------------------------------
@@ -228,6 +254,26 @@ app.post('/api/reservations', (req, res) => {
 
     if (!data.realname || !data.staffName || !data.date || !data.time || !data.menu) {
       return res.status(400).json({ error: 'realname / staffName / date / time / menu は必須です' });
+    }
+
+    // ★2026-09-22追加：GAS版submitCustomerBooking_body_の移植。顧客ID付きでの送信
+    //   （＝お客様予約フォームでURLの?cid=から本人特定できていた場合）は、クライアント側の
+    //   入力ではなく顧客マスタの本名・フリガナ・LINE表示名を正として使う。また、画面表示だけ
+    //   でなくサーバー側でも「予約フォーム受付拒否」フラグを再チェックする（クライアント側の
+    //   チェックだけに頼らない、GAS版と同じ二重防御）。
+    if (data.customerId) {
+      const cust = db.prepare(
+        'SELECT * FROM customers WHERE store_id = ? AND customer_id = ? AND is_deleted = 0'
+      ).get(storeId, data.customerId);
+      if (cust) {
+        if (cust.booking_blocked) {
+          return res.status(200).json({ success: false, message: 'この内容では予約できません。お電話でお問い合わせください。' });
+        }
+        data.realname = cust.realname || data.realname;
+        data.kana = cust.kana || data.kana;
+        data.lineName = cust.line_name || data.lineName;
+        data.userId = cust.user_id || data.userId;
+      }
     }
 
     // ★GAS版 addReservationUnified_body_ を踏襲：確定予約の上限チェック
@@ -698,6 +744,190 @@ app.delete('/api/staff/shifts/:id', requireStaffSession, (req, res) => {
     }
     db.prepare('DELETE FROM shift_master WHERE id = ?').run(id);
     res.json({ success: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// ★2026-09-22追加：GAS版reservation_form_functions.gs addReservationUnified_body_ /
+//   updateReservation_body_ / cancelReservation_body_ の移植（一般スタッフ向け）。
+//   これまで予約の追加・編集・キャンセルは/api/admin/reservations（オーナー専用）
+//   にしか存在せず、一般スタッフには開放されていなかった。GAS版では一般スタッフも
+//   「自分の担当」または「担当未定」の予約であれば操作できたため、その挙動を
+//   requireStaffSession + 所有権チェック（オーナーは無条件で許可）で再現する。
+//
+//   GAS版の権限ルール（isOwnerRole_での分岐）：
+//   ・新規登録：一般スタッフは担当を「自分」か「未定」にしか指定できない
+//   ・変更：一般スタッフは「元の担当が自分か未定」の予約のみ編集できる（変更後の担当は制限なし＝GAS版もそう）
+//   ・キャンセル：一般スタッフは「担当が自分か未定」の予約のみキャンセルできる
+//   ・予約上限超過：一般スタッフはハードブロック（登録不可）、オーナーはownerOverrideで続行可能
+// ----------------------------------------------------------------------------
+
+// POST /api/staff/reservations : 新規予約登録（電話予約・当日飛び込み対応、一般スタッフ向け）
+app.post('/api/staff/reservations', requireStaffSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const staffName = req.session.staff.name;
+    const isOwner = !!req.session.staff.isOwner;
+    const data = req.body || {};
+
+    if (!data.realname || !data.staffName || !data.date || !data.time || !data.menu) {
+      return res.status(400).json({ success: false, message: 'realname / staffName / date / time / menu は必須です' });
+    }
+
+    // ★一般スタッフの新規登録は「自分」か「未定」の担当でのみ許可（他スタッフ指定は禁止）
+    if (!isOwner && data.staffName !== staffName && data.staffName !== '未定') {
+      return res.status(403).json({ success: false, message: '他のスタッフを担当に指定した新規登録はできません' });
+    }
+
+    const limitCheck = engine.checkCustomerReservationLimit(storeId, data.realname, null);
+    if (limitCheck.exceeded) {
+      if (!isOwner) {
+        return res.status(400).json({
+          success: false,
+          message: `${data.realname}様の予約は現在${limitCheck.count}件あります。上限（${limitCheck.limit}件）に達しているため登録できません。オーナーにご相談ください。`
+        });
+      }
+      if (!data.ownerOverride) {
+        return res.status(200).json({
+          success: false,
+          isLimitWarning: true,
+          message: `${data.realname}様の確定予約が${limitCheck.count}件あります（上限${limitCheck.limit}件）。このまま登録しますか？`,
+          count: limitCheck.count,
+          limit: limitCheck.limit
+        });
+      }
+    }
+
+    const insert = db.prepare(`
+      INSERT INTO reservations
+        (store_id, realname, kana, line_name, user_id, staff_name, menu, reservation_date, reservation_time, note, editor, line_sent, done, customer_id, status)
+      VALUES
+        (@store_id, @realname, @kana, '', '', @staff_name, @menu, @reservation_date, @reservation_time, @note, @editor, 0, 0, @customer_id, '確定')
+    `);
+
+    let info;
+    try {
+      info = insert.run({
+        store_id: storeId,
+        realname: data.realname,
+        kana: data.kana || '',
+        staff_name: data.staffName,
+        menu: data.menu,
+        reservation_date: data.date,
+        reservation_time: data.time,
+        note: data.note || '',
+        editor: staffName,
+        customer_id: data.customerId || ''
+      });
+    } catch (constraintErr) {
+      if (String(constraintErr.message).includes('UNIQUE constraint failed')) {
+        return res.status(409).json({
+          success: false,
+          isDoubleBooking: true,
+          message: 'その日時・担当は既に別の予約で埋まっています。別の枠を選んでください。'
+        });
+      }
+      throw constraintErr;
+    }
+
+    res.json({ success: true, message: '✅ 予約を登録しました', reservationId: info.lastInsertRowid });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// PUT /api/staff/reservations/:id : 予約の変更（元の担当が自分か未定の予約のみ／オーナーは制限なし）
+app.put('/api/staff/reservations/:id', requireStaffSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const staffName = req.session.staff.name;
+    const isOwner = !!req.session.staff.isOwner;
+    const id = Number(req.params.id);
+    const data = req.body || {};
+
+    const existing = db.prepare('SELECT * FROM reservations WHERE id = ? AND store_id = ?').get(id, storeId);
+    if (!existing) {
+      return res.status(404).json({ success: false, message: '対象の予約が見つかりません' });
+    }
+    if (existing.realname === 'キャンセル') {
+      return res.status(400).json({ success: false, message: 'キャンセル済みの予約は編集できません' });
+    }
+    // ★GAS版と同じく「元の担当」で判定する（変更後の担当は制限しない）
+    if (!isOwner && existing.staff_name !== staffName && existing.staff_name !== '未定') {
+      return res.status(403).json({ success: false, message: '他のスタッフの予約は編集できません' });
+    }
+    if (!data.staffName || !data.date || !data.time || !data.menu) {
+      return res.status(400).json({ success: false, message: 'staffName / date / time / menu は必須です' });
+    }
+
+    try {
+      db.prepare(`
+        UPDATE reservations
+        SET staff_name = @staff_name, menu = @menu, reservation_date = @reservation_date,
+            reservation_time = @reservation_time, note = @note, editor = @editor, updated_at = CURRENT_TIMESTAMP
+        WHERE id = @id AND store_id = @store_id
+      `).run({
+        id, store_id: storeId,
+        staff_name: data.staffName, menu: data.menu,
+        reservation_date: data.date, reservation_time: data.time,
+        note: data.note || existing.note || '', editor: staffName
+      });
+    } catch (constraintErr) {
+      if (String(constraintErr.message).includes('UNIQUE constraint failed')) {
+        return res.status(409).json({
+          success: false,
+          isDoubleBooking: true,
+          message: 'その日時・担当は既に別の予約で埋まっています。別の枠を選んでください。'
+        });
+      }
+      throw constraintErr;
+    }
+
+    res.json({ success: true, message: '✅ 予約を変更しました' });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// DELETE /api/staff/reservations/:id : キャンセル（担当が自分か未定の予約のみ／オーナーは制限なし）
+app.delete('/api/staff/reservations/:id', requireStaffSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const staffName = req.session.staff.name;
+    const isOwner = !!req.session.staff.isOwner;
+    const id = Number(req.params.id);
+
+    const row = db.prepare('SELECT * FROM reservations WHERE id = ? AND store_id = ?').get(id, storeId);
+    if (!row) {
+      return res.status(404).json({ success: false, message: '対象の予約が見つかりません' });
+    }
+    if (!isOwner && row.staff_name !== staffName && row.staff_name !== '未定') {
+      return res.status(403).json({ success: false, message: '他のスタッフの予約はキャンセルできません' });
+    }
+
+    db.prepare(`UPDATE reservations SET realname = 'キャンセル', editor = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(staffName, id);
+    res.json({ success: true, message: '✅ キャンセルしました' });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// POST /api/staff/customers : 顧客マスタへの新規登録（GAS版registerCustomer相当。
+//   GAS版にオーナー限定の分岐はなく、一般スタッフにも開放されているためrequireStaffSessionのみで許可する）
+app.post('/api/staff/customers', requireStaffSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const result = createCustomerManually(db, storeId, req.body || {});
+    if (!result.success) {
+      return res.status(result.status || 400).json({ success: false, message: result.message });
+    }
+    res.json({ success: true, customerId: result.customerId, merged: result.merged });
   } catch (e) {
     console.error(e);
     res.status(500).json({ success: false, error: e.message });

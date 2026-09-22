@@ -1491,6 +1491,220 @@ async function main() {
   }
 
   // --------------------------------------------------------------------------
+  // 28. お客様予約フォームの顧客ID連携（GAS版reservation_form_functions.gs
+  //     getCustomerFormData / submitCustomerBooking_body_の移植）
+  // --------------------------------------------------------------------------
+  console.log('--- 28. お客様予約フォームの顧客ID連携 ---');
+  db.prepare(`
+    INSERT INTO customers (store_id, customer_id, realname, kana, line_name, user_id, total_visits, is_keep_member, booking_blocked, status, notify_enabled)
+    VALUES (1, 'CT950', 'フォーム連携花子', 'フォームレンケイハナコ', 'はなこ', 'Utest-form-950', 3, 1, 0, 'active', 1)
+  `).run();
+  db.prepare(`
+    INSERT INTO customers (store_id, customer_id, realname, kana, line_name, user_id, total_visits, booking_blocked, status, notify_enabled)
+    VALUES (1, 'CT951', '受付拒否太郎', 'ウケツケキョヒタロウ', '', '', 5, 1, 'active', 1)
+  `).run();
+  {
+    const r = await fetch(BASE + '/api/store?store=1').then((res) => res.json());
+    assert(r.customer === null, 'cidパラメータ無しでは/api/storeのcustomerはnullになる');
+  }
+  {
+    const r = await fetch(BASE + '/api/store?store=1&cid=CT950').then((res) => res.json());
+    assert(
+      r.customer && r.customer.found === true && r.customer.realname === 'フォーム連携花子' &&
+      r.customer.kana === 'フォームレンケイハナコ' && r.customer.isKeepMember === true && r.customer.visitCount === 3,
+      '?cid=既存顧客IDを指定すると、本名・フリガナ・キープメンバー・来店回数が返る'
+    );
+  }
+  {
+    const r = await fetch(BASE + '/api/store?store=1&cid=CT-not-exist').then((res) => res.json());
+    assert(r.customer && r.customer.found === false && r.customer.bookingBlocked === false, '存在しない顧客IDではfound:falseが返る（エラーにはならない）');
+  }
+  {
+    const r = await fetch(BASE + '/api/store?store=1&cid=CT951').then((res) => res.json());
+    assert(r.customer && r.customer.found === true && r.customer.bookingBlocked === true, '予約フォーム受付拒否フラグが立っている顧客はbookingBlocked:trueが返る');
+  }
+  {
+    // 店舗スコープ：他店舗の顧客IDをstore=1側から問い合わせても見つからない
+    const r = await fetch(BASE + '/api/store?store=1&cid=CT2001').then((res) => res.json()).catch(() => null);
+    // CT2001はstore2側の顧客IDを想定した架空ID。存在しないので単純にfound:falseになることだけ確認する
+    assert(r && r.customer && r.customer.found === false, '他店舗の顧客IDや存在しないIDはstore=1側では見つからない（found:false）');
+  }
+  {
+    const r = await fetch(BASE + '/api/reservations', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        store: '1', customerId: 'CT951', realname: 'クライアント側入力名', staffName: '花子',
+        menu: 'フェイシャル(60分)', date: '2026-12-10', time: '10:00', note: '', editor: 'テスト'
+      })
+    }).then((res) => res.json());
+    assert(r.success === false && !r.isLimitWarning, '受付拒否の顧客IDを指定した予約送信は、サーバー側の再チェックで拒否される');
+    const row = db.prepare(`SELECT id FROM reservations WHERE customer_id = 'CT951'`).get();
+    assert(!row, '受付拒否の予約は実際にはDBへ登録されていない');
+  }
+  {
+    const r = await fetch(BASE + '/api/reservations', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        store: '1', customerId: 'CT950', realname: 'クライアント側から届いた別の名前', staffName: '花子',
+        menu: 'フェイシャル(60分)', date: '2026-12-11', time: '10:00', note: '', editor: 'テスト'
+      })
+    }).then((res) => res.json());
+    assert(r.success === true, '受付拒否されていない顧客IDでの予約送信は成功する');
+    const row = db.prepare(`SELECT realname, kana FROM reservations WHERE customer_id = 'CT950'`).get();
+    assert(!!row && row.realname === 'フォーム連携花子' && row.kana === 'フォームレンケイハナコ',
+      'クライアント側から送られた本名は無視され、顧客マスタの本名・フリガナが実際に保存される（なりすまし防止）');
+  }
+
+  // --------------------------------------------------------------------------
+  // 29. 予約の追加・編集・キャンセル・顧客登録の一般スタッフ開放
+  //     （GAS版reservation_form_functions.gs addReservationUnified_body_ /
+  //      updateReservation_body_ / cancelReservation_body_ / registerCustomer_body_の移植）
+  // --------------------------------------------------------------------------
+  console.log('--- 29. 予約の追加・編集・キャンセル・顧客登録の一般スタッフ開放 ---');
+  const date29 = fmtDate_(new Date(today27.getTime() + 600 * 86400000)); // 他区画と衝突しない遠い未来日
+  {
+    const r = await fetch(BASE + '/api/staff/reservations', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ realname: '未ログインテスト', staffName: '花子', menu: 'フェイシャル(60分)', date: date29, time: '10:00' })
+    }).then((res) => res.status);
+    assert(r === 401, '未ログインでは/api/staff/reservationsへの新規登録はできない');
+  }
+  {
+    const r = await hanako.postJson('/api/staff/reservations', {
+      realname: '他担当指定テスト', staffName: '寿子', menu: 'フェイシャル(60分)', date: date29, time: '09:00'
+    });
+    assert(r.status === 403, '一般スタッフは他スタッフを担当に指定した新規登録ができない');
+  }
+  let hanakoResvId29 = null;
+  {
+    const r = await hanako.postJson('/api/staff/reservations', {
+      realname: '花子担当29テスト', staffName: '花子', menu: 'フェイシャル(60分)', date: date29, time: '09:00'
+    });
+    assert(r.status === 200 && r.body.success === true, '一般スタッフは自分担当の新規予約を登録できる');
+    hanakoResvId29 = r.body.reservationId;
+  }
+  {
+    const r = await hanako.postJson('/api/staff/reservations', {
+      realname: '未定担当29テスト', staffName: '未定', menu: 'フェイシャル(60分)', date: date29, time: '09:15'
+    });
+    assert(r.status === 200 && r.body.success === true, '一般スタッフは「未定」担当でも新規予約を登録できる');
+    db.prepare(`DELETE FROM reservations WHERE store_id = 1 AND realname = '未定担当29テスト'`).run();
+  }
+  {
+    // 二重予約防止：同じ日時・担当に既に別の予約があるとUNIQUE制約で409になる
+    const r = await hanako.postJson('/api/staff/reservations', {
+      realname: '二重予約テスト29', staffName: '花子', menu: 'フェイシャル(60分)', date: date29, time: '09:00'
+    });
+    assert(r.status === 409 && r.body.isDoubleBooking === true, '同じ日時・担当への重複登録は二重予約として拒否される');
+  }
+  {
+    // 予約上限（既定3件）：同姓同名で確定予約を3件作ってから一般スタッフが4件目を追加しようとするとハードブロックされる
+    const limitDate = (n) => fmtDate_(new Date(today27.getTime() + (610 + n) * 86400000));
+    for (let i = 0; i < 3; i++) {
+      db.prepare(`
+        INSERT INTO reservations (store_id, realname, staff_name, menu, reservation_date, reservation_time, status)
+        VALUES (1, '上限テスト客29', '花子', 'テストメニュー', ?, '10:00', '確定')
+      `).run(limitDate(i));
+    }
+    const r = await hanako.postJson('/api/staff/reservations', {
+      realname: '上限テスト客29', staffName: '花子', menu: 'フェイシャル(60分)', date: limitDate(3), time: '10:00'
+    });
+    assert(r.status === 400 && r.body.success === false, '一般スタッフは予約上限を超える登録をハードブロックされる（オーバーライド不可）');
+
+    const rOwner = await ownerFresh.postJson('/api/staff/reservations', {
+      realname: '上限テスト客29', staffName: '寿子', menu: 'フェイシャル(60分)', date: limitDate(3), time: '10:00'
+    });
+    assert(rOwner.status === 200 && rOwner.body.success === false && rOwner.body.isLimitWarning === true,
+      'オーナーは予約上限超過時にisLimitWarningの確認メッセージを受け取る（ハードブロックされない）');
+
+    const rOwnerOverride = await ownerFresh.postJson('/api/staff/reservations', {
+      realname: '上限テスト客29', staffName: '寿子', menu: 'フェイシャル(60分)', date: limitDate(3), time: '10:00', ownerOverride: true
+    });
+    assert(rOwnerOverride.status === 200 && rOwnerOverride.body.success === true, 'オーナーはownerOverrideを指定すれば上限を超えて登録できる');
+
+    db.prepare(`DELETE FROM reservations WHERE store_id = 1 AND realname = '上限テスト客29'`).run();
+  }
+  {
+    // 他スタッフ（寿子）担当の予約を花子が編集しようとすると拒否される
+    const other = db.prepare(`
+      INSERT INTO reservations (store_id, realname, staff_name, menu, reservation_date, reservation_time, status)
+      VALUES (1, '他担当編集テスト29', '寿子', 'テストメニュー', ?, '11:00', '確定')
+    `).run(date29);
+    const r = await hanako.putJson(`/api/staff/reservations/${other.lastInsertRowid}`, {
+      staffName: '寿子', menu: 'フェイシャル(90分)', date: date29, time: '11:00', note: '変更試行'
+    });
+    assert(r.status === 403, '一般スタッフは他スタッフ担当の予約を編集できない');
+    db.prepare('DELETE FROM reservations WHERE id = ?').run(other.lastInsertRowid);
+  }
+  {
+    const r = await hanako.putJson(`/api/staff/reservations/${hanakoResvId29}`, {
+      staffName: '花子', menu: 'フェイシャル(90分)', date: date29, time: '09:00', note: '花子が自分で変更'
+    });
+    assert(r.status === 200 && r.body.success === true, '一般スタッフは自分担当の予約を編集できる');
+    const row = db.prepare('SELECT menu, note, editor FROM reservations WHERE id = ?').get(hanakoResvId29);
+    assert(!!row && row.menu === 'フェイシャル(90分)' && row.note === '花子が自分で変更' && row.editor === '花子',
+      '編集後の内容とeditor（編集者）が正しく保存されている');
+  }
+  {
+    // GAS版と同じく、変更後の担当自体には制限がない（元の担当が自分か未定であれば変更先は問わない）
+    const r = await hanako.putJson(`/api/staff/reservations/${hanakoResvId29}`, {
+      staffName: '寿子', menu: 'フェイシャル(90分)', date: date29, time: '09:00', note: '担当を寿子に変更'
+    });
+    assert(r.status === 200 && r.body.success === true, '一般スタッフは自分担当だった予約の担当を別スタッフに変更できる（GAS版と同じ挙動）');
+    db.prepare(`UPDATE reservations SET staff_name = '花子' WHERE id = ?`).run(hanakoResvId29); // 後続テストのため花子担当に戻す
+  }
+  {
+    // 他スタッフ担当の予約を花子がキャンセルしようとすると拒否される
+    const other = db.prepare(`
+      INSERT INTO reservations (store_id, realname, staff_name, menu, reservation_date, reservation_time, status)
+      VALUES (1, '他担当キャンセルテスト29', '寿子', 'テストメニュー', ?, '12:00', '確定')
+    `).run(date29);
+    const r = await hanako.del(`/api/staff/reservations/${other.lastInsertRowid}`);
+    assert(r.status === 403, '一般スタッフは他スタッフ担当の予約をキャンセルできない');
+    db.prepare('DELETE FROM reservations WHERE id = ?').run(other.lastInsertRowid);
+  }
+  {
+    const r = await hanako.del(`/api/staff/reservations/${hanakoResvId29}`);
+    assert(r.status === 200 && r.body.success === true, '一般スタッフは自分担当の予約をキャンセルできる');
+    const row = db.prepare('SELECT realname, editor FROM reservations WHERE id = ?').get(hanakoResvId29);
+    assert(!!row && row.realname === 'キャンセル' && row.editor === '花子', 'キャンセル後はrealnameが「キャンセル」・editorが花子になっている（物理削除しない）');
+  }
+  {
+    // オーナーは他スタッフ担当の予約でも編集・キャンセルできる（制限なし）
+    const other = db.prepare(`
+      INSERT INTO reservations (store_id, realname, staff_name, menu, reservation_date, reservation_time, status)
+      VALUES (1, 'オーナー操作テスト29', '花子', 'テストメニュー', ?, '13:00', '確定')
+    `).run(date29);
+    const rEdit = await ownerFresh.putJson(`/api/staff/reservations/${other.lastInsertRowid}`, {
+      staffName: '花子', menu: 'ハンド(45分)', date: date29, time: '13:00', note: 'オーナーが編集'
+    });
+    assert(rEdit.status === 200 && rEdit.body.success === true, 'オーナーは他スタッフ担当の予約でも編集できる');
+    const rCancel = await ownerFresh.del(`/api/staff/reservations/${other.lastInsertRowid}`);
+    assert(rCancel.status === 200 && rCancel.body.success === true, 'オーナーは他スタッフ担当の予約でもキャンセルできる');
+    db.prepare('DELETE FROM reservations WHERE id = ?').run(other.lastInsertRowid);
+  }
+  {
+    // 顧客登録：一般スタッフにも開放されている（GAS版registerCustomer_body_にオーナー限定の分岐はない）
+    const r = await hanako.postJson('/api/staff/customers', { realname: '花子登録29太郎', kana: 'ハナコトウロク29タロウ' });
+    assert(r.status === 200 && r.body.success === true && /^C\d{4}$/.test(r.body.customerId),
+      '一般スタッフは顧客マスタへ新規登録できる（GAS版に権限制限なし）');
+    const row = db.prepare(`SELECT * FROM customers WHERE store_id = 1 AND customer_id = ?`).get(r.body.customerId);
+    assert(!!row && row.realname === '花子登録29太郎', '登録した顧客が実際にcustomersテーブルへ保存されている');
+  }
+  {
+    // 本名重複チェック（①の分岐）は一般スタッフの登録でも働く
+    const r = await hanako.postJson('/api/staff/customers', { realname: '花子登録29太郎' });
+    assert(r.status === 409 && r.body.success === false, '一般スタッフの顧客登録でも本名の重複は拒否される');
+  }
+  {
+    const r = await fetch(BASE + '/api/staff/customers', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ realname: '未ログイン顧客登録29' })
+    }).then((res) => res.status);
+    assert(r === 401, '未ログインでは/api/staff/customersへの登録はできない');
+  }
+
+  // --------------------------------------------------------------------------
   console.log(`\n=== 結果: PASS ${passCount} / FAIL ${failCount} ===`);
   if (failCount > 0) {
     console.log('\n失敗した項目:');

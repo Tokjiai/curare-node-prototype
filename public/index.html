@@ -119,9 +119,18 @@
       <ul class="reserv-list" id="noticeList"></ul>
     </div>
 
+    <div class="card" id="blockedCard" style="display:none;">
+      <h2 class="section-title" style="color:#c0392b;">ご予約を承ることができません</h2>
+      <p style="font-size:14px; line-height:1.7; color:#333;">誠に恐れ入りますが、こちらのアカウントでのご予約は現在お受けできません。<br>ご不明な点がございましたら、お電話にてお問い合わせください。</p>
+    </div>
+
+    <div class="card" id="customerBadge" style="display:none; background:var(--pink-light);">
+      <p style="font-size:14px; color:var(--pink-accent);"><span id="customerBadgeName"></span>様、いつもご利用ありがとうございます。</p>
+    </div>
+
     <div class="card" id="formCard" style="display:none;">
       <h2 class="section-title">⑤ お客様情報を入力</h2>
-      <label>お名前</label>
+      <label id="nameInputLabel">お名前</label>
       <input type="text" id="nameInput" placeholder="例：山田 花子">
       <label>メインメニュー</label>
       <select id="menuSelect">

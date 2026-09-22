@@ -11,12 +11,53 @@ const state = {
   selectedTime: null,
   mainMenuItems: [],
   optionMenuItems: [],
-  selectedOptionIds: new Set()
+  selectedOptionIds: new Set(),
+  // ★2026-09-22追加：GAS版customer_form.htmlのcid連携（URLの?cid=顧客IDで
+  //   本人特定・受付拒否チェックを行う仕組み）。詳細はloadStoreInfo参照
+  customerId: null,
+  customerRecognized: false
 };
 
+// ★2026-09-22追加：URLの?cid=顧客IDを読み取る（GAS版doGetのe.parameter.cid相当。
+//   LINEから届く個別予約リンクに埋め込まれている想定）
+function getCidFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  return params.get('cid') || '';
+}
+
 async function loadStoreInfo() {
-  const res = await fetch(`/api/store?store=${state.storeSlug}`);
+  const cid = getCidFromUrl();
+  const url = cid ? `/api/store?store=${state.storeSlug}&cid=${encodeURIComponent(cid)}` : `/api/store?store=${state.storeSlug}`;
+  const res = await fetch(url);
   const data = await res.json();
+
+  // ★2026-09-22追加：GAS版getCustomerFormDataの移植（簡略版）。①予約フォーム受付拒否の
+  //   顧客は、入力を始める前にブロック画面を出して以降の表示を止める②本人特定できた
+  //   顧客は、お名前欄を編集不可で顧客マスタの本名を表示し、以後の送信にcustomerIdを
+  //   含める（GAS版のような新規/キープ/ビジターでのテーマ色・メニュー出し分けまでは
+  //   行っていない簡略版。README_PROTOTYPE.md参照）
+  if (data.customer && data.customer.bookingBlocked) {
+    document.getElementById('blockedCard').style.display = 'block';
+    document.querySelectorAll('.container > .card').forEach((el) => {
+      if (el.id !== 'blockedCard') el.style.display = 'none';
+    });
+    return;
+  }
+  if (data.customer && data.customer.found) {
+    state.customerId = data.customer.customerId;
+    state.customerRecognized = true;
+    const badge = document.getElementById('customerBadge');
+    document.getElementById('customerBadgeName').textContent = data.customer.realname;
+    badge.style.display = 'block';
+    // ★本人特定できている場合は、お名前欄を編集不可にして顧客マスタの本名を表示する
+    //   （GAS版同様、送信時もクライアントの入力値ではなくサーバー側で顧客マスタの
+    //   値を正として使う。server.jsのPOST /api/reservations参照）
+    const nameInput = document.getElementById('nameInput');
+    nameInput.value = data.customer.realname;
+    nameInput.readOnly = true;
+    nameInput.style.background = '#f5f5f5';
+    document.getElementById('nameInputLabel').textContent = 'お名前（ご登録内容から自動入力）';
+  }
   const sel = document.getElementById('staffSelect');
   sel.innerHTML = '';
   const optAny = document.createElement('option');
@@ -241,6 +282,9 @@ async function submitReservation() {
     note: note,
     editor: 'プロトタイプ画面'
   };
+  // ★本人特定できている場合はcustomerIdを一緒に送る。server.js側でこれを見て
+  //   本名等を顧客マスタの値で上書きし、受付拒否フラグも再チェックする
+  if (state.customerId) payload.customerId = state.customerId;
 
   const res = await fetch('/api/reservations', {
     method: 'POST',
