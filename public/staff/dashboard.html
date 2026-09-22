@@ -54,6 +54,7 @@
   .card .customer{font-size:13.5px; font-weight:600;}
   .card .badge-cancel{font-size:10.5px; color:var(--warn); background:var(--warn-soft); border-radius:6px; padding:2px 6px; font-weight:700;}
   .card .note{font-size:11.5px; color:var(--ink-faint); margin-top:4px;}
+  .card .confirm-btn{margin-top:8px; padding:6px 12px; border:none; border-radius:8px; background:var(--accent); color:#fff; font-family:inherit; font-size:12px; font-weight:700; cursor:pointer;}
 
   .shift-card{background:var(--accent-soft); color:var(--accent); border-radius:10px; padding:10px 14px; font-size:13.5px; font-weight:700; margin-bottom:8px;}
 
@@ -227,6 +228,26 @@
     return res.json();
   }
 
+  async function staffPost(url) {
+    const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+    if (res.status === 401) throw new Error('UNAUTHORIZED');
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.success === false) throw new Error(data.message || 'サーバーエラー: ' + res.status);
+    return data;
+  }
+
+  // ---- 仮予約→確定（GAS版staff_dashboard.htmlのconfirmReservation相当。
+  //      オーナー限定の分岐は無く、ログイン中のスタッフなら誰でも確定できる） ----
+  async function confirmReservation(id, name) {
+    if (!window.confirm(`${name}さんの予約を確定しますか？`)) return;
+    try {
+      await staffPost(`/api/staff/reservations/${id}/confirm`);
+      await Promise.all([loadUpcoming(), loadReservations(), loadCalendar()]);
+    } catch (e) {
+      alert(e.message === 'UNAUTHORIZED' ? 'セッションが切れました。再度ログインしてください' : ('確定に失敗しました：' + e.message));
+    }
+  }
+
   async function init() {
     try {
       const me = await staffFetch('/api/auth/me');
@@ -260,14 +281,19 @@
       rows.forEach((r) => {
         const card = document.createElement('div');
         card.className = 'card';
+        const isProvisional = r.status === '仮予約';
         card.innerHTML = `
           <div class="row1">
             <span class="time">${r.reservation_date} ${r.reservation_time}〜</span>
-            ${r.status === '仮予約' ? '<span class="badge-cancel">仮予約</span>' : ''}
+            ${isProvisional ? '<span class="badge-cancel">仮予約</span>' : ''}
           </div>
           <div class="customer">${r.realname}</div>
           <div class="menu">${r.menu || ''}</div>
+          ${isProvisional ? '<button type="button" class="confirm-btn">✅ 確定する</button>' : ''}
         `;
+        if (isProvisional) {
+          card.querySelector('.confirm-btn').addEventListener('click', () => confirmReservation(r.id, r.realname));
+        }
         el.appendChild(card);
       });
     } catch (e) {
@@ -302,17 +328,23 @@
       block.innerHTML = `<div class="day-label${isToday ? ' today' : ''}">${dStr}（<span class="${dowClass(d.getDay())}">${DOW_LABELS[i]}</span>）${isToday ? ' ・本日' : ''}</div>`;
       rows.forEach((r) => {
         const cancelled = r.realname === 'キャンセル';
+        const isProvisional = !cancelled && r.status === '仮予約';
         const card = document.createElement('div');
         card.className = 'card' + (cancelled ? ' cancelled' : '');
         card.innerHTML = `
           <div class="row1">
             <span class="time">${r.reservation_time}〜</span>
             ${cancelled ? '<span class="badge-cancel">キャンセル</span>' : ''}
+            ${isProvisional ? '<span class="badge-cancel">仮予約</span>' : ''}
           </div>
           <div class="customer">${cancelled ? (r.kana || '（顧客名不明）') : r.realname}</div>
           <div class="menu">${r.menu || ''}</div>
           ${r.note ? `<div class="note">${r.note}</div>` : ''}
+          ${isProvisional ? '<button type="button" class="confirm-btn">✅ 確定する</button>' : ''}
         `;
+        if (isProvisional) {
+          card.querySelector('.confirm-btn').addEventListener('click', () => confirmReservation(r.id, r.realname));
+        }
         block.appendChild(card);
       });
       listEl.appendChild(block);

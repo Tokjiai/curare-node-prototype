@@ -801,11 +801,16 @@ app.post('/api/staff/reservations', requireStaffSession, (req, res) => {
       }
     }
 
+    // ★2026-09-22追加：スタッフ用エンドポイントでも「仮予約として登録」チェックに対応
+    //   （オーナー用/api/admin/reservationsと同じ仕組み。31章：スタッフダッシュボードの
+    //   仮予約確定操作を実装するにあたり、これまでstatusが常に'確定'固定だった漏れに気付き修正）
+    const status = data.provisional ? '仮予約' : '確定';
+
     const insert = db.prepare(`
       INSERT INTO reservations
         (store_id, realname, kana, line_name, user_id, staff_name, menu, reservation_date, reservation_time, note, editor, line_sent, done, customer_id, status)
       VALUES
-        (@store_id, @realname, @kana, '', '', @staff_name, @menu, @reservation_date, @reservation_time, @note, @editor, 0, 0, @customer_id, '確定')
+        (@store_id, @realname, @kana, '', '', @staff_name, @menu, @reservation_date, @reservation_time, @note, @editor, 0, 0, @customer_id, @status)
     `);
 
     let info;
@@ -820,7 +825,8 @@ app.post('/api/staff/reservations', requireStaffSession, (req, res) => {
         reservation_time: data.time,
         note: data.note || '',
         editor: staffName,
-        customer_id: data.customerId || ''
+        customer_id: data.customerId || '',
+        status
       });
     } catch (constraintErr) {
       if (String(constraintErr.message).includes('UNIQUE constraint failed')) {
@@ -833,7 +839,11 @@ app.post('/api/staff/reservations', requireStaffSession, (req, res) => {
       throw constraintErr;
     }
 
-    res.json({ success: true, message: '✅ 予約を登録しました', reservationId: info.lastInsertRowid });
+    res.json({
+      success: true,
+      message: status === '仮予約' ? '✅ 仮予約として登録しました（確定操作が必要です）' : '✅ 予約を登録しました',
+      reservationId: info.lastInsertRowid
+    });
   } catch (e) {
     console.error(e);
     res.status(500).json({ success: false, error: e.message });
@@ -1418,6 +1428,52 @@ app.post('/api/admin/reservations/:id/confirm', requireOwnerSession, (req, res) 
 
     // ★LINE通知はあくまで付加機能。ここでの失敗が確定操作自体を妨げてはならないため、
     //   awaitせずfire-and-forgetし、例外は.catchで握りつぶしてログにのみ残す。
+    try {
+      if (row.customer_id) {
+        const customer = db.prepare('SELECT * FROM customers WHERE store_id = ? AND customer_id = ?').get(storeId, row.customer_id);
+        const store = db.prepare('SELECT * FROM stores WHERE id = ?').get(storeId);
+        notifyReservationConfirmed(store, customer, {
+          staffName: row.staff_name, menu: row.menu, date: row.reservation_date, time: row.reservation_time
+        }, 'confirm_finalize').catch((notifyErr) => {
+          console.error('LINE通知処理でエラー（確定操作自体は成功しているため無視）:', notifyErr);
+        });
+      }
+    } catch (notifySyncErr) {
+      console.error('LINE通知の呼び出し準備でエラー（確定操作自体は成功しているため無視）:', notifySyncErr);
+    }
+
+    res.json({ success: true, message: '予約を確定しました' });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// ★2026-09-22追加：スタッフダッシュボードからの仮予約確定（GAS版staff_dashboard.html
+//   の confirmReservation 相当）。GAS版はconfirmReservation_body_にオーナー限定の
+//   分岐が一切なく、ログイン中のスタッフなら誰でも確定操作ができる仕様だったため、
+//   上のオーナー専用エンドポイントとは別に、一般スタッフでも呼べるエンドポイントを
+//   新設した（requireStaffSessionのみ、isOwnerチェック無し）。バリデーション内容は
+//   オーナー版と完全に同一（仮予約以外は400、担当が未定のままなら400）。
+// ----------------------------------------------------------------------------
+app.post('/api/staff/reservations/:id/confirm', requireStaffSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const id = Number(req.params.id);
+    const row = db.prepare('SELECT * FROM reservations WHERE id = ? AND store_id = ?').get(id, storeId);
+    if (!row) {
+      return res.status(404).json({ success: false, message: '対象の予約が見つかりません' });
+    }
+    if (row.status !== '仮予約') {
+      return res.status(400).json({ success: false, message: 'この予約はすでに確定済みです' });
+    }
+    if (!row.staff_name || row.staff_name === '未定') {
+      return res.status(400).json({ success: false, message: '❌ 担当スタッフが未定のため確定できません。先に担当を設定してください' });
+    }
+
+    db.prepare(`UPDATE reservations SET status = '確定', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(id);
+
     try {
       if (row.customer_id) {
         const customer = db.prepare('SELECT * FROM customers WHERE store_id = ? AND customer_id = ?').get(storeId, row.customer_id);

@@ -1820,6 +1820,56 @@ async function main() {
   }
 
   // --------------------------------------------------------------------------
+  // 31. スタッフダッシュボードからの仮予約確定（一般スタッフ開放、GAS版と同じ権限）
+  // --------------------------------------------------------------------------
+  console.log('--- 31. スタッフダッシュボードからの仮予約確定 ---');
+  let staffProvisionalId = null;
+  {
+    const d = new Date(); d.setDate(d.getDate() + 32);
+    const dateStr = d.toISOString().slice(0, 10);
+    const r = await hanako.postJson('/api/staff/reservations', {
+      realname: 'スタッフ確定テスト', staffName: '花子', menu: 'テストメニュー', date: dateStr, time: '13:00', provisional: true
+    });
+    assert(r.status === 200 && r.body.success === true, '一般スタッフが仮予約として新規登録できる（29章の既存API）');
+    staffProvisionalId = r.body.reservationId;
+  }
+  {
+    const anonConfirm = makeSession();
+    const r = await anonConfirm.postJson('/api/staff/reservations/' + staffProvisionalId + '/confirm', {});
+    assert(r.status === 401, '未ログインでは仮予約を確定できない');
+  }
+  {
+    const r = await owner2.postJson('/api/staff/reservations/' + staffProvisionalId + '/confirm', {});
+    assert(r.status === 404, '他店舗のスタッフ/オーナーは他店の仮予約を確定できない（店舗スコープ確認）');
+  }
+  {
+    const r = await hanako.postJson('/api/staff/reservations/' + staffProvisionalId + '/confirm', {});
+    assert(r.status === 200 && r.body.success === true, '一般スタッフ（オーナーでない）が仮予約を確定できる（GAS版confirmReservation_body_と同じくオーナー限定の分岐は無い）');
+  }
+  {
+    const r = await ownerFresh.get('/api/admin/reservations?from=2026-01-01&to=2027-12-31');
+    const row = (r.body.reservations || []).find((x) => x.id === staffProvisionalId);
+    assert(!!row && row.status === '確定', '一般スタッフによる確定操作後もstatus=確定に変わる');
+  }
+  {
+    const r = await hanako.postJson('/api/staff/reservations/' + staffProvisionalId + '/confirm', {});
+    assert(r.status === 400 && /すでに確定済み/.test(r.body.message), 'すでに確定済みの予約を一般スタッフが再度確定しようとすると拒否される');
+  }
+  {
+    const r = await hanako.postJson('/api/staff/reservations/999999/confirm', {});
+    assert(r.status === 404, '存在しない予約IDの確定操作（スタッフ版）は404になる');
+  }
+  {
+    const d = new Date(); d.setDate(d.getDate() + 33);
+    const dateStr = d.toISOString().slice(0, 10);
+    const r = await hanako.postJson('/api/staff/reservations', {
+      realname: '担当未定スタッフ確定テスト', staffName: '未定', menu: 'テストメニュー', date: dateStr, time: '13:00', provisional: true
+    });
+    const confirmR = await hanako.postJson('/api/staff/reservations/' + r.body.reservationId + '/confirm', {});
+    assert(confirmR.status === 400 && /担当スタッフが未定/.test(confirmR.body.message), '担当スタッフが「未定」のままの仮予約は一般スタッフでも確定操作できない');
+  }
+
+  // --------------------------------------------------------------------------
   console.log(`\n=== 結果: PASS ${passCount} / FAIL ${failCount} ===`);
   if (failCount > 0) {
     console.log('\n失敗した項目:');
