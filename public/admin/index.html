@@ -125,6 +125,9 @@
           その仕組み（スケジューラ）を用意していないため、ボタンで手動実行する形に
           しています。①予約日が過ぎた予約を「施術完了」扱いに自動更新し、②完了済みの
           予約数から顧客ごとの来店回数を再集計します（現在の値より多い場合のみ更新）。
+          ③キャンセル済みの予約のうち、店舗設定「基本ルール」の日数より前のものを
+          削除します（初期値60日）。④店舗設定「シフト初期値」の曜日パターンから
+          決まった日数先のシフトを自動展開し、⑤7日より前の古いシフトを削除します。
         </p>
         <button id="runMaintenanceBtn" class="btn-import">日次メンテナンスを今すぐ実行</button>
         <div id="maintenanceResult" style="margin-top:10px;font-size:13px;white-space:pre-wrap;"></div>
@@ -251,7 +254,10 @@
       out.textContent =
         `✅ 完了（${data.today}時点）\n` +
         `①施術完了に更新した予約：${data.executedUpdated}件\n` +
-        `②来店回数を更新した顧客：${data.visitsUpdated}件（対象${data.customersChecked}名を確認）`;
+        `②来店回数を更新した顧客：${data.visitsUpdated}件（対象${data.customersChecked}名を確認）\n` +
+        `③削除した古いキャンセル予約：${data.cancelledDeleted}件（${data.cancelDeleteDays}日より前が対象）\n` +
+        `④自動展開したシフト：${data.shiftsExpanded}件（${data.shiftExpandTargetDate}分、${data.shiftExpandDays}日先）\n` +
+        `⑤削除した古いシフト：${data.oldShiftsDeleted}件（7日より前が対象）`;
       const dash = await adminFetch('/api/admin/dashboard');
       renderDashboard(dash);
     } catch (e) {

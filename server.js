@@ -1210,6 +1210,91 @@ app.delete('/api/admin/shifts/:id', requireOwnerSession, (req, res) => {
   }
 });
 
+// ----------------------------------------------------------------------------
+// ★2026-09-22追加：シフト初期値（曜日パターン）のCRUD
+//   GAS版の「シフト初期値」シート相当。ここに登録した「スタッフ×曜日×時刻」を
+//   もとに、日次メンテナンスがSHIFT_EXPAND_DAYS日先の1日分をshift_masterへ
+//   自動展開する（GAS版expandShiftByRule_の移植、下のmaintenance/run-dailyを参照）。
+//
+// GET    /api/admin/settings/shift-templates
+// POST   /api/admin/settings/shift-templates    { staffName, dayOfWeek, startTime, endTime }
+// PUT    /api/admin/settings/shift-templates/:id { isActive } … 一時停止/再開の切替
+// DELETE /api/admin/settings/shift-templates/:id
+// ----------------------------------------------------------------------------
+app.get('/api/admin/settings/shift-templates', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const rows = db.prepare(
+      'SELECT * FROM shift_templates WHERE store_id = ? ORDER BY day_of_week ASC, staff_name ASC'
+    ).all(storeId);
+    res.json({ templates: rows });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/admin/settings/shift-templates', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const { staffName, dayOfWeek, startTime, endTime } = req.body || {};
+    const dow = Number(dayOfWeek);
+    if (!staffName || Number.isNaN(dow) || dow < 0 || dow > 6 || !startTime || !endTime) {
+      return res.status(400).json({ success: false, message: 'staffName / dayOfWeek(0〜6) / startTime / endTime は必須です' });
+    }
+    if (startTime >= endTime) {
+      return res.status(400).json({ success: false, message: '終了時間は開始時間より後にしてください' });
+    }
+    const staffExists = db.prepare(
+      'SELECT 1 FROM staff WHERE store_id = ? AND name = ? AND is_active = 1'
+    ).get(storeId, staffName);
+    if (!staffExists) {
+      return res.status(400).json({ success: false, message: '在籍中のスタッフとして見つかりません' });
+    }
+    const info = db.prepare(`
+      INSERT INTO shift_templates (store_id, staff_name, day_of_week, start_time, end_time, is_active)
+      VALUES (?, ?, ?, ?, ?, 1)
+    `).run(storeId, staffName, dow, startTime, endTime);
+    res.json({ success: true, templateId: info.lastInsertRowid });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.put('/api/admin/settings/shift-templates/:id', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const id = Number(req.params.id);
+    const row = db.prepare('SELECT id FROM shift_templates WHERE id = ? AND store_id = ?').get(id, storeId);
+    if (!row) {
+      return res.status(404).json({ success: false, message: '対象のシフト初期値が見つかりません' });
+    }
+    const isActive = req.body && typeof req.body.isActive !== 'undefined' ? (req.body.isActive ? 1 : 0) : 1;
+    db.prepare('UPDATE shift_templates SET is_active = ? WHERE id = ?').run(isActive, id);
+    res.json({ success: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.delete('/api/admin/settings/shift-templates/:id', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const id = Number(req.params.id);
+    const row = db.prepare('SELECT id FROM shift_templates WHERE id = ? AND store_id = ?').get(id, storeId);
+    if (!row) {
+      return res.status(404).json({ success: false, message: '対象のシフト初期値が見つかりません' });
+    }
+    db.prepare('DELETE FROM shift_templates WHERE id = ?').run(id);
+    res.json({ success: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // ============================================================================
 // ★2026-09-19追加：店舗設定（GAS版owner_ui.htmlの「店舗設定」パネルに相当）
 //   基本ルール（rule1シート相当）・営業時間帯（zonesシート相当）・
@@ -1853,9 +1938,28 @@ app.post('/api/admin/import-sample-data', requireOwnerSession, (req, res) => {
 //   自動更新②来店回数の再集計③古いキャンセル予約の削除④シフト自動展開などを
 //   一括で行っていた。このプロトタイプはRenderの無料枠で動いており、Node側に
 //   まだ常駐のスケジューラ（node-cron等）を用意していないため、GAS版と全く同じ
-//   「毎日決まった時刻に自動実行」は今回は対象外とし、まずは効果が分かりやすく
-//   単独で意味のある①②の2ステップだけを、オーナー管理画面から手動実行できる
-//   ボタンとして再現した（本番運用では別途スケジューラの整備が必要。README明記）。
+//   「毎日決まった時刻に自動実行」は今回は対象外とし、効果が分かりやすく単独で
+//   意味のあるステップを、オーナー管理画面から手動実行できるボタンとして
+//   再現した（本番運用では別途スケジューラの整備が必要。README明記）。
+//
+//   【③古いキャンセル予約の削除】GAS版deleteCancelledReservations相当
+//   （2026-09-22追加）。キャンセル済み（realname='キャンセル'）かつ予約日が
+//   CANCEL_DELETE_DAYS（店舗設定「基本ルール」、デフォルト60日）より前の予約を
+//   物理削除する。GAS版はシート容量の圧迫を避けるための処理だったが、Node/SQLite
+//   では容量制約は薄いものの、GAS版と同じ運用感（古いキャンセルはいずれ消える）を
+//   保つため同じ挙動で移植した。GAS版は予約シートとarchiveシート（月次アーカイブ後
+//   のシート）の両方が対象だったが、Node版にはarchiveの仕組み自体が無い（未移植）
+//   ため、reservationsテーブルのみを対象にしている。
+//
+//   【④シフトの自動展開・⑤古いシフトの削除】GAS版dailyProcessShiftMaster
+//   （expandShiftByRule_・deleteOldShifts_）相当（2026-09-22追加）。店舗設定
+//   「シフト初期値」に登録した曜日パターン（スタッフ×曜日×時刻）から、
+//   SHIFT_EXPAND_DAYS（デフォルト49日、GAS版と同じ既定値）日先の1日分を
+//   shift_masterへ自動展開し、7日より前の古いshift_master行を削除する。
+//   GAS版にあったremoveDuplicateShifts_（重複行の有効フラグ再計算）は、GAS版が
+//   「行を追記していく」設計のために必要だった仕組みで、Node版はシフトの追加・
+//   削除がそもそも直接CRUD（POST/DELETE /api/admin/shifts）のため重複が蓄積
+//   しない設計になっており、移植の必要が無い（README明記）。
 //
 //   【①実行済み（施術完了）フラグの自動更新】GAS版updateExecutedFlags_相当。
 //   予約日が「今日」より前で、まだ完了扱いになっていない（done=0）有効な予約
@@ -1905,12 +2009,66 @@ app.post('/api/admin/maintenance/run-daily', requireOwnerSession, (req, res) => 
       if (result.changes > 0) visitsUpdated++;
     });
 
+    // ③ 古いキャンセル予約の削除（CANCEL_DELETE_DAYSより前のキャンセル予約を物理削除）
+    const cancelDeleteDays = Number(engine.getRuleValue_(storeId, 'CANCEL_DELETE_DAYS')) || 60;
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - cancelDeleteDays);
+    const cutoffStr = fmt(cutoffDate);
+    const deletedResult = db.prepare(`
+      DELETE FROM reservations WHERE store_id = ? AND realname = 'キャンセル' AND reservation_date < ?
+    `).run(storeId, cutoffStr);
+    const cancelledDeleted = deletedResult.changes;
+
+    // ④ シフトの自動展開（店舗設定「シフト初期値」の曜日パターンから、SHIFT_EXPAND_DAYS
+    //   日先の1日分をshift_masterへ展開する。GAS版expandShiftByRule_相当。2026-09-22追加）
+    //   ★GAS版は実行のたびに末尾へ無条件で行を追記する設計だったが、Node版では同じ
+    //   （店舗・スタッフ・日付）の組み合わせが既にshift_masterに存在する場合は
+    //   スキップする（INSERT前にNOT EXISTSで確認）。同じ日に日次メンテナンスを
+    //   複数回実行しても重複登録されないようにするための安全策で、GAS版より堅牢にした。
+    const shiftExpandDays = Number(engine.getRuleValue_(storeId, 'SHIFT_EXPAND_DAYS')) || 49;
+    const targetDate = new Date();
+    targetDate.setDate(targetDate.getDate() + shiftExpandDays);
+    const targetDateStr = fmt(targetDate);
+    const targetDayOfWeek = targetDate.getDay(); // 0=日〜6=土
+    const templates = db.prepare(`
+      SELECT staff_name, start_time, end_time FROM shift_templates
+      WHERE store_id = ? AND day_of_week = ? AND is_active = 1
+    `).all(storeId, targetDayOfWeek);
+    const insertShiftFromTemplate = db.prepare(`
+      INSERT INTO shift_master (store_id, staff_name, shift_date, start_time, end_time, is_active)
+      VALUES (?, ?, ?, ?, ?, 1)
+    `);
+    const existsShift = db.prepare(`
+      SELECT 1 FROM shift_master WHERE store_id = ? AND staff_name = ? AND shift_date = ?
+    `);
+    let shiftsExpanded = 0;
+    templates.forEach((t) => {
+      if (existsShift.get(storeId, t.staff_name, targetDateStr)) return;
+      insertShiftFromTemplate.run(storeId, t.staff_name, targetDateStr, t.start_time, t.end_time);
+      shiftsExpanded++;
+    });
+
+    // ⑤ 古いシフトの削除（7日より前のshift_master行を物理削除。GAS版deleteOldShifts_相当）
+    const shiftCutoff = new Date();
+    shiftCutoff.setDate(shiftCutoff.getDate() - 7);
+    const shiftCutoffStr = fmt(shiftCutoff);
+    const shiftDeletedResult = db.prepare(`
+      DELETE FROM shift_master WHERE store_id = ? AND shift_date < ?
+    `).run(storeId, shiftCutoffStr);
+    const oldShiftsDeleted = shiftDeletedResult.changes;
+
     res.json({
       success: true,
       today: todayStr,
       executedUpdated,
       visitsUpdated,
-      customersChecked: counts.length
+      customersChecked: counts.length,
+      cancelledDeleted,
+      cancelDeleteDays,
+      shiftsExpanded,
+      shiftExpandDays,
+      shiftExpandTargetDate: targetDateStr,
+      oldShiftsDeleted
     });
   } catch (e) {
     console.error(e);

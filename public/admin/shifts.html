@@ -108,6 +108,37 @@
         <div class="day-grid" id="dayGrid"></div>
         <div class="hint">枠の「＋」から追加、シフトの「×」から削除できます。休業日設定（店休日）は今回の対象外です。</div>
       </div>
+
+      <div class="panel">
+        <h2 style="font-size:14px; font-weight:600; margin-bottom:6px;">シフト初期値（曜日パターンの自動展開）</h2>
+        <p style="font-size:12.5px; color:var(--ink-soft); margin-bottom:14px; line-height:1.7;">
+          ここに登録した「スタッフ×曜日×時刻」のパターンをもとに、ダッシュボードの
+          「日次メンテナンスを今すぐ実行」ボタンを押すたびに、店舗設定「基本ルール」の
+          SHIFT_EXPAND_DAYS（初期値49日）先の1日分が上のシフト表へ自動的に追加されます
+          （手動で毎回追加する手間を減らすための一括登録機能。既に追加済みの日は重複登録されません）。
+        </p>
+        <table style="width:100%; border-collapse:collapse; font-size:12.5px;">
+          <thead>
+            <tr style="text-align:left; color:var(--ink-soft); border-bottom:1px solid var(--line);">
+              <th style="padding:6px 4px;">スタッフ</th>
+              <th style="padding:6px 4px;">曜日</th>
+              <th style="padding:6px 4px;">開始</th>
+              <th style="padding:6px 4px;">終了</th>
+              <th style="padding:6px 4px;">有効</th>
+              <th style="padding:6px 4px;"></th>
+            </tr>
+          </thead>
+          <tbody id="templateBody"></tbody>
+        </table>
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:12px;">
+          <select id="tplStaff" style="padding:8px 10px; border:1px solid var(--line); border-radius:8px; font-family:inherit; font-size:13px;"></select>
+          <select id="tplDow" style="padding:8px 10px; border:1px solid var(--line); border-radius:8px; font-family:inherit; font-size:13px;"></select>
+          <input type="time" id="tplStart" value="09:30" style="padding:7px 8px; border:1px solid var(--line); border-radius:8px; font-family:inherit; font-size:13px;">
+          <input type="time" id="tplEnd" value="18:00" style="padding:7px 8px; border:1px solid var(--line); border-radius:8px; font-family:inherit; font-size:13px;">
+          <button id="tplAddBtn" type="button" class="week-nav button" style="padding:8px 14px; border:1px solid var(--line); border-radius:9px; background:#fff; cursor:pointer; font-family:inherit; font-size:13px; color:var(--accent); font-weight:600;">＋ パターンを追加</button>
+        </div>
+        <div class="modal-err" id="tplErr" style="display:block; color:var(--warn); font-size:12px; margin-top:8px; min-height:1em;"></div>
+      </div>
     </div>
   </div>
 
@@ -159,6 +190,11 @@
   }
   function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate()+n); return x; }
   const DOW_LABELS = ['月','火','水','木','金','土','日'];
+  // ★シフト初期値のday_of_week列はJSのDate.getDay()と同じ0=日〜6=土だが、
+  //   UI上は週表示に合わせて月曜始まりの並びで表示する
+  const DOW_OPTIONS = ['月','火','水','木','金','土','日'];
+  const DOW_VALUES  = [1, 2, 3, 4, 5, 6, 0];
+  const DOW_LABEL_BY_VALUE = { 0: '日', 1: '月', 2: '火', 3: '水', 4: '木', 5: '金', 6: '土' };
 
   async function adminFetch(url) {
     const res = await fetch(url);
@@ -175,7 +211,12 @@
       staffList = (staffData.staff || []).filter((s) => s.is_active);
       const select = document.getElementById('addStaff');
       select.innerHTML = staffList.map((s) => `<option value="${escAttr(s.name)}">${escAttr(s.name)}${s.role ? '（' + escAttr(s.role) + '）' : ''}</option>`).join('');
+      const tplStaffSelect = document.getElementById('tplStaff');
+      tplStaffSelect.innerHTML = staffList.map((s) => `<option value="${escAttr(s.name)}">${escAttr(s.name)}</option>`).join('');
+      const tplDowSelect = document.getElementById('tplDow');
+      tplDowSelect.innerHTML = DOW_OPTIONS.map((label, i) => `<option value="${DOW_VALUES[i]}">${label}</option>`).join('');
       await loadWeek();
+      await loadTemplates();
       loadingMsg.style.display = 'none';
       shell.classList.add('ready');
     } catch (e) {
@@ -291,6 +332,67 @@
       alert('削除に失敗しました: ' + e.message);
     }
   }
+
+  // ---------- シフト初期値（曜日パターン） ----------
+  async function loadTemplates() {
+    const data = await adminFetch('/api/admin/settings/shift-templates');
+    const tbody = document.getElementById('templateBody');
+    tbody.innerHTML = '';
+    (data.templates || []).forEach((t) => {
+      const tr = document.createElement('tr');
+      tr.style.borderBottom = '1px solid var(--line)';
+      tr.innerHTML = `
+        <td style="padding:6px 4px;">${esc(t.staff_name)}</td>
+        <td style="padding:6px 4px;">${esc(DOW_LABEL_BY_VALUE[t.day_of_week])}</td>
+        <td style="padding:6px 4px;">${esc(t.start_time)}</td>
+        <td style="padding:6px 4px;">${esc(t.end_time)}</td>
+        <td style="padding:6px 4px;"><input type="checkbox" class="tpl-active" ${t.is_active ? 'checked' : ''}></td>
+        <td style="padding:6px 4px;"><span class="del" data-tpl-del="${t.id}" style="cursor:pointer; color:var(--ink-faint); font-weight:700;">×</span></td>
+      `;
+      const chk = tr.querySelector('.tpl-active');
+      chk.addEventListener('change', async () => {
+        try {
+          await fetch(`/api/admin/settings/shift-templates/${t.id}`, {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ isActive: chk.checked })
+          });
+        } catch (e) { alert('更新に失敗しました: ' + e.message); }
+      });
+      tbody.appendChild(tr);
+    });
+    tbody.querySelectorAll('[data-tpl-del]').forEach((el) => {
+      el.addEventListener('click', () => deleteTemplate(Number(el.dataset.tplDel)));
+    });
+  }
+
+  async function deleteTemplate(id) {
+    if (!confirm('このシフト初期値パターンを削除しますか？')) return;
+    try {
+      const res = await fetch(`/api/admin/settings/shift-templates/${id}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (!res.ok || !data.success) { alert('削除に失敗しました: ' + (data.message || res.status)); return; }
+      loadTemplates();
+    } catch (e) { alert('削除に失敗しました: ' + e.message); }
+  }
+
+  document.getElementById('tplAddBtn').addEventListener('click', async () => {
+    const errBox = document.getElementById('tplErr');
+    errBox.textContent = '';
+    try {
+      const res = await fetch('/api/admin/settings/shift-templates', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          staffName: document.getElementById('tplStaff').value,
+          dayOfWeek: Number(document.getElementById('tplDow').value),
+          startTime: document.getElementById('tplStart').value,
+          endTime: document.getElementById('tplEnd').value
+        })
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) { errBox.textContent = data.message || 'サーバーエラー'; return; }
+      loadTemplates();
+    } catch (e) { errBox.textContent = 'エラー: ' + e.message; }
+  });
 
   document.getElementById('prevWeekBtn').addEventListener('click', () => { weekStart = addDays(weekStart, -7); loadWeek(); });
   document.getElementById('nextWeekBtn').addEventListener('click', () => { weekStart = addDays(weekStart, 7); loadWeek(); });

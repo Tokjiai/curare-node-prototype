@@ -106,6 +106,23 @@ CREATE TABLE IF NOT EXISTS shift_master (
 );
 
 -- ----------------------------------------------------------------------------
+-- shift_templates：シフトの曜日パターン（GASの「シフト初期値」シートに相当）
+--   2026-09-22追加：GAS版expandShiftByRule_の移植に伴い新規追加。ここに登録した
+--   「スタッフ×曜日×時刻」の週次パターンをもとに、日次メンテナンスが
+--   SHIFT_EXPAND_DAYS日先の1日分をshift_masterへ自動展開する。
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS shift_templates (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  store_id      INTEGER NOT NULL REFERENCES stores(id),
+  staff_name    VARCHAR(50) NOT NULL,      -- staff.name と一致（本名）
+  day_of_week   INTEGER NOT NULL,          -- 0=日,1=月,2=火,3=水,4=木,5=金,6=土（JSのDate.getDay()に合わせる）
+  start_time    VARCHAR(5) NOT NULL,       -- 'HH:MM'
+  end_time      VARCHAR(5) NOT NULL,       -- 'HH:MM'
+  is_active     BOOLEAN NOT NULL DEFAULT 1,-- OFFにすると展開対象から外れる（行は残したまま一時停止できる）
+  created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ----------------------------------------------------------------------------
 -- reservations：予約データ（GASの「予約データ」シートに相当）
 --   列の対応関係は GAS版 コード.js の COL_Y_* 定数を踏襲：
 --     COL_Y_REALNAME=1, COL_Y_KANA=2, COL_Y_LINENAME=3, COL_Y_USERID=4,
@@ -325,6 +342,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_no_double_booking
   WHERE realname != 'キャンセル';
 CREATE INDEX IF NOT EXISTS idx_shift_store_date          ON shift_master(store_id, shift_date);
 CREATE INDEX IF NOT EXISTS idx_shift_staff_date           ON shift_master(store_id, staff_name, shift_date);
+CREATE INDEX IF NOT EXISTS idx_shift_template_store_dow   ON shift_templates(store_id, day_of_week);
 CREATE INDEX IF NOT EXISTS idx_events_store_date          ON events(store_id, event_date);
 
 -- ============================================================================

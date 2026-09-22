@@ -87,6 +87,8 @@ function seedData() {
   insertRule.run(storeId, 'BOOKING_LIMIT_DAYS', '何日先まで予約受付可能か', '49');
   insertRule.run(storeId, 'BED_LIMIT', '同時施術可能なベッド数', '2');
   insertRule.run(storeId, 'MAX_RESERVATIONS_PER_CUSTOMER', '1顧客あたりの確定予約上限', '3');
+  insertRule.run(storeId, 'CANCEL_DELETE_DAYS', 'キャンセル済み予約を自動削除するまでの日数', '60');
+  insertRule.run(storeId, 'SHIFT_EXPAND_DAYS', 'シフトを何日先まで自動展開するか', '49');
 
   // --- ゾーン設定（zonesシート相当。GASのデフォルト値と同じ） -----------------
   const insertZone = db.prepare(`
@@ -139,6 +141,16 @@ function seedData() {
       if (s.name === '花子' && i % 6 === 5) return;
       insertShift.run(storeId, s.name, dateStr, s.start, s.end);
     });
+  }
+
+  // --- シフト初期値（曜日パターン）：寿子は月〜土フル出勤、花子は火〜土の昼〜夕方 ---
+  const insertShiftTemplate = db.prepare(`
+    INSERT INTO shift_templates (store_id, staff_name, day_of_week, start_time, end_time, is_active)
+    VALUES (?, ?, ?, ?, ?, 1)
+  `);
+  for (let dow = 1; dow <= 6; dow++) { // 1=月〜6=土
+    insertShiftTemplate.run(storeId, '寿子', dow, '09:30', '22:30');
+    if (dow !== 1) insertShiftTemplate.run(storeId, '花子', dow, '09:30', '18:00'); // 月休み
   }
 
   // --- イベント（店休日）：7日後を「臨時休業」にして「店休」判定を確認できるようにする ---

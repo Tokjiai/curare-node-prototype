@@ -1089,13 +1089,143 @@ async function main() {
     const row = db.prepare('SELECT done FROM reservations WHERE id = ?').get(addR.body.reservationId);
     assert(row.done === 0, 'キャンセル済みの過去日予約はメンテナンスの完了フラグ更新対象にならない');
   }
+  {
+    // ★2026-09-22追加：③古いキャンセル予約の削除（GAS版deleteCancelledReservations相当）
+    // CANCEL_DELETE_DAYS（デフォルト60日）より新しいキャンセル予約は削除されない
+    const dRecent = new Date(); dRecent.setDate(dRecent.getDate() - 5);
+    const recentR = await ownerFresh.postJson('/api/admin/reservations', {
+      realname: '直近キャンセルテスト', staffName: '花子', menu: 'テストメニュー', date: dRecent.toISOString().slice(0, 10), time: '11:00'
+    });
+    await ownerFresh.request(`/api/admin/reservations/${recentR.body.reservationId}`, { method: 'DELETE' });
+
+    // CANCEL_DELETE_DAYSより古いキャンセル予約は削除される
+    const dOld = new Date(); dOld.setDate(dOld.getDate() - 90);
+    const oldR = await ownerFresh.postJson('/api/admin/reservations', {
+      realname: '古いキャンセルテスト', staffName: '花子', menu: 'テストメニュー', date: dOld.toISOString().slice(0, 10), time: '11:30'
+    });
+    await ownerFresh.request(`/api/admin/reservations/${oldR.body.reservationId}`, { method: 'DELETE' });
+
+    const r = await ownerFresh.postJson('/api/admin/maintenance/run-daily', {});
+    assert(r.status === 200 && r.body.cancelDeleteDays === 60, 'メンテナンス実行結果にCANCEL_DELETE_DAYS（デフォルト60日）が返る');
+    assert(r.body.cancelledDeleted >= 1, '③60日より前のキャンセル予約が1件以上削除される');
+
+    const recentRow = db.prepare('SELECT id FROM reservations WHERE id = ?').get(recentR.body.reservationId);
+    assert(!!recentRow, '60日以内の直近キャンセル予約は削除されずに残る');
+    const oldRow = db.prepare('SELECT id FROM reservations WHERE id = ?').get(oldR.body.reservationId);
+    assert(!oldRow, '60日より前の古いキャンセル予約は物理削除される');
+  }
+  {
+    // 店舗設定「基本ルール」からCANCEL_DELETE_DAYSを短縮すると、より新しいキャンセルも削除対象になる
+    const dMid = new Date(); dMid.setDate(dMid.getDate() - 10);
+    const midR = await ownerFresh.postJson('/api/admin/reservations', {
+      realname: '10日前キャンセルテスト', staffName: '花子', menu: 'テストメニュー', date: dMid.toISOString().slice(0, 10), time: '12:00'
+    });
+    await ownerFresh.request(`/api/admin/reservations/${midR.body.reservationId}`, { method: 'DELETE' });
+
+    await ownerFresh.putJson('/api/admin/settings/rules/CANCEL_DELETE_DAYS', { value: '7' });
+    const r = await ownerFresh.postJson('/api/admin/maintenance/run-daily', {});
+    assert(r.status === 200 && r.body.cancelDeleteDays === 7, '店舗設定でCANCEL_DELETE_DAYSを7日に変更すると、その値がメンテナンス結果に反映される');
+    const midRow = db.prepare('SELECT id FROM reservations WHERE id = ?').get(midR.body.reservationId);
+    assert(!midRow, 'CANCEL_DELETE_DAYSを7日に短縮すると、10日前のキャンセル予約も削除対象になる');
+
+    await ownerFresh.putJson('/api/admin/settings/rules/CANCEL_DELETE_DAYS', { value: '60' }); // 後続テストに影響しないよう戻す
+  }
 
   // --------------------------------------------------------------------------
-  // 23. LINE Webhook：友だち追加・スタンプ・予約キーワード返信
+  // 23. シフト初期値（曜日パターンの自動展開）
+  //     （GAS版コード.gs expandShiftByRule_/deleteOldShifts_の移植）
+  // --------------------------------------------------------------------------
+  console.log('--- 23. シフト初期値（曜日パターンの自動展開） ---');
+  {
+    const r = await fetch(BASE + '/api/admin/settings/shift-templates').then((res) => res.status);
+    assert(r === 401, '未ログインではシフト初期値を取得できない');
+  }
+  {
+    const r = await ownerFresh.get('/api/admin/settings/shift-templates');
+    assert(r.status === 200 && Array.isArray(r.body.templates) && r.body.templates.length > 0,
+      'シードデータのシフト初期値（寿子・花子の曜日パターン）が取得できる');
+  }
+  {
+    const r = await ownerFresh.postJson('/api/admin/settings/shift-templates', {
+      staffName: '存在しないスタッフ', dayOfWeek: 1, startTime: '10:00', endTime: '18:00'
+    });
+    assert(r.status === 400, '在籍していないスタッフ名では登録できない');
+  }
+  {
+    const r = await ownerFresh.postJson('/api/admin/settings/shift-templates', {
+      staffName: '花子', dayOfWeek: 1, startTime: '18:00', endTime: '10:00'
+    });
+    assert(r.status === 400, '終了時間が開始時間より前では登録できない（バリデーション）');
+  }
+  // シフト自動展開の対象日（SHIFT_EXPAND_DAYS=49日先）を計算し、その曜日で
+  // まだ登録されていないテスト用スタッフ「美咲」に新しいパターンを1件追加する
+  const shiftTarget = new Date(); shiftTarget.setDate(shiftTarget.getDate() + 49);
+  const shiftTargetDateStr = shiftTarget.toISOString().slice(0, 10);
+  const shiftTargetDow = shiftTarget.getDay();
+  let newTemplateId = null;
+  {
+    const before = db.prepare(`SELECT id FROM shift_master WHERE store_id = 1 AND staff_name = '美咲' AND shift_date = ?`).get(shiftTargetDateStr);
+    assert(!before, '対象日にはまだ「美咲」のシフトが無い（前提確認）');
+    const r = await ownerFresh.postJson('/api/admin/settings/shift-templates', {
+      staffName: '美咲', dayOfWeek: shiftTargetDow, startTime: '13:00', endTime: '22:00'
+    });
+    assert(r.status === 200 && r.body.success === true, '「美咲」の曜日パターンを新規登録できる');
+    newTemplateId = r.body.templateId;
+  }
+  {
+    const r = await ownerFresh.postJson('/api/admin/maintenance/run-daily', {});
+    assert(r.status === 200 && r.body.shiftExpandDays === 49 && r.body.shiftExpandTargetDate === shiftTargetDateStr,
+      'メンテナンス実行結果にSHIFT_EXPAND_DAYS（49日）と展開対象日が返る');
+    assert(r.body.shiftsExpanded >= 1, '④曜日パターンに一致するシフトが1件以上、対象日へ自動展開される');
+    const row = db.prepare(`SELECT start_time, end_time FROM shift_master WHERE store_id = 1 AND staff_name = '美咲' AND shift_date = ?`).get(shiftTargetDateStr);
+    assert(!!row && row.start_time === '13:00' && row.end_time === '22:00', '展開されたシフトの時刻がパターン通りになっている');
+  }
+  {
+    // 2回目の実行では同じ日付・スタッフの組み合わせが既に存在するため、重複登録されない
+    const r = await ownerFresh.postJson('/api/admin/maintenance/run-daily', {});
+    const count = db.prepare(`SELECT COUNT(*) c FROM shift_master WHERE store_id = 1 AND staff_name = '美咲' AND shift_date = ?`).get(shiftTargetDateStr).c;
+    assert(r.status === 200 && count === 1, '同じ日次メンテナンスを再実行しても、同じ日のシフトが重複登録されない（GAS版より堅牢にした冪等性）');
+  }
+  {
+    // パターンを無効化（一時停止）すると、以後の展開対象から外れる
+    await ownerFresh.putJson(`/api/admin/settings/shift-templates/${newTemplateId}`, { isActive: false });
+    db.prepare(`DELETE FROM shift_master WHERE store_id = 1 AND staff_name = '美咲' AND shift_date = ?`).run(shiftTargetDateStr);
+    const r = await ownerFresh.postJson('/api/admin/maintenance/run-daily', {});
+    const row = db.prepare(`SELECT id FROM shift_master WHERE store_id = 1 AND staff_name = '美咲' AND shift_date = ?`).get(shiftTargetDateStr);
+    assert(r.status === 200 && !row, 'パターンを無効化（isActive:false）すると、その日には展開されなくなる');
+  }
+  {
+    // ⑤7日より前の古いシフトは日次メンテナンスで削除される
+    const dOldShift = new Date(); dOldShift.setDate(dOldShift.getDate() - 10);
+    const oldShiftDateStr = dOldShift.toISOString().slice(0, 10);
+    await ownerFresh.postJson('/api/admin/shifts', { staffName: '花子', date: oldShiftDateStr, startTime: '10:00', endTime: '15:00' });
+    const before = db.prepare(`SELECT COUNT(*) c FROM shift_master WHERE store_id = 1 AND shift_date = ?`).get(oldShiftDateStr).c;
+    assert(before >= 1, '10日前の古いシフトを1件登録できる（削除テストの準備）');
+    const r = await ownerFresh.postJson('/api/admin/maintenance/run-daily', {});
+    assert(r.status === 200 && r.body.oldShiftsDeleted >= 1, '⑤7日より前の古いシフトが1件以上削除される');
+    const after = db.prepare(`SELECT COUNT(*) c FROM shift_master WHERE store_id = 1 AND shift_date = ?`).get(oldShiftDateStr).c;
+    assert(after === 0, '削除対象だった10日前のシフトが実際に無くなっている');
+  }
+  {
+    // 店舗スコープ：他店舗の曜日パターンは操作できない
+    const own = await ownerFresh.get('/api/admin/settings/shift-templates');
+    const targetId = own.body.templates[0].id;
+    const r = await owner2.request(`/api/admin/settings/shift-templates/${targetId}`, { method: 'DELETE' });
+    assert(r.status === 404, '他店舗オーナーはstore1のシフト初期値を削除できない（店舗スコープ確認）');
+  }
+  {
+    const del = await ownerFresh.request(`/api/admin/settings/shift-templates/${newTemplateId}`, { method: 'DELETE' });
+    assert(del.status === 200 && del.body.success === true, 'シフト初期値パターンを削除できる');
+    const after = await ownerFresh.get('/api/admin/settings/shift-templates');
+    assert(!after.body.templates.some((t) => t.id === newTemplateId), '削除後は一覧に含まれなくなる');
+  }
+
+  // --------------------------------------------------------------------------
+  // 24. LINE Webhook：友だち追加・スタンプ・予約キーワード返信
   //     （GAS版webhook_handler.gsのhandleFollow_/handleStickerMessage_/
   //      handleTextMessage_の移植）
   // --------------------------------------------------------------------------
-  console.log('--- 23. LINE Webhook（友だち追加・スタンプ・予約キーワード） ---');
+  console.log('--- 24. LINE Webhook（友だち追加・スタンプ・予約キーワード） ---');
   const anonWebhook = makeSession();
   {
     // トライアルプラン（lineNotify対象外）のままでも、顧客登録自体は行われる
@@ -1155,7 +1285,7 @@ async function main() {
   //     （v28で実装したWebhook機能を実際のLINE公式アカウントに接続する準備として、
   //      チャネルアクセストークン／チャネルシークレットを管理画面から入力できるようにした）
   // --------------------------------------------------------------------------
-  console.log('--- 24. LINE連携設定 ---');
+  console.log('--- 25. LINE連携設定 ---');
   {
     const r = await fetch(BASE + '/api/admin/settings/line').then((res) => res.status);
     assert(r === 401, '未ログインではLINE連携設定を取得できない');
