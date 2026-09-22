@@ -1705,6 +1705,121 @@ async function main() {
   }
 
   // --------------------------------------------------------------------------
+  // 30. サロンダッシュボード（GAS版calendar_page.html / calendar_dashboard_functions.gsの移植）
+  // --------------------------------------------------------------------------
+  console.log('--- 30. サロンダッシュボード ---');
+  const cal30Date = fmtDate_(new Date(today27.getTime() + 700 * 86400000)); // 他区画と衝突しない遠い未来日
+  const cal30Monday = (() => {
+    const d = new Date(cal30Date + 'T00:00:00');
+    const dow = (d.getDay() + 6) % 7;
+    d.setDate(d.getDate() - dow);
+    return fmtDate_(d);
+  })();
+  {
+    const r = await fetch(BASE + '/api/staff/calendar/week?start=' + cal30Monday).then((res) => res.status);
+    assert(r === 401, '未ログインでは/api/staff/calendar/weekを取得できない');
+  }
+  {
+    const r = await hanako.get('/api/staff/calendar/week?start=' + cal30Monday);
+    assert(r.status === 200 && r.body.success === true && Array.isArray(r.body.data.reservations) && Array.isArray(r.body.data.events),
+      '一般スタッフでも週の予約・イベントを取得できる（閲覧は権限制限なし）');
+    assert(typeof r.body.data.staffColors === 'object' && Object.keys(r.body.data.staffColors).length > 0,
+      'staffColorsに在籍スタッフの色割り当てが含まれる');
+  }
+  {
+    const r = await hanako.get(`/api/staff/calendar/month?year=2026&month=12`);
+    assert(r.status === 200 && r.body.success === true && Array.isArray(r.body.data.reservations), '月表示データも取得できる');
+  }
+  {
+    const r = await hanako.get('/api/staff/calendar/month?year=0&month=13');
+    assert(r.status === 400, '不正なyear/monthは400になる');
+  }
+  let cal30ResvId = null;
+  {
+    const r = await hanako.postJson('/api/staff/reservations', {
+      realname: 'カレンダー表示テスト30', staffName: '花子', menu: 'フェイシャル(60分)', date: cal30Date, time: '11:00'
+    });
+    assert(r.status === 200 && r.body.success === true, 'カレンダー表示確認用の予約を登録できる');
+    cal30ResvId = r.body.reservationId;
+  }
+  {
+    const r = await hanako.get('/api/staff/calendar/week?start=' + cal30Monday);
+    const found = (r.body.data.reservations || []).find((x) => x.id === cal30ResvId);
+    assert(!!found && found.date === cal30Date && found.startTime === '11:00' && found.endTime === '12:30' && found.realname === 'カレンダー表示テスト30',
+      '登録した予約が週データに反映され、終了時刻が開始+90分で計算されている');
+  }
+  {
+    // 未ログインでのイベント作成は拒否される
+    const r = await fetch(BASE + '/api/admin/events', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: '未ログインテスト30', date: cal30Date, startTime: '14:00', endTime: '16:00' })
+    }).then((res) => res.status);
+    assert(r === 401, '未ログインでは行事（イベント）を作成できない');
+  }
+  {
+    const r = await hanako.postJson('/api/admin/events', { title: '一般スタッフテスト30', date: cal30Date, startTime: '14:00', endTime: '16:00' });
+    assert(r.status === 401, '一般スタッフは行事（イベント）を作成できない（オーナー専用）');
+  }
+  let cal30EventId = null;
+  {
+    const r = await ownerFresh.postJson('/api/admin/events', {
+      title: '研修会30', date: cal30Date, startTime: '14:00', endTime: '16:00', restrictBooking: true
+    });
+    assert(r.status === 200 && r.body.success === true, 'オーナーは行事（イベント）を作成できる');
+    cal30EventId = r.body.eventId;
+  }
+  {
+    const r = await hanako.get('/api/staff/calendar/events?date=' + cal30Date);
+    assert(r.status === 200 && r.body.success === true, '一般スタッフでも指定日の行事一覧を取得できる（閲覧は権限制限なし）');
+    const found = (r.body.events || []).find((x) => x.id === cal30EventId);
+    assert(!!found && found.label === '研修会30' && found.restrictBooking === true, '作成した行事が一般スタッフからも正しく見える');
+  }
+  {
+    const r = await hanako.get('/api/staff/calendar/week?start=' + cal30Monday);
+    const found = (r.body.data.events || []).find((x) => x.id === cal30EventId);
+    assert(!!found && found.blockReservation === true && found.blockStart === '12:30' && found.blockEnd === '17:00',
+      '週データのイベントには予約ブロック用のバッファ時間帯（開始-90分/終了+60分）が自動計算されて含まれる');
+  }
+  {
+    const r = await hanako.putJson('/api/admin/events/' + cal30EventId, {
+      title: '研修会30（変更）', date: cal30Date, startTime: '15:00', endTime: '17:00', restrictBooking: false
+    });
+    assert(r.status === 401, '一般スタッフは行事を変更できない（オーナー専用）');
+  }
+  {
+    const r = await ownerFresh.putJson('/api/admin/events/' + cal30EventId, {
+      title: '研修会30（変更）', date: cal30Date, startTime: '15:00', endTime: '17:00', restrictBooking: false
+    });
+    assert(r.status === 200 && r.body.success === true, 'オーナーは行事を変更できる');
+    const row = db.prepare('SELECT * FROM events WHERE id = ?').get(cal30EventId);
+    assert(!!row && row.title === '研修会30（変更）' && row.start_time === '15:00' && row.restrict_booking === 0,
+      '変更後の内容が実際にDBへ保存されている');
+  }
+  {
+    const r = await hanako.del('/api/admin/events/' + cal30EventId);
+    assert(r.status === 401, '一般スタッフは行事を削除できない（オーナー専用）');
+  }
+  {
+    const r = await ownerFresh.del('/api/admin/events/' + cal30EventId);
+    assert(r.status === 200 && r.body.success === true, 'オーナーは行事を削除できる');
+    const row = db.prepare('SELECT id FROM events WHERE id = ?').get(cal30EventId);
+    assert(!row, '削除した行事がeventsテーブルから消えている');
+  }
+  {
+    const r = await hanako.get('/api/staff/calendar/week?start=' + cal30Monday);
+    const found = (r.body.data.events || []).find((x) => x.id === cal30EventId);
+    assert(!found, '削除した行事は週データにも表示されなくなる');
+  }
+  {
+    // 予約のキャンセルは週データから除外される（GAS版と同じく、キャンセル済み予約はカレンダー上に表示しない）
+    const rCancel = await hanako.del('/api/staff/reservations/' + cal30ResvId);
+    assert(rCancel.status === 200 && rCancel.body.success === true, '表示確認用の予約をキャンセルできる');
+    const r = await hanako.get('/api/staff/calendar/week?start=' + cal30Monday);
+    const found = (r.body.data.reservations || []).find((x) => x.id === cal30ResvId);
+    assert(!found, 'キャンセル済みの予約は週データに含まれない');
+  }
+
+  // --------------------------------------------------------------------------
   console.log(`\n=== 結果: PASS ${passCount} / FAIL ${failCount} ===`);
   if (failCount > 0) {
     console.log('\n失敗した項目:');

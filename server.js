@@ -934,6 +934,213 @@ app.post('/api/staff/customers', requireStaffSession, (req, res) => {
   }
 });
 
+// ============================================================================
+// ★2026-09-22追加：サロンダッシュボード（GAS版calendar_page.html / calendar_dashboard_functions.gs
+//   の移植）。週・月表示のカレンダーグリッドで店舗全体の予約を担当者色分け表示し、
+//   その場で予約の追加・編集・キャンセルや、臨時休業日／イベント（ブロック枠）の
+//   確認ができる画面。2026-09-22の棚卸し（41章）で「完全に未着手」と判明した機能。
+//
+//   予約自体の追加・編集・キャンセルは本セッション既存の/api/staff/reservations
+//   （29章で一般スタッフ開放済み）をそのまま利用する。ここで新規追加するのは、
+//   ①週・月範囲の予約＋イベントをまとめて返す集計API、②スタッフごとの色割り当て、
+//   ③一般スタッフでも閲覧できるイベント参照API（作成/変更/削除はオーナー専用のまま）。
+//
+//   GAS版との差異（README章44に詳細）：
+//   ・GAS版は日曜始まり週、Node版は既存のスタッフダッシュボード月間カレンダー等と
+//     合わせ月曜始まりに統一
+//   ・スタッフの色はGAS版はマスタシートで手動割り当てだが、Node版はスタッフID順に
+//     固定パレットから自動割り当てする簡略化（色を手動で選び直す機能は無い）
+//   ・イベントの「バッファ時間帯」（前後の予約ブロック時間）は既存のgetBlockedEventSlots_
+//     と同じ計算式をそのまま流用するが、斜線ハッチング等の視覚表現は簡略化
+//   ・Googleカレンダー連携（GAS版のcalendarId書き込み・同期）は対象外（スタンディング除外）
+// ============================================================================
+
+// ★スタッフの表示色パレット（GAS版COLOR_MAP/BG_MAP/TX_MAPの簡略移植。
+//   GAS版はマスタシートで手動割り当てだったが、Node版はstaff.id順に自動割り当てする）
+const CALENDAR_COLOR_KEYS = ['BLUE', 'RED', 'GREEN', 'ORANGE', 'GRAPE', 'CYAN', 'YELLOW', 'BASIL', 'MAUVE', 'PALE_BLUE', 'PALE_RED', 'PALE_GREEN', 'GRAPHITE'];
+const CALENDAR_COLOR_MAP = {
+  YELLOW: '#EFB100', CYAN: '#00ACC1', ORANGE: '#E65100', GRAPE: '#7B1FA2', GREEN: '#2E7D32',
+  BLUE: '#1565C0', RED: '#C62828', BASIL: '#33691E', GRAPHITE: '#616161',
+  PALE_BLUE: '#64B5F6', PALE_GREEN: '#81C784', MAUVE: '#BA68C8', PALE_RED: '#E57373'
+};
+const CALENDAR_BG_MAP = {
+  YELLOW: '#FFF8E1', CYAN: '#E0F7FA', ORANGE: '#FBE9E7', GRAPE: '#F3E5F5', GREEN: '#E8F5E9',
+  BLUE: '#E3F2FD', RED: '#FFEBEE', BASIL: '#F1F8E9', GRAPHITE: '#F5F5F5',
+  PALE_BLUE: '#E3F2FD', PALE_GREEN: '#E8F5E9', MAUVE: '#F3E5F5', PALE_RED: '#FFEBEE'
+};
+const CALENDAR_TX_MAP = {
+  YELLOW: '#8A6100', CYAN: '#00596B', ORANGE: '#9A3400', GRAPE: '#4A1362', GREEN: '#1B5E20',
+  BLUE: '#0D3780', RED: '#7F0000', BASIL: '#1B3409', GRAPHITE: '#333333',
+  PALE_BLUE: '#0D3780', PALE_GREEN: '#1B5E20', MAUVE: '#4A1362', PALE_RED: '#7F0000'
+};
+
+function assignStaffColors_(storeId) {
+  const rows = db.prepare(`
+    SELECT name FROM staff WHERE store_id = ? AND is_active = 1 ORDER BY id ASC
+  `).all(storeId);
+  const colors = {};
+  rows.forEach((row, i) => { colors[row.name] = CALENDAR_COLOR_KEYS[i % CALENDAR_COLOR_KEYS.length]; });
+  return colors;
+}
+
+// ★GAS版getCalendarData_相当：指定期間の予約＋イベントをまとめて返す
+function getCalendarData_(storeId, fromDate, toDate) {
+  const resvRows = db.prepare(`
+    SELECT id, realname, staff_name, menu, reservation_date, reservation_time, status, customer_id
+    FROM reservations
+    WHERE store_id = ? AND realname != 'キャンセル' AND reservation_date >= ? AND reservation_date <= ?
+    ORDER BY reservation_date ASC, reservation_time ASC
+  `).all(storeId, fromDate, toDate);
+
+  const reservations = resvRows.map((r) => {
+    const endMin = engine.toMin_(r.reservation_time) + 90;
+    const endH = String(Math.floor(endMin / 60)).padStart(2, '0');
+    const endM = String(endMin % 60).padStart(2, '0');
+    return {
+      id: r.id,
+      date: r.reservation_date,
+      realname: r.realname,
+      staffName: r.staff_name,
+      menu: r.menu,
+      startTime: r.reservation_time,
+      endTime: `${endH}:${endM}`,
+      isProvisional: r.status === '仮予約',
+      customerId: r.customer_id || ''
+    };
+  });
+
+  const eventRows = db.prepare(`
+    SELECT id, title, event_date, start_time, end_time, restrict_booking, block_start_time, block_end_time
+    FROM events
+    WHERE store_id = ? AND is_active = 1 AND event_date >= ? AND event_date <= ?
+    ORDER BY event_date ASC, start_time ASC
+  `).all(storeId, fromDate, toDate);
+
+  const events = eventRows.map((e) => {
+    const restrict = !!e.restrict_booking;
+    let blockStart = e.block_start_time || '';
+    let blockEnd = e.block_end_time || '';
+    if (restrict && e.start_time && e.end_time) {
+      if (!blockStart) {
+        const m = Math.max(0, engine.toMin_(e.start_time) - 90);
+        blockStart = `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+      }
+      if (!blockEnd) {
+        const m = Math.min(1439, engine.toMin_(e.end_time) + 60);
+        blockEnd = `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+      }
+    }
+    return {
+      id: e.id, date: e.event_date, label: e.title,
+      startTime: e.start_time, endTime: e.end_time,
+      blockReservation: restrict, blockStart, blockEnd
+    };
+  });
+
+  return { reservations, staffColors: assignStaffColors_(storeId), events, colorMap: CALENDAR_COLOR_MAP, bgMap: CALENDAR_BG_MAP, txMap: CALENDAR_TX_MAP };
+}
+
+// GET /api/staff/calendar/week?start=YYYY-MM-DD : 指定週（月曜始まり、開始日から7日分）
+app.get('/api/staff/calendar/week', requireStaffSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const start = String(req.query.start || '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(start)) {
+      return res.status(400).json({ success: false, message: 'start（YYYY-MM-DD）は必須です' });
+    }
+    const startDate = new Date(start + 'T00:00:00');
+    const endDate = new Date(startDate); endDate.setDate(endDate.getDate() + 6);
+    const pad2 = (n) => String(n).padStart(2, '0');
+    const to = `${endDate.getFullYear()}-${pad2(endDate.getMonth() + 1)}-${pad2(endDate.getDate())}`;
+    res.json({ success: true, data: getCalendarData_(storeId, start, to) });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// GET /api/staff/calendar/month?year=YYYY&month=MM : 指定月（1〜31日、前後月の端数日は含まない）
+app.get('/api/staff/calendar/month', requireStaffSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const year = Number(req.query.year);
+    const month = Number(req.query.month); // 1-12
+    if (!year || !month || month < 1 || month > 12) {
+      return res.status(400).json({ success: false, message: 'year・month は必須です' });
+    }
+    const pad2 = (n) => String(n).padStart(2, '0');
+    const from = `${year}-${pad2(month)}-01`;
+    const lastDay = new Date(year, month, 0).getDate();
+    const to = `${year}-${pad2(month)}-${pad2(lastDay)}`;
+    res.json({ success: true, data: getCalendarData_(storeId, from, to) });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// GET /api/staff/calendar/events?date=YYYY-MM-DD : 指定日のイベント一覧（閲覧のみ、一般スタッフも可。
+//   作成/変更/削除はGAS版と同じくオーナー専用のため既存/api/admin/eventsを使う）
+app.get('/api/staff/calendar/events', requireStaffSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const date = String(req.query.date || '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return res.status(400).json({ success: false, message: 'date（YYYY-MM-DD）は必須です' });
+    }
+    const rows = db.prepare(`
+      SELECT id, title, event_date, start_time, end_time, restrict_booking, block_start_time, block_end_time
+      FROM events WHERE store_id = ? AND event_date = ? AND is_active = 1
+      ORDER BY start_time ASC
+    `).all(storeId, date);
+    res.json({
+      success: true,
+      events: rows.map((e) => ({
+        id: e.id, date: e.event_date, label: e.title, startTime: e.start_time, endTime: e.end_time,
+        restrictBooking: !!e.restrict_booking, blockStartTime: e.block_start_time || '', blockEndTime: e.block_end_time || ''
+      }))
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// PUT /api/admin/events/:id : イベントの変更（GAS版updateCalendarEvent相当。オーナー専用。
+//   これまで/api/admin/eventsはGET（一覧）・POST（新規）・DELETE（削除）のみでPUTが無かったため追加）
+app.put('/api/admin/events/:id', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const id = Number(req.params.id);
+    const data = req.body || {};
+    const existing = db.prepare('SELECT * FROM events WHERE id = ? AND store_id = ?').get(id, storeId);
+    if (!existing) {
+      return res.status(404).json({ success: false, message: '対象のイベントが見つかりません' });
+    }
+    if (!data.title || !data.date || !data.startTime || !data.endTime) {
+      return res.status(400).json({ success: false, message: 'title / date / startTime / endTime は必須です' });
+    }
+    if (data.startTime >= data.endTime) {
+      return res.status(400).json({ success: false, message: '終了時刻は開始時刻より後にしてください' });
+    }
+    db.prepare(`
+      UPDATE events SET title = ?, event_date = ?, start_time = ?, end_time = ?,
+        restrict_booking = ?, block_start_time = ?, block_end_time = ?
+      WHERE id = ?
+    `).run(
+      data.title, data.date, data.startTime, data.endTime,
+      data.restrictBooking ? 1 : 0,
+      data.restrictBooking ? (data.blockStartTime || null) : null,
+      data.restrictBooking ? (data.blockEndTime || null) : null,
+      id
+    );
+    res.json({ success: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // ----------------------------------------------------------------------------
 // ★旧実装（廃止・置き換え済み）：requireAdminPassword
 //   共有パスワード1個をヘッダーで送るだけの簡易認証。/api/admin/* は現在

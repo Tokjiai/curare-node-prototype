@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>顧客マスタ（閲覧）</title>
+<style>
+  /* ============================================================
+     GAS版 customer_view.html（顧客マスタの閲覧専用画面。実際はisOwnerRole_
+     チェック付きのオーナー専用画面だった。電話番号などの確認用で、編集・削除は
+     できず統合のみ可能）のNode移植版。他の管理画面と色を揃えるクリーム＋セージの
+     配色トークンを使うが、GAS版に合わせてサイドバー無しの単独ページ構成にしている。
+     GAS版との差異はREADME_PROTOTYPE.md章45参照。
+     ============================================================ */
+  :root{
+    --bg:#F5F4EF; --panel:#ffffff; --ink:#2B2B27; --ink-soft:#75746C; --ink-faint:#A9A79C;
+    --line:#E4E2D9; --accent:#3D6B5C; --accent-soft:#E7EFE9; --admin:#8A5A3C; --admin-soft:#F5EBE3;
+    --warn:#B3542E; --warn-soft:#F7E9E2; --radius:14px;
+  }
+  *{box-sizing:border-box; margin:0; padding:0; font-family:'Hiragino Sans','Yu Gothic',sans-serif;}
+  body{background:var(--bg); color:var(--ink);}
+  .wrap{display:none; padding:20px 24px; max-width:1080px; margin:0 auto;}
+  .wrap.ready{display:block;}
+  #loadingMsg{text-align:center; color:var(--ink-soft); font-size:13px; padding:60px 0;}
+
+  .page-head{display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:14px; gap:10px; flex-wrap:wrap;}
+  .page-head h1{font-size:18px; font-weight:700; margin-bottom:3px;}
+  .page-head p{font-size:12px; color:var(--ink-soft);}
+  .view-badge{font-size:11px; font-weight:700; background:var(--admin-soft); color:var(--admin); padding:5px 10px; border-radius:8px; white-space:nowrap;}
+  .close-btn{background:none; border:1px solid var(--line); border-radius:8px; padding:6px 14px; font-size:13px; color:var(--ink-soft); cursor:pointer; font-family:inherit;}
+
+  .panel{background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:16px 18px; margin-bottom:16px;}
+  .panel h2{font-size:14.5px; font-weight:700; margin-bottom:4px;}
+  .panel p.sub{font-size:12px; color:var(--ink-soft); margin-bottom:10px;}
+
+  .merge-panel{border-color:var(--warn);}
+  .merge-panel h2{color:var(--warn);}
+  .merge-count-badge{background:var(--warn); color:#fff; font-size:11px; font-weight:700; border-radius:20px; padding:2px 9px; margin-left:6px;}
+  .merge-item{border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin-top:10px; background:#FFFDF9;}
+  .merge-item .pair{display:flex; gap:14px; flex-wrap:wrap; font-size:13px; margin-bottom:10px;}
+  .merge-card{flex:1; min-width:180px; background:var(--bg); border-radius:8px; padding:8px 10px;}
+  .merge-card .cid{font-size:11px; color:var(--ink-faint); font-weight:700;}
+  .merge-card .rn{font-weight:600; margin:2px 0;}
+  .merge-card .sub{font-size:12px; color:var(--ink-soft);}
+  .merge-actions{display:flex; gap:8px; align-items:center; flex-wrap:wrap;}
+  .merge-actions select{padding:6px 8px; border-radius:8px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;}
+  .merge-actions button{padding:7px 12px; border-radius:8px; border:1px solid var(--line); background:#fff; font-size:12.5px; cursor:pointer; font-family:inherit;}
+  .btn-merge{background:var(--accent); color:#fff; border-color:var(--accent); font-weight:600;}
+
+  .manual-pickers{display:flex; align-items:flex-start; gap:12px; flex-wrap:wrap;}
+  .manual-picker{flex:1; min-width:220px; position:relative;}
+  .manual-picker-label{font-size:11px; font-weight:700; color:var(--ink-soft); margin-bottom:4px;}
+  .manual-picker input{width:100%; border:1px solid var(--line); border-radius:8px; padding:9px 11px; font-size:13px; font-family:inherit;}
+  .manual-picker-selected{margin-top:6px; background:var(--accent-soft); color:var(--accent); border-radius:8px; padding:8px 10px; font-size:12.5px; display:none; align-items:center; justify-content:space-between; gap:8px;}
+  .manual-picker-selected.show{display:flex;}
+  .manual-picker-clear{cursor:pointer; font-weight:700; color:var(--accent);}
+  .manual-suggest{position:absolute; top:100%; left:0; right:0; background:#fff; border:1px solid var(--line); border-radius:8px; margin-top:4px; max-height:220px; overflow-y:auto; z-index:20; box-shadow:0 4px 12px rgba(0,0,0,0.08); display:none;}
+  .manual-suggest.show{display:block;}
+  .manual-suggest-item{padding:9px 11px; font-size:12.5px; cursor:pointer; border-bottom:1px solid #F1ECE9;}
+  .manual-suggest-item:last-child{border-bottom:none;}
+  .manual-suggest-item:hover{background:var(--bg);}
+  .manual-suggest-item .s-name{font-weight:700;}
+  .manual-suggest-item .s-sub{color:var(--ink-soft); font-size:11px; margin-top:1px;}
+  .manual-vs{font-size:16px; color:var(--ink-faint); align-self:center; padding-top:22px;}
+  .btn-manual-merge{background:var(--accent); color:#fff; border:none; border-radius:8px; padding:9px 16px; font-size:12.5px; font-weight:700; cursor:pointer; font-family:inherit; margin-top:12px;}
+  .btn-manual-merge:disabled{background:var(--line); color:var(--ink-faint); cursor:not-allowed;}
+
+  .toolbar{display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; gap:12px; flex-wrap:wrap;}
+  .search-box{display:flex; align-items:center; gap:8px; background:#fff; border:1px solid var(--line); border-radius:10px; padding:8px 12px; flex:1; max-width:320px;}
+  .search-box input{border:none; font-size:13px; width:100%; outline:none; font-family:inherit;}
+  .chips{display:flex; gap:6px;}
+  .chip{font-size:11.5px; font-weight:700; padding:6px 12px; border-radius:20px; background:#fff; border:1px solid var(--line); color:var(--ink-soft); cursor:pointer;}
+  .chip.active{background:var(--admin); color:#fff; border-color:var(--admin);}
+  .staff-select{border:1px solid var(--line); border-radius:8px; padding:7px 10px; font-size:12.5px; font-family:inherit; background:#fff; color:var(--ink);}
+
+  .table-panel{background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:0; overflow-x:auto;}
+  table{width:100%; border-collapse:collapse; font-size:13px; min-width:680px;}
+  th{text-align:left; font-size:11px; color:var(--ink-soft); font-weight:600; padding:10px 10px; border-bottom:1px solid var(--line); background:#FAFAF6; white-space:nowrap;}
+  td{padding:10px 10px; border-bottom:1px solid #F1ECE9; vertical-align:middle; white-space:nowrap;}
+  tr:last-child td{border-bottom:none;}
+  .ghost-name{color:var(--ink-faint); font-style:italic;}
+  .badge{font-size:10.5px; font-weight:700; padding:3px 9px; border-radius:10px; display:inline-block;}
+  .badge.active{background:var(--accent-soft); color:var(--accent);}
+  .badge.inactive{background:#EFEFEF; color:var(--ink-soft);}
+  .badge.linked{background:var(--accent-soft); color:var(--accent);}
+  .badge.unlinked{background:var(--admin-soft); color:var(--admin);}
+  .badge.blocked{background:var(--warn-soft); color:var(--warn);}
+  .empty{color:var(--ink-soft); font-size:13px; padding:14px; text-align:center;}
+</style>
+</head>
+<body>
+<div id="loadingMsg">読み込み中...</div>
+
+<div class="wrap" id="wrap">
+  <div class="page-head">
+    <div>
+      <h1>顧客マスタ（閲覧）</h1>
+      <p>電話番号などの確認用です。編集・削除はできません（統合のみ可能）。</p>
+    </div>
+    <div style="display:flex; align-items:center; gap:10px;">
+      <div class="view-badge" id="viewBadge">👤 -</div>
+      <button class="close-btn" type="button" onclick="window.location.href='index.html'">✕ 閉じる</button>
+    </div>
+  </div>
+
+  <div class="panel merge-panel" id="mergePanel" style="display:none;">
+    <h2>🔗 統合候補（自動検知）<span class="merge-count-badge" id="mergeCountBadge">0</span></h2>
+    <p class="sub">同じ人物の可能性がある顧客データです。ご本人と確認できたら「統合する」を、別人だと分かれば「見送る」を押してください。</p>
+    <div id="mergeList"></div>
+  </div>
+
+  <div class="panel">
+    <h2>🔍 手動で統合する</h2>
+    <p class="sub">LINE友だち登録のみで本名未登録の方（一覧では「LINE名：〇〇」と表示）は、電話番号やフリガナが手がかりに使えず自動検知できません。ご本人だと分かった場合はここから直接2人を選んで統合してください。</p>
+    <div class="manual-pickers">
+      <div class="manual-picker">
+        <div class="manual-picker-label">① 残す方（統合後もこのCIDが残ります）</div>
+        <input type="text" id="manualKeepInput" placeholder="本名・フリガナ・電話番号・LINE名で検索">
+        <div class="manual-suggest" id="manualKeepSuggest"></div>
+        <div class="manual-picker-selected" id="manualKeepSelected"><span id="manualKeepSelectedText"></span><span class="manual-picker-clear" data-side="keep">✕</span></div>
+      </div>
+      <div class="manual-vs">⇔</div>
+      <div class="manual-picker">
+        <div class="manual-picker-label">② 統合される方（このCIDは削除済みになります）</div>
+        <input type="text" id="manualMergeInput" placeholder="本名・フリガナ・電話番号・LINE名で検索">
+        <div class="manual-suggest" id="manualMergeSuggest"></div>
+        <div class="manual-picker-selected" id="manualMergeSelected"><span id="manualMergeSelectedText"></span><span class="manual-picker-clear" data-side="merge">✕</span></div>
+      </div>
+    </div>
+    <button class="btn-manual-merge" id="btnManualMerge" type="button" disabled>✓ この2人を統合する</button>
+  </div>
+
+  <div class="toolbar">
+    <div class="search-box"><span>🔍</span><input type="text" id="searchInput" placeholder="本名・フリガナ・電話番号で検索"></div>
+    <div class="chips" id="filterChips">
+      <div class="chip active" data-status="active">アクティブ</div>
+      <div class="chip" data-status="inactive">非アクティブ</div>
+    </div>
+    <select class="staff-select" id="staffFilter"><option value="">担当者：すべて</option></select>
+  </div>
+
+  <div class="table-panel">
+    <table>
+      <thead><tr><th>本名（フリガナ）</th><th>電話番号</th><th>キープ</th><th>ステータス</th><th>LINE連携</th><th>受付</th><th>通知</th><th>前回担当</th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+    <div class="empty" id="emptyMsg" style="display:none;">該当する顧客が見つかりません</div>
+  </div>
+</div>
+
+<script>
+(function(){
+  const loadingMsg = document.getElementById('loadingMsg');
+  const wrap = document.getElementById('wrap');
+  let allCustomers = [];
+  let activeFilters = new Set(['active']);
+  let manualPick = { keep: null, merge: null };
+
+  const HW_KATAKANA_MAP = {'ｱ':'ア','ｲ':'イ','ｳ':'ウ','ｴ':'エ','ｵ':'オ','ｶ':'カ','ｷ':'キ','ｸ':'ク','ｹ':'ケ','ｺ':'コ','ｻ':'サ','ｼ':'シ','ｽ':'ス','ｾ':'セ','ｿ':'ソ','ﾀ':'タ','ﾁ':'チ','ﾂ':'ツ','ﾃ':'テ','ﾄ':'ト','ﾅ':'ナ','ﾆ':'ニ','ﾇ':'ヌ','ﾈ':'ネ','ﾉ':'ノ','ﾊ':'ハ','ﾋ':'ヒ','ﾌ':'フ','ﾍ':'ヘ','ﾎ':'ホ','ﾏ':'マ','ﾐ':'ミ','ﾑ':'ム','ﾒ':'メ','ﾓ':'モ','ﾔ':'ヤ','ﾕ':'ユ','ﾖ':'ヨ','ﾗ':'ラ','ﾘ':'リ','ﾙ':'ル','ﾚ':'レ','ﾛ':'ロ','ﾜ':'ワ','ｦ':'ヲ','ﾝ':'ン','ｧ':'ァ','ｨ':'ィ','ｩ':'ゥ','ｪ':'ェ','ｫ':'ォ','ｬ':'ャ','ｭ':'ュ','ｮ':'ョ','ｯ':'ッ','ｰ':'ー'};
+  const HW_VOICED_MAP = {'ｶﾞ':'ガ','ｷﾞ':'ギ','ｸﾞ':'グ','ｹﾞ':'ゲ','ｺﾞ':'ゴ','ｳﾞ':'ヴ','ｻﾞ':'ザ','ｼﾞ':'ジ','ｽﾞ':'ズ','ｾﾞ':'ゼ','ｿﾞ':'ゾ','ﾀﾞ':'ダ','ﾁﾞ':'ヂ','ﾂﾞ':'ヅ','ﾃﾞ':'デ','ﾄﾞ':'ド','ﾊﾞ':'バ','ﾋﾞ':'ビ','ﾌﾞ':'ブ','ﾍﾞ':'ベ','ﾎﾞ':'ボ','ﾊﾟ':'パ','ﾋﾟ':'ピ','ﾌﾟ':'プ','ﾍﾟ':'ペ','ﾎﾟ':'ポ'};
+  function toFullWidthKana(str) {
+    const s = String(str || ''); let result = ''; let i = 0;
+    while (i < s.length) {
+      const two = s.substr(i, 2);
+      if (HW_VOICED_MAP[two]) { result += HW_VOICED_MAP[two]; i += 2; continue; }
+      result += (HW_KATAKANA_MAP[s[i]] || s[i]); i += 1;
+    }
+    return result;
+  }
+  function esc(v) { return String(v == null ? '' : v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+  async function adminFetch(url, opts) {
+    const res = await fetch(url, opts);
+    if (res.status === 401) throw new Error('UNAUTHORIZED');
+    if (!res.ok) { let msg = 'サーバーエラー: ' + res.status; try { const b = await res.json(); if (b && b.message) msg = b.message; } catch (_) {} throw new Error(msg); }
+    return res.json();
+  }
+
+  async function init() {
+    try {
+      const me = await adminFetch('/api/auth/me');
+      if (!me.staff.isOwner) {
+        loadingMsg.textContent = 'この画面はオーナー権限のみ利用できます';
+        return;
+      }
+      document.getElementById('viewBadge').textContent = '👤 ' + me.staff.name + '（オーナー）';
+      await loadAll();
+      await loadMergeCandidates();
+      loadingMsg.style.display = 'none';
+      wrap.classList.add('ready');
+    } catch (e) {
+      window.location.href = '/admin/login.html?next=' + encodeURIComponent(window.location.pathname);
+    }
+  }
+
+  async function loadAll() {
+    // ★GET /api/admin/customersはlimitの上限が200件（サーバー側の安全弁）。
+    //   このプロトタイプの規模では実質「全件」に相当するため、この画面では
+    //   ページングせず一度に読み込んでクライアント側で検索・絞り込みを行う
+    //   （GAS版customer_view.htmlの全件クライアントフィルタ方式を踏襲）。
+    const data = await adminFetch('/api/admin/customers?limit=200&offset=0');
+    allCustomers = data.customers || [];
+    populateStaffFilter();
+    renderList();
+  }
+
+  function populateStaffFilter() {
+    const sel = document.getElementById('staffFilter');
+    const names = Array.from(new Set(allCustomers.map((c) => String(c.staff_name || '').trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'ja'));
+    sel.innerHTML = '<option value="">担当者：すべて</option>' + names.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
+  }
+
+  async function loadMergeCandidates() {
+    const data = await adminFetch('/api/admin/customers/merge-candidates');
+    const panel = document.getElementById('mergePanel');
+    const list = document.getElementById('mergeList');
+    const candidates = data.candidates || [];
+    document.getElementById('mergeCountBadge').textContent = candidates.length;
+    if (candidates.length === 0) { panel.style.display = 'none'; return; }
+    panel.style.display = 'block';
+    list.innerHTML = '';
+    candidates.forEach((c) => {
+      const div = document.createElement('div');
+      div.className = 'merge-item';
+      const idA = c.customerA.customer_id, idB = c.customerB.customer_id;
+      div.innerHTML = `
+        <div class="pair">
+          <div class="merge-card"><div class="cid">${esc(idA)}</div><div class="rn">${esc(c.customerA.realname)}</div><div class="sub">${esc(c.customerA.kana || '')} ／ ${esc(c.customerA.phone || '')}</div></div>
+          <div class="merge-card"><div class="cid">${esc(idB)}</div><div class="rn">${esc(c.customerB.realname)}</div><div class="sub">${esc(c.customerB.kana || '')} ／ ${esc(c.customerB.phone || '')}</div></div>
+        </div>
+        <div class="merge-actions">
+          <span style="font-size:12px;color:var(--ink-soft);">どちらを残す？</span>
+          <select class="keepSelect">
+            <option value="${esc(idA)}">${esc(idA)}（${esc(c.customerA.realname)}）を残す</option>
+            <option value="${esc(idB)}">${esc(idB)}（${esc(c.customerB.realname)}）を残す</option>
+          </select>
+          <button type="button" class="btn-merge">統合する</button>
+          <button type="button" class="btn-dismiss">別人として見送る</button>
+        </div>`;
+      div.querySelector('.btn-merge').addEventListener('click', async () => {
+        const keep = div.querySelector('.keepSelect').value;
+        const mergeId = keep === idA ? idB : idA;
+        if (!confirm(`${mergeId} を ${keep} に統合します。よろしいですか？`)) return;
+        try {
+          await adminFetch('/api/admin/customers/merge', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ keepCustomerId: keep, mergeCustomerId: mergeId }) });
+          await loadAll(); await loadMergeCandidates();
+        } catch (err) { alert(err.message); }
+      });
+      div.querySelector('.btn-dismiss').addEventListener('click', async () => {
+        try {
+          await adminFetch('/api/admin/customers/merge-candidates/dismiss', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ customerIdA: idA, customerIdB: idB }) });
+          await loadMergeCandidates();
+        } catch (err) { alert(err.message); }
+      });
+      list.appendChild(div);
+    });
+  }
+
+  // ---- 手動統合（検索して2名を選び統合する） ----
+  function customerLabel(c) {
+    const name = c.realname || (c.line_name ? `LINE名：${c.line_name}` : '（名称未登録）');
+    return `${name}（${c.customer_id}）`;
+  }
+  function setupManualPicker(side, inputId, suggestId, selectedId, selectedTextId) {
+    const input = document.getElementById(inputId);
+    const suggest = document.getElementById(suggestId);
+    input.addEventListener('input', () => {
+      const q = toFullWidthKana(input.value.trim());
+      if (!q) { suggest.classList.remove('show'); suggest.innerHTML = ''; return; }
+      const matches = allCustomers.filter((c) => {
+        const hay = [c.realname, c.kana, c.phone, c.line_name].map((v) => toFullWidthKana(String(v || ''))).join(' ');
+        return hay.includes(q);
+      }).slice(0, 12);
+      if (matches.length === 0) { suggest.innerHTML = '<div class="manual-suggest-item">該当する顧客がいません</div>'; suggest.classList.add('show'); return; }
+      suggest.innerHTML = matches.map((c) => `
+        <div class="manual-suggest-item" data-cid="${esc(c.customer_id)}">
+          <div class="s-name">${esc(c.realname || (c.line_name ? 'LINE名：' + c.line_name : '（名称未登録）'))}</div>
+          <div class="s-sub">${esc(c.kana || '')} ／ ${esc(c.phone || '')} ／ ${esc(c.customer_id)}</div>
+        </div>`).join('');
+      suggest.classList.add('show');
+      suggest.querySelectorAll('.manual-suggest-item[data-cid]').forEach((el) => {
+        el.addEventListener('click', () => {
+          const c = allCustomers.find((x) => x.customer_id === el.dataset.cid);
+          manualPick[side] = c;
+          document.getElementById(selectedTextId).textContent = customerLabel(c);
+          document.getElementById(selectedId).classList.add('show');
+          input.value = ''; suggest.classList.remove('show'); suggest.innerHTML = '';
+          updateManualMergeBtn();
+        });
+      });
+    });
+  }
+  setupManualPicker('keep', 'manualKeepInput', 'manualKeepSuggest', 'manualKeepSelected', 'manualKeepSelectedText');
+  setupManualPicker('merge', 'manualMergeInput', 'manualMergeSuggest', 'manualMergeSelected', 'manualMergeSelectedText');
+  document.querySelectorAll('.manual-picker-clear').forEach((el) => {
+    el.addEventListener('click', () => {
+      const side = el.dataset.side;
+      manualPick[side] = null;
+      document.getElementById(side === 'keep' ? 'manualKeepSelected' : 'manualMergeSelected').classList.remove('show');
+      updateManualMergeBtn();
+    });
+  });
+  function updateManualMergeBtn() {
+    const btn = document.getElementById('btnManualMerge');
+    btn.disabled = !(manualPick.keep && manualPick.merge && manualPick.keep.customer_id !== manualPick.merge.customer_id);
+  }
+  document.getElementById('btnManualMerge').addEventListener('click', async () => {
+    if (!manualPick.keep || !manualPick.merge) return;
+    if (!confirm(`${customerLabel(manualPick.merge)} を ${customerLabel(manualPick.keep)} に統合します。よろしいですか？`)) return;
+    try {
+      await adminFetch('/api/admin/customers/merge', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keepCustomerId: manualPick.keep.customer_id, mergeCustomerId: manualPick.merge.customer_id })
+      });
+      manualPick = { keep: null, merge: null };
+      document.getElementById('manualKeepSelected').classList.remove('show');
+      document.getElementById('manualMergeSelected').classList.remove('show');
+      updateManualMergeBtn();
+      await loadAll(); await loadMergeCandidates();
+    } catch (err) { alert(err.message); }
+  });
+
+  // ---- 一覧表示 ----
+  document.querySelectorAll('#filterChips .chip').forEach((chip) => {
+    chip.addEventListener('click', () => {
+      const status = chip.dataset.status;
+      if (activeFilters.has(status)) { activeFilters.delete(status); chip.classList.remove('active'); }
+      else { activeFilters.add(status); chip.classList.add('active'); }
+      renderList();
+    });
+  });
+  document.getElementById('searchInput').addEventListener('input', renderList);
+  document.getElementById('staffFilter').addEventListener('change', renderList);
+
+  function renderList() {
+    const q = toFullWidthKana(document.getElementById('searchInput').value.trim());
+    const staffFilter = document.getElementById('staffFilter').value;
+    const tbody = document.getElementById('tbody');
+    tbody.innerHTML = '';
+    const filtered = allCustomers
+      .filter((c) => !c.is_deleted)
+      .filter((c) => activeFilters.size === 0 || activeFilters.has(c.status === 'inactive' ? 'inactive' : 'active'))
+      .filter((c) => !staffFilter || c.staff_name === staffFilter)
+      .filter((c) => {
+        if (!q) return true;
+        return [c.realname, c.kana, c.phone, c.line_name].some((v) => toFullWidthKana(String(v || '')).includes(q));
+      })
+      .sort((a, b) => String(a.kana || a.realname || '').localeCompare(String(b.kana || b.realname || ''), 'ja'));
+
+    document.getElementById('emptyMsg').style.display = filtered.length === 0 ? 'block' : 'none';
+    filtered.forEach((c) => {
+      const tr = document.createElement('tr');
+      const nameCell = c.realname
+        ? `${esc(c.realname)}<div style="font-size:11px;color:var(--ink-soft);">${esc(c.kana || '')}</div>`
+        : `<span class="ghost-name">LINE名：${esc(c.line_name || '(不明)')}</span>`;
+      const telCell = c.phone ? `<a href="tel:${esc(c.phone)}" style="color:var(--accent);font-weight:700;text-decoration:none;">${esc(c.phone)}</a>` : '－';
+      const statusBadge = c.status === 'inactive' ? '<span class="badge inactive">非アクティブ</span>' : '<span class="badge active">アクティブ</span>';
+      const lineBadge = c.user_id ? '<span class="badge linked">連携済み</span>' : '<span class="badge unlinked">未連携</span>';
+      const blockedBadge = c.booking_blocked ? '<span class="badge blocked">受付拒否</span>' : '通常';
+      tr.innerHTML = `
+        <td>${nameCell}</td>
+        <td>${telCell}</td>
+        <td>${c.is_keep_member ? '✓ キープ' : ''}</td>
+        <td>${statusBadge}</td>
+        <td>${lineBadge}</td>
+        <td>${blockedBadge}</td>
+        <td>${c.notify_enabled ? '通知ON' : '通知OFF'}</td>
+        <td>${esc(c.staff_name || '')}</td>`;
+      tbody.appendChild(tr);
+    });
+  }
+
+  init();
+})();
+</script>
+</body>
+</html>

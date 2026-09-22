@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>予約データ（閲覧）</title>
+<style>
+  /* ============================================================
+     GAS版 reservation_view.html（予約データの閲覧専用画面。実際は
+     isOwnerRole_チェック付きのオーナー専用画面だった。確認用で編集はできない）
+     のNode移植版。GAS版との差異はREADME_PROTOTYPE.md章45参照
+     （アーカイブ機構は既存のReadME章40の判断に合わせて対象外、
+     一覧は直近200件までに簡略化）。
+     ============================================================ */
+  :root{
+    --bg:#F5F4EF; --panel:#ffffff; --ink:#2B2B27; --ink-soft:#75746C; --ink-faint:#A9A79C;
+    --line:#E4E2D9; --accent:#3D6B5C; --accent-soft:#E7EFE9; --admin:#8A5A3C; --admin-soft:#F5EBE3;
+    --warn:#B3542E; --warn-soft:#F7E9E2; --radius:14px; --sage:#5F8A6E; --sage-pale:#EAF3ED;
+    --repeat:#B5842E; --repeat-pale:#FBF1DE;
+  }
+  *{box-sizing:border-box; margin:0; padding:0; font-family:'Hiragino Sans','Yu Gothic',sans-serif;}
+  body{background:var(--bg); color:var(--ink);}
+  .wrap{display:none; padding:20px 24px; max-width:1100px; margin:0 auto;}
+  .wrap.ready{display:block;}
+  #loadingMsg{text-align:center; color:var(--ink-soft); font-size:13px; padding:60px 0;}
+
+  .page-head{display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:14px; gap:10px; flex-wrap:wrap;}
+  .page-head h1{font-size:18px; font-weight:700; margin-bottom:3px;}
+  .page-head p{font-size:12px; color:var(--ink-soft);}
+  .view-badge{font-size:11px; font-weight:700; background:var(--admin-soft); color:var(--admin); padding:5px 10px; border-radius:8px; white-space:nowrap;}
+  .close-btn{background:none; border:1px solid var(--line); border-radius:8px; padding:6px 14px; font-size:13px; color:var(--ink-soft); cursor:pointer; font-family:inherit;}
+
+  .toolbar{display:flex; align-items:center; gap:10px; margin-bottom:8px; flex-wrap:wrap;}
+  .search-box{display:flex; align-items:center; gap:8px; background:#fff; border:1px solid var(--line); border-radius:10px; padding:8px 12px; flex:1; max-width:280px;}
+  .search-box input{border:none; font-size:13px; width:100%; outline:none; font-family:inherit;}
+  .field-select, .field-date{border:1px solid var(--line); border-radius:8px; padding:7px 10px; font-size:12.5px; font-family:inherit; background:#fff; color:var(--ink);}
+  .chip{font-size:11.5px; font-weight:700; padding:6px 12px; border-radius:20px; background:#fff; border:1px solid var(--line); color:var(--ink-soft); cursor:pointer;}
+  .chip.active{background:var(--sage); color:#fff; border-color:var(--sage);}
+  .op-btn{background:#fff; border:1px solid var(--line); color:var(--ink-soft); border-radius:7px; padding:5px 11px; font-size:11.5px; font-weight:700; cursor:pointer; font-family:inherit;}
+  .range-note{font-size:11.5px; background:var(--admin-soft); color:var(--admin); padding:7px 12px; border-radius:8px; margin-bottom:12px;}
+
+  .panel{background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:0; overflow-x:auto;}
+  table{width:100%; border-collapse:collapse; font-size:13px; min-width:700px;}
+  th{text-align:left; font-size:11px; color:var(--ink-soft); font-weight:600; padding:10px 10px; border-bottom:1px solid var(--line); background:#FAFAF6; white-space:nowrap;}
+  td{padding:9px 10px; border-bottom:1px solid #F1ECE9; vertical-align:middle; white-space:nowrap;}
+  tr:last-child td{border-bottom:none;}
+  tr.cancelled-row td{color:var(--ink-faint); text-decoration:line-through;}
+  tr.past-row{background:#F3EFE8;}
+
+  .badge{font-size:10.5px; font-weight:700; padding:3px 9px; border-radius:10px; display:inline-block;}
+  .badge.confirmed{background:var(--sage-pale); color:var(--sage);}
+  .badge.tentative{background:var(--repeat-pale); color:var(--repeat);}
+  .badge.cancelled{background:#EFEFEF; color:var(--ink-faint);}
+  .two-line{line-height:1.4;}
+  .two-line .l1{font-size:11px; color:var(--ink-soft);}
+  .two-line .l2{font-size:13.5px; color:var(--ink); font-weight:600;}
+  .two-line .l2.opt{font-size:11.5px; color:var(--ink-soft); font-weight:400;}
+  .time-2line{line-height:1.3;}
+  .time-2line .start{font-size:13.5px; font-weight:600; color:var(--ink);}
+  .time-2line .end{font-size:11px; color:var(--ink-faint);}
+  .note-mark{font-size:11px; color:var(--admin); font-weight:700;}
+  .sent-mark{font-size:14px; margin-right:3px;}
+  .empty{color:var(--ink-soft); font-size:13px; padding:14px; text-align:center;}
+</style>
+</head>
+<body>
+<div id="loadingMsg">読み込み中...</div>
+
+<div class="wrap" id="wrap">
+  <div class="page-head">
+    <div>
+      <h1>予約データ（閲覧）</h1>
+      <p>確認用です。編集はできません（内容の修正は予約管理フォーム、または予約データ管理で行います）。</p>
+    </div>
+    <div style="display:flex; align-items:center; gap:10px;">
+      <div class="view-badge" id="viewBadge">👤 -</div>
+      <button class="close-btn" type="button" onclick="window.location.href='index.html'">✕ 閉じる</button>
+    </div>
+  </div>
+
+  <div class="toolbar">
+    <div class="search-box"><span>🔍</span><input type="text" id="searchInput" placeholder="本名・フリガナで検索"></div>
+    <select class="field-select" id="staffFilter"><option value="">担当者：すべて</option></select>
+    <input type="date" class="field-date" id="dateFrom"> 〜
+    <input type="date" class="field-date" id="dateTo">
+    <button class="op-btn" type="button" id="clearBtn">✕ 検索・日付をクリア</button>
+    <div class="chip" id="chipCancelled">キャンセルも表示</div>
+  </div>
+  <div class="range-note">🔍 直近200件（新しい順）を読み込んでいます。それより前の予約を確認したい場合は日付で絞り込んでください。</div>
+
+  <div class="panel">
+    <table>
+      <thead><tr><th>予約日</th><th>時間</th><th>お客様</th><th>メニュー</th><th>担当</th><th>備考</th><th>送信</th><th>ステータス</th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+    <div class="empty" id="emptyMsg" style="display:none;">該当する予約が見つかりません</div>
+  </div>
+</div>
+
+<script>
+(function(){
+  const loadingMsg = document.getElementById('loadingMsg');
+  const wrap = document.getElementById('wrap');
+  let allReservations = [];
+  let showCancelled = false;
+  const SERVICE_MINUTES = 90;
+
+  const HW_KATAKANA_MAP = {'ｱ':'ア','ｲ':'イ','ｳ':'ウ','ｴ':'エ','ｵ':'オ','ｶ':'カ','ｷ':'キ','ｸ':'ク','ｹ':'ケ','ｺ':'コ','ｻ':'サ','ｼ':'シ','ｽ':'ス','ｾ':'セ','ｿ':'ソ','ﾀ':'タ','ﾁ':'チ','ﾂ':'ツ','ﾃ':'テ','ﾄ':'ト','ﾅ':'ナ','ﾆ':'ニ','ﾇ':'ヌ','ﾈ':'ネ','ﾉ':'ノ','ﾊ':'ハ','ﾋ':'ヒ','ﾌ':'フ','ﾍ':'ヘ','ﾎ':'ホ','ﾏ':'マ','ﾐ':'ミ','ﾑ':'ム','ﾒ':'メ','ﾓ':'モ','ﾔ':'ヤ','ﾕ':'ユ','ﾖ':'ヨ','ﾗ':'ラ','ﾘ':'リ','ﾙ':'ル','ﾚ':'レ','ﾛ':'ロ','ﾜ':'ワ','ｦ':'ヲ','ﾝ':'ン','ｧ':'ァ','ｨ':'ィ','ｩ':'ゥ','ｪ':'ェ','ｫ':'ォ','ｬ':'ャ','ｭ':'ュ','ｮ':'ョ','ｯ':'ッ','ｰ':'ー'};
+  function toFullWidthKana(str) {
+    const s = String(str || ''); let result = '';
+    for (let i = 0; i < s.length; i++) result += (HW_KATAKANA_MAP[s[i]] || s[i]);
+    return result;
+  }
+  function esc(v) { return String(v == null ? '' : v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+  async function adminFetch(url) {
+    const res = await fetch(url);
+    if (res.status === 401) throw new Error('UNAUTHORIZED');
+    if (!res.ok) throw new Error('サーバーエラー: ' + res.status);
+    return res.json();
+  }
+
+  async function init() {
+    try {
+      const me = await adminFetch('/api/auth/me');
+      if (!me.staff.isOwner) {
+        loadingMsg.textContent = 'この画面はオーナー権限のみ利用できます';
+        return;
+      }
+      document.getElementById('viewBadge').textContent = '👤 ' + me.staff.name + '（オーナー）';
+      await loadReservations();
+      loadingMsg.style.display = 'none';
+      wrap.classList.add('ready');
+    } catch (e) {
+      window.location.href = '/admin/login.html?next=' + encodeURIComponent(window.location.pathname);
+    }
+  }
+
+  async function loadReservations() {
+    const data = await adminFetch('/api/admin/reservations?limit=200&offset=0');
+    allReservations = data.reservations || [];
+    populateStaffFilter();
+    renderTable();
+  }
+
+  function populateStaffFilter() {
+    const sel = document.getElementById('staffFilter');
+    const names = Array.from(new Set(allReservations.map((r) => String(r.staff_name || '').trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'ja'));
+    sel.innerHTML = '<option value="">担当者：すべて</option>' + names.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
+  }
+
+  function splitMenu(menuStr) {
+    const parts = String(menuStr || '').split('　＋　');
+    return { main: parts[0] || '', option: parts[1] || '' };
+  }
+  function calcEndTime(timeStr) {
+    const [h, m] = String(timeStr || '0:0').split(':').map(Number);
+    const total = (h || 0) * 60 + (m || 0) + SERVICE_MINUTES;
+    return String(Math.floor(total / 60) % 24).padStart(2, '0') + ':' + String(total % 60).padStart(2, '0');
+  }
+  function statusBadge(r) {
+    if (r.realname === 'キャンセル') return '<span class="badge cancelled">キャンセル</span>';
+    return r.status === '仮予約' ? '<span class="badge tentative">仮予約</span>' : '<span class="badge confirmed">確定</span>';
+  }
+
+  document.getElementById('searchInput').addEventListener('input', renderTable);
+  document.getElementById('staffFilter').addEventListener('change', renderTable);
+  document.getElementById('dateFrom').addEventListener('change', renderTable);
+  document.getElementById('dateTo').addEventListener('change', renderTable);
+  document.getElementById('clearBtn').addEventListener('click', () => {
+    document.getElementById('searchInput').value = '';
+    document.getElementById('dateFrom').value = '';
+    document.getElementById('dateTo').value = '';
+    renderTable();
+  });
+  document.getElementById('chipCancelled').addEventListener('click', (e) => {
+    showCancelled = !showCancelled;
+    e.currentTarget.classList.toggle('active', showCancelled);
+    renderTable();
+  });
+
+  function renderTable() {
+    const q = toFullWidthKana(document.getElementById('searchInput').value.trim());
+    const staffFilter = document.getElementById('staffFilter').value;
+    const dateFrom = document.getElementById('dateFrom').value;
+    const dateTo = document.getElementById('dateTo').value;
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const tbody = document.getElementById('tbody');
+    tbody.innerHTML = '';
+
+    const filtered = allReservations
+      .filter((r) => showCancelled || r.realname !== 'キャンセル')
+      .filter((r) => !staffFilter || r.staff_name === staffFilter)
+      .filter((r) => !dateFrom || r.reservation_date >= dateFrom)
+      .filter((r) => !dateTo || r.reservation_date <= dateTo)
+      .filter((r) => {
+        if (!q) return true;
+        return [r.realname, r.kana].some((v) => toFullWidthKana(String(v || '')).includes(q));
+      })
+      .sort((a, b) => {
+        const aFuture = a.reservation_date >= todayStr, bFuture = b.reservation_date >= todayStr;
+        if (aFuture !== bFuture) return aFuture ? -1 : 1;
+        return (a.reservation_date + a.reservation_time) < (b.reservation_date + b.reservation_time) ? -1 : 1;
+      });
+
+    document.getElementById('emptyMsg').style.display = filtered.length === 0 ? 'block' : 'none';
+    filtered.forEach((r) => {
+      const menuParts = splitMenu(r.menu);
+      const endTime = calcEndTime(r.reservation_time);
+      const dateParts = String(r.reservation_date).split('-');
+      const sentMark = r.line_sent ? '<span class="sent-mark" title="LINE通知送信済み">📨</span>' : '';
+      const noteMark = r.note ? `<span class="note-mark" title="${esc(r.note)}">備考有</span>` : '';
+      const tr = document.createElement('tr');
+      if (r.realname === 'キャンセル') tr.classList.add('cancelled-row');
+      if (r.reservation_date < todayStr) tr.classList.add('past-row');
+      tr.innerHTML =
+        `<td><div class="two-line"><div class="l1">${esc(dateParts[0] || '')}</div><div class="l2">${esc(dateParts[1] || '')}-${esc(dateParts[2] || '')}</div></div></td>` +
+        `<td><div class="time-2line"><div class="start">${esc(r.reservation_time)}</div><div class="end">〜${endTime}</div></div></td>` +
+        `<td><div class="two-line"><div class="l1">${esc(r.kana || '')}</div><div class="l2">${esc(r.realname)}</div></div></td>` +
+        `<td><div class="two-line"><div class="l1">${esc(menuParts.main)}</div>${menuParts.option ? `<div class="l2 opt">＋ ${esc(menuParts.option)}</div>` : ''}</div></td>` +
+        `<td>${esc(r.staff_name)}</td>` +
+        `<td>${noteMark}</td>` +
+        `<td>${sentMark}</td>` +
+        `<td>${statusBadge(r)}</td>`;
+      tbody.appendChild(tr);
+    });
+  }
+
+  init();
+})();
+</script>
+</body>
+</html>

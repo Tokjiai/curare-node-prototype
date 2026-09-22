@@ -1,0 +1,774 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>サロンダッシュボード</title>
+<style>
+  /* ============================================================
+     GAS版 calendar_page.html（サロンダッシュボード＝週・月表示のカレンダー
+     グリッドで店舗全体の予約を担当者色分け表示し、その場で予約の追加・
+     編集・キャンセル、イベント（臨時休業等）の確認・管理ができる画面）の
+     Node移植版。色以外は他の管理画面と使用感を揃えるクリーム＋セージの
+     配色トークンに合わせてある。GAS版との差異はREADME_PROTOTYPE.md章44参照
+     （週の開始曜日を月曜に統一・スタッフ色を自動割り当て・イベントの
+     バッファ時間帯の視覚表現を簡略化・Googleカレンダー連携は対象外）。
+     ============================================================ */
+  :root{
+    --bg:#F5F4EF; --panel:#ffffff; --ink:#2B2B27; --ink-soft:#75746C; --ink-faint:#A9A79C;
+    --line:#E4E2D9; --accent:#3D6B5C; --accent-soft:#E7EFE9; --warn:#B3542E; --warn-soft:#F7E9E2;
+    --rose:#d4a5a5; --rose-dark:#c99aa4;
+    --radius:14px;
+  }
+  *{box-sizing:border-box; margin:0; padding:0; font-family:'Hiragino Sans','Yu Gothic',sans-serif;}
+  body{background:var(--bg); color:var(--ink);}
+  .shell{display:none; min-height:100vh;}
+  .shell.ready{display:block;}
+
+  .header{background:linear-gradient(135deg, var(--rose) 0%, var(--rose-dark) 100%); color:#fff; padding:14px 16px;}
+  .header-top{display:flex; justify-content:space-between; align-items:center; gap:10px;}
+  .header-top h1{font-size:16px; font-weight:700;}
+  .header-top .back-link{font-size:12px; color:#fff; opacity:0.9; text-decoration:none; border:1px solid rgba(255,255,255,0.5); border-radius:8px; padding:4px 9px; white-space:nowrap;}
+  .header-user{font-size:11.5px; opacity:0.9; margin-top:2px;}
+
+  .toolbar{display:flex; flex-wrap:wrap; gap:8px; align-items:center; justify-content:space-between; background:#fff; border-bottom:1px solid var(--line); padding:9px 12px; position:sticky; top:0; z-index:6;}
+  .view-tog{display:flex; border:1px solid var(--line); border-radius:9px; overflow:hidden;}
+  .view-tog button{padding:7px 14px; border:none; background:#fff; font-family:inherit; font-size:12.5px; font-weight:600; color:var(--ink-soft); cursor:pointer;}
+  .view-tog button.active{background:var(--accent); color:#fff;}
+  .nav-group{display:flex; align-items:center; gap:6px;}
+  .nav-group button{padding:6px 10px; border:1px solid var(--line); border-radius:8px; background:#fff; font-family:inherit; font-size:12px; color:var(--accent); font-weight:600; cursor:pointer;}
+  .nav-label{font-size:13px; font-weight:700; min-width:120px; text-align:center;}
+
+  .main{padding:12px; max-width:1100px; margin:0 auto;}
+
+  /* ---- 週表示 ---- */
+  .week-wrap{overflow-x:auto; background:#fff; border:1px solid var(--line); border-radius:var(--radius);}
+  .week-grid{display:grid; grid-template-columns:44px repeat(7, minmax(96px,1fr)); min-width:760px;}
+  .wk-head{position:sticky; top:0; background:#fff; z-index:2; border-bottom:1px solid var(--line); padding:6px 4px; text-align:center;}
+  .wk-head.corner{border-right:1px solid var(--line);}
+  .wk-head .dow{font-size:11px; color:var(--ink-soft);}
+  .wk-head .dnum{font-size:14px; font-weight:700; margin-top:1px;}
+  .wk-head .dnum.today{display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; border-radius:50%; background:#E24B4A; color:#fff;}
+  .wk-head.dow-sun .dow, .wk-head.dow-sun .dnum{color:#C62828;}
+  .wk-head.dow-sat .dow, .wk-head.dow-sat .dnum{color:#1565C0;}
+  .wk-head-evbtn{margin-top:2px; font-size:10px; color:var(--accent); cursor:pointer; border:1px solid var(--line); border-radius:6px; padding:1px 5px; display:inline-block;}
+
+  .wk-hourcol{border-right:1px solid var(--line);}
+  .wk-hour{height:44px; font-size:10px; color:var(--ink-faint); text-align:right; padding-right:4px; border-bottom:1px dashed var(--line); position:relative; top:-6px;}
+  .wk-day{position:relative; border-right:1px solid var(--line); border-bottom:none;}
+  .wk-day-inner{position:relative; height:660px;} /* 15時間 x 44px */
+  .wk-hourline{position:absolute; left:0; right:0; height:1px; background:var(--line);}
+  .wk-slot-click{position:absolute; left:0; right:0; height:44px; cursor:pointer;}
+  .wk-slot-click:hover{background:rgba(61,107,92,0.06);}
+
+  .ev-blk{position:absolute; border-radius:6px; border-left:4px solid; padding:2px 5px; font-size:10.5px; line-height:1.35; overflow:hidden; cursor:pointer; box-shadow:0 1px 2px rgba(0,0,0,0.08);}
+  .ev-blk .prov{color:#D32F2F; font-weight:700;}
+  .ev-blk .nm{font-weight:700;}
+  .ev-event{position:absolute; left:2px; right:2px; background:#D6D6D6; color:#333; border-top:3px solid #757575; border-radius:4px; padding:2px 5px; font-size:10px; cursor:pointer; overflow:hidden;}
+
+  /* ---- 月表示 ---- */
+  .month-grid{display:grid; grid-template-columns:repeat(7,1fr); background:#fff; border:1px solid var(--line); border-radius:var(--radius); overflow:hidden;}
+  .m-head{padding:6px 0; text-align:center; font-size:11.5px; font-weight:700; color:var(--ink-soft); background:var(--accent-soft); border-bottom:1px solid var(--line);}
+  .m-head.dow-sun{color:#C62828;} .m-head.dow-sat{color:#1565C0;}
+  .mday{min-height:88px; border-right:1px solid var(--line); border-bottom:1px solid var(--line); padding:4px; cursor:pointer; position:relative;}
+  .mday:hover{background:rgba(61,107,92,0.05);}
+  .mday.other{opacity:0.4; cursor:default;}
+  .mday .dnum{font-size:12px; font-weight:700;}
+  .mday .dnum.today{display:inline-flex; align-items:center; justify-content:center; width:19px; height:19px; border-radius:50%; background:#E24B4A; color:#fff;}
+  .mday.dow-sun .dnum{color:#C62828;} .mday.dow-sat .dnum{color:#1565C0;}
+  .mev{margin-top:2px; font-size:9.5px; padding:1px 4px; border-radius:4px; border-left:3px solid; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; cursor:pointer;}
+  .mevent-bar{margin-top:2px; font-size:9px; padding:1px 4px; border-radius:4px; background:#EEEEEE; color:#424242; border-left:3px solid #757575; cursor:pointer;}
+  .m-add-icon{position:absolute; top:2px; right:2px; font-size:10px; color:var(--accent); cursor:pointer;}
+  .m-more{font-size:9px; color:var(--ink-faint); margin-top:2px;}
+
+  .legend{display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; font-size:11px; color:var(--ink-soft);}
+  .legend .chip{display:inline-flex; align-items:center; gap:4px;}
+  .legend .dot{width:9px; height:9px; border-radius:50%;}
+
+  /* ---- モーダル共通 ---- */
+  .modal-overlay{display:none; position:fixed; inset:0; background:rgba(0,0,0,0.4); z-index:50; align-items:center; justify-content:center; padding:16px;}
+  .modal-overlay.show{display:flex;}
+  .modal-box{background:#fff; border-radius:var(--radius); padding:18px; width:100%; max-width:380px; max-height:88vh; overflow-y:auto;}
+  .modal-title{font-size:15px; font-weight:700; margin-bottom:10px;}
+  .modal-field{margin-bottom:10px;}
+  .modal-field label{display:block; font-size:12px; font-weight:600; color:var(--ink-soft); margin-bottom:3px;}
+  .modal-field input, .modal-field select{width:100%; padding:9px 10px; border:1px solid var(--line); border-radius:8px; font-family:inherit; font-size:13.5px;}
+  .modal-field .chk-row{display:flex; align-items:center; gap:6px; font-weight:400; font-size:12.5px;}
+  .modal-field .chk-row input{width:auto;}
+  .modal-err{color:#c0392b; font-size:12px; margin:4px 0;}
+  .modal-actions{display:flex; gap:8px; margin-top:12px;}
+  .modal-btn-cancel, .modal-btn-ok, .modal-btn-danger{flex:1; padding:10px; border-radius:9px; border:none; font-family:inherit; font-size:13px; font-weight:700; cursor:pointer;}
+  .modal-btn-cancel{background:#EFEEE8; color:var(--ink-soft);}
+  .modal-btn-ok{background:var(--accent); color:#fff;}
+  .modal-btn-danger{background:var(--warn); color:#fff;}
+
+  .popup-row{font-size:13px; margin-bottom:6px; line-height:1.5;}
+  .popup-row .k{color:var(--ink-soft); font-size:11px;}
+  .popup-actions{display:flex; flex-direction:column; gap:7px; margin-top:12px;}
+  .popup-actions button{padding:10px; border-radius:9px; border:1px solid var(--line); background:#fff; font-family:inherit; font-size:13px; font-weight:600; cursor:pointer;}
+  .popup-actions .pa-edit{color:var(--accent); border-color:var(--accent);}
+  .popup-actions .pa-cancel{color:var(--warn); border-color:var(--warn);}
+  .popup-actions .pa-add{color:#fff; background:var(--accent); border-color:var(--accent);}
+
+  .ev-list-item{display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-bottom:1px solid var(--line); font-size:12.5px;}
+  .ev-list-item .ev-btns{display:flex; gap:6px;}
+  .ev-list-item .ev-btns button{font-size:11px; padding:3px 7px; border-radius:6px; border:1px solid var(--line); background:#fff; cursor:pointer;}
+
+  #loadingMsg{padding:40px; text-align:center; color:var(--ink-soft);}
+</style>
+</head>
+<body>
+  <div id="loadingMsg">読み込み中...</div>
+
+  <div class="shell" id="shell">
+    <div class="header">
+      <div class="header-top">
+        <h1>🛏️ サロンダッシュボード</h1>
+        <a class="back-link" href="/staff/dashboard.html">← ダッシュボードへ</a>
+      </div>
+      <div class="header-user" id="headerInfo"></div>
+    </div>
+
+    <div class="toolbar">
+      <div class="view-tog">
+        <button id="viewWeekBtn" type="button" class="active">週</button>
+        <button id="viewMonthBtn" type="button">月</button>
+      </div>
+      <div class="nav-group">
+        <button id="navPrevBtn" type="button">← 前</button>
+        <button id="navTodayBtn" type="button">今日</button>
+        <button id="navNextBtn" type="button">次 →</button>
+      </div>
+      <div class="nav-label" id="navLabel"></div>
+      <button id="reloadBtn" type="button" style="padding:6px 10px; border:1px solid var(--line); border-radius:8px; background:#fff; cursor:pointer;">🔄</button>
+    </div>
+
+    <div class="main">
+      <div id="weekView" class="week-wrap"></div>
+      <div id="monthView" class="month-grid" style="display:none;"></div>
+
+      <div class="legend" id="legend"></div>
+    </div>
+  </div>
+
+  <!-- 予約詳細ポップアップ -->
+  <div class="modal-overlay" id="resPopup">
+    <div class="modal-box">
+      <div class="modal-title" id="rpTitle">予約の詳細</div>
+      <div class="popup-row"><span class="k">日時：</span><span id="rpDatetime"></span></div>
+      <div class="popup-row"><span class="k">担当：</span><span id="rpStaff"></span></div>
+      <div class="popup-row"><span class="k">メニュー：</span><span id="rpMenu"></span></div>
+      <div class="popup-actions">
+        <button class="pa-add" id="rpAddBtn" type="button">＋ この日に予約登録</button>
+        <button class="pa-edit" id="rpEditBtn" type="button">✏️ この予約を編集する</button>
+        <button class="pa-cancel" id="rpCancelBtn" type="button">🗑️ この予約を削除する</button>
+      </div>
+      <div class="modal-actions"><button class="modal-btn-cancel" id="rpCloseBtn" type="button">閉じる</button></div>
+    </div>
+  </div>
+
+  <!-- イベント詳細ポップアップ -->
+  <div class="modal-overlay" id="evPopup">
+    <div class="modal-box">
+      <div class="modal-title" id="epTitle">📌 行事</div>
+      <div class="popup-row"><span class="k">日時：</span><span id="epDatetime"></span></div>
+      <div class="popup-actions">
+        <button class="pa-add" id="epAddBtn" type="button">＋ この日に予約登録</button>
+        <button class="pa-edit" id="epManageBtn" type="button" style="display:none;">📌 行事を管理する</button>
+      </div>
+      <div class="modal-actions"><button class="modal-btn-cancel" id="epCloseBtn" type="button">閉じる</button></div>
+    </div>
+  </div>
+
+  <!-- 予約 追加/編集モーダル -->
+  <div class="modal-overlay" id="resModal">
+    <div class="modal-box">
+      <div class="modal-title" id="rmTitle">＋ 予約を追加</div>
+      <div class="modal-field"><label>お客様氏名</label><input type="text" id="rmRealname"></div>
+      <div class="modal-field"><label>担当スタッフ</label>
+        <select id="rmStaff"><option value="未定">未定</option></select>
+      </div>
+      <div class="modal-field"><label>メニュー</label>
+        <select id="rmMenu"></select>
+      </div>
+      <div class="modal-field"><label>日付</label><input type="date" id="rmDate"></div>
+      <div class="modal-field"><label>時刻</label><input type="time" id="rmTime"></div>
+      <div class="modal-field"><label>備考（任意）</label><input type="text" id="rmNote"></div>
+      <div class="modal-err" id="rmErr"></div>
+      <div class="modal-actions">
+        <button class="modal-btn-cancel" id="rmCancelBtn" type="button">閉じる</button>
+        <button class="modal-btn-ok" id="rmSaveBtn" type="button">保存する</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 行事（イベント）管理モーダル：オーナー専用 -->
+  <div class="modal-overlay" id="eventMgrModal">
+    <div class="modal-box">
+      <div class="modal-title">📌 行事を管理（<span id="emDateLabel"></span>）</div>
+      <div id="emList"></div>
+      <div style="border-top:1px solid var(--line); margin:12px 0; padding-top:10px;">
+        <div class="modal-field"><label>行事名</label><input type="text" id="emTitle"></div>
+        <div class="modal-field chk-row"><label style="margin:0;"><input type="checkbox" id="emAllday"> 終日</label></div>
+        <div class="modal-field" id="emTimeRow" style="display:flex; gap:8px;">
+          <div style="flex:1;"><label>開始</label><input type="time" id="emStart" value="09:00"></div>
+          <div style="flex:1;"><label>終了</label><input type="time" id="emEnd" value="18:00"></div>
+        </div>
+        <div class="modal-field chk-row"><label style="margin:0;"><input type="checkbox" id="emRestrict"> 予約枠をブロックする（前後の時間帯も自動的に予約不可にする）</label></div>
+        <div class="modal-err" id="emErr"></div>
+        <div class="modal-actions">
+          <button class="modal-btn-cancel" id="emResetBtn" type="button">クリア</button>
+          <button class="modal-btn-ok" id="emSaveBtn" type="button">追加する</button>
+        </div>
+      </div>
+      <div class="modal-actions"><button class="modal-btn-cancel" id="emCloseBtn" type="button">閉じる</button></div>
+    </div>
+  </div>
+
+<script>
+(function(){
+  const loadingMsg = document.getElementById('loadingMsg');
+  const shell = document.getElementById('shell');
+  let ME = null;
+  let view = 'week';
+  let curDate = new Date(); curDate.setHours(0,0,0,0);
+  let weekCache = {};
+  let monthCache = {};
+  let staffColors = {}, colorMap = {}, bgMap = {}, txMap = {};
+  let staffList = [], menuItems = [];
+  let currentPopupResv = null;
+  let currentPopupEvent = null;
+  let editingResvId = null;
+  let emEditingId = null;
+  const HOURS = []; for (let h = 9; h <= 22; h++) HOURS.push(h);
+  const SH = 44; // px / hour
+  const BASE_MIN = 9 * 60;
+
+  function pad2(n){ return String(n).padStart(2,'0'); }
+  function fmtDate(d){ return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`; }
+  function addDays(d,n){ const x = new Date(d); x.setDate(x.getDate()+n); return x; }
+  function startOfWeek(d){ const x = new Date(d); x.setHours(0,0,0,0); const dow=(x.getDay()+6)%7; x.setDate(x.getDate()-dow); return x; }
+  function toMin(t){ const [h,m] = String(t).split(':').map(Number); return h*60+(m||0); }
+  function todayStr(){ return fmtDate(new Date()); }
+  const DOW_LABELS = ['月','火','水','木','金','土','日'];
+
+  async function staffFetch(url, opts) {
+    const res = await fetch(url, opts);
+    if (res.status === 401) throw new Error('UNAUTHORIZED');
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok && !('success' in body)) throw new Error(body.message || body.error || ('サーバーエラー: ' + res.status));
+    return body;
+  }
+
+  async function init() {
+    try {
+      const me = await staffFetch('/api/auth/me');
+      ME = me.staff;
+      const storeData = await staffFetch('/api/store');
+      document.getElementById('headerInfo').textContent = `${storeData.store.name} ／ ${ME.name}${ME.isOwner ? '（オーナー）' : ''}`;
+      staffList = storeData.staffList || [];
+      menuItems = (storeData.menuItems || []).filter((m) => m.category === 'メインメニュー');
+      const staffSel = document.getElementById('rmStaff');
+      staffList.forEach((s) => {
+        const opt = document.createElement('option'); opt.value = s.realName; opt.textContent = s.realName;
+        staffSel.appendChild(opt);
+      });
+      const menuSel = document.getElementById('rmMenu');
+      menuItems.forEach((m) => {
+        const opt = document.createElement('option'); opt.value = m.name; opt.textContent = m.name;
+        menuSel.appendChild(opt);
+      });
+      await render();
+      loadingMsg.style.display = 'none';
+      shell.classList.add('ready');
+    } catch (e) {
+      window.location.href = '/admin/login.html?next=' + encodeURIComponent(window.location.pathname);
+    }
+  }
+
+  async function fetchWeek(sundayLikeMonday) {
+    const key = fmtDate(sundayLikeMonday);
+    if (weekCache[key]) return weekCache[key];
+    const r = await staffFetch('/api/staff/calendar/week?start=' + key);
+    if (!r.success) throw new Error(r.message || '取得に失敗しました');
+    weekCache[key] = r.data;
+    return r.data;
+  }
+  async function fetchMonth(year, month) {
+    const key = year + '-' + month;
+    if (monthCache[key]) return monthCache[key];
+    const r = await staffFetch(`/api/staff/calendar/month?year=${year}&month=${month}`);
+    if (!r.success) throw new Error(r.message || '取得に失敗しました');
+    monthCache[key] = r.data;
+    return r.data;
+  }
+
+  function applyPalette(data) {
+    staffColors = data.staffColors || {};
+    colorMap = data.colorMap || {};
+    bgMap = data.bgMap || {};
+    txMap = data.txMap || {};
+  }
+
+  function colorFor(staffName) {
+    const key = staffColors[staffName];
+    return {
+      border: colorMap[key] || '#9E9E9E',
+      bg: bgMap[key] || '#F5F5F5',
+      tx: txMap[key] || '#424242'
+    };
+  }
+
+  function updateNavLabel() {
+    if (view === 'week') {
+      const start = startOfWeek(curDate);
+      const end = addDays(start, 6);
+      document.getElementById('navLabel').textContent =
+        `${start.getMonth()+1}/${start.getDate()} 〜 ${end.getMonth()+1}/${end.getDate()}`;
+    } else {
+      document.getElementById('navLabel').textContent = `${curDate.getFullYear()}年${curDate.getMonth()+1}月`;
+    }
+  }
+
+  function renderLegend() {
+    const el = document.getElementById('legend');
+    el.innerHTML = '';
+    Object.keys(staffColors).forEach((name) => {
+      const c = colorFor(name);
+      const chip = document.createElement('span');
+      chip.className = 'chip';
+      chip.innerHTML = `<span class="dot" style="background:${c.border};"></span>${name}`;
+      el.appendChild(chip);
+    });
+  }
+
+  // ---------------- 週表示 ----------------
+  async function renderWeek() {
+    const start = startOfWeek(curDate);
+    const data = await fetchWeek(start);
+    applyPalette(data);
+    renderLegend();
+
+    const wrap = document.getElementById('weekView');
+    const days = [];
+    for (let i = 0; i < 7; i++) days.push(addDays(start, i));
+
+    let html = '<div class="week-grid">';
+    html += '<div class="wk-head corner"></div>';
+    days.forEach((d) => {
+      const jsDay = d.getDay();
+      const cls = jsDay === 0 ? 'dow-sun' : (jsDay === 6 ? 'dow-sat' : '');
+      const ds = fmtDate(d);
+      const isToday = ds === todayStr();
+      html += `<div class="wk-head ${cls}" data-date="${ds}">
+        <div class="dow">${DOW_LABELS[(jsDay+6)%7]}</div>
+        <div class="dnum ${isToday ? 'today' : ''}">${d.getDate()}</div>
+        ${ME.isOwner ? `<div class="wk-head-evbtn" data-date="${ds}">📌+</div>` : ''}
+      </div>`;
+    });
+    // hour column
+    html += '<div class="wk-hourcol"><div class="wk-day-inner">';
+    HOURS.forEach((h, i) => { html += `<div class="wk-hourline" style="top:${i*SH}px;"></div><div class="wk-hour" style="top:${i*SH}px; position:absolute;">${h}:00</div>`; });
+    html += '</div></div>';
+
+    days.forEach((d) => {
+      const ds = fmtDate(d);
+      html += `<div class="wk-day" data-date="${ds}"><div class="wk-day-inner" id="wkcol-${ds}">`;
+      HOURS.forEach((h, i) => {
+        html += `<div class="wk-hourline" style="top:${i*SH}px;"></div>`;
+        html += `<div class="wk-slot-click" data-date="${ds}" data-time="${pad2(h)}:00" style="top:${i*SH}px;"></div>`;
+      });
+      html += '</div></div>';
+    });
+    html += '</div>';
+    wrap.innerHTML = html;
+
+    days.forEach((d) => {
+      const ds = fmtDate(d);
+      const dayResv = (data.reservations || []).filter((r) => r.date === ds);
+      const dayEv = (data.events || []).filter((e) => e.date === ds);
+      layoutDayLanes(ds, dayResv);
+      dayEv.forEach((e) => renderWeekEventChip(ds, e));
+    });
+
+    wrap.querySelectorAll('.wk-slot-click').forEach((el) => {
+      el.addEventListener('click', () => openAddReservation(el.dataset.date, el.dataset.time));
+    });
+    wrap.querySelectorAll('.wk-head-evbtn').forEach((el) => {
+      el.addEventListener('click', (ev) => { ev.stopPropagation(); openEventManager(el.dataset.date); });
+    });
+  }
+
+  function layoutDayLanes(ds, reservations) {
+    const col = document.getElementById('wkcol-' + ds);
+    if (!col) return;
+    const staffLane = {};
+    const lanes = [[], []]; // occupied intervals per lane
+    const overlap = (a1,a2,b1,b2) => a1 < b2 && a2 > b1;
+
+    reservations.forEach((r) => {
+      const s = toMin(r.startTime), e = toMin(r.endTime);
+      let lane = -1;
+      const preferred = staffLane[r.staffName];
+      if (preferred !== undefined && !lanes[preferred].some((iv) => overlap(iv[0], iv[1], s, e))) {
+        lane = preferred;
+      } else if (!lanes[0].some((iv) => overlap(iv[0], iv[1], s, e))) {
+        lane = 0;
+      } else if (!lanes[1].some((iv) => overlap(iv[0], iv[1], s, e))) {
+        lane = 1;
+      } else {
+        lane = 1; // 3件以上重なる場合は2レーン目に重ねて表示（簡略化）
+      }
+      lanes[lane].push([s, e]);
+      staffLane[r.staffName] = lane;
+
+      const c = colorFor(r.staffName);
+      const top = (s - BASE_MIN) / 60 * SH;
+      const height = Math.max(18, (e - s) / 60 * SH - 2);
+      const left = lane === 0 ? '2%' : '51%';
+      const width = '47%';
+      const blk = document.createElement('div');
+      blk.className = 'ev-blk';
+      blk.style.top = top + 'px';
+      blk.style.height = height + 'px';
+      blk.style.left = left; blk.style.width = width;
+      blk.style.background = c.bg; blk.style.borderLeftColor = c.border; blk.style.color = c.tx;
+      blk.innerHTML = (r.isProvisional ? '<span class="prov">仮＋</span>' : '') + `<span class="nm">${escHtml(r.realname)}</span><br>${r.startTime} ${escHtml(r.staffName)}`;
+      blk.addEventListener('click', () => openReservationPopup(r));
+      col.appendChild(blk);
+    });
+  }
+
+  function renderWeekEventChip(ds, e) {
+    const col = document.getElementById('wkcol-' + ds);
+    if (!col) return;
+    let top, height;
+    if (!e.startTime) { top = 0; height = 20; }
+    else {
+      const s = toMin(e.startTime), en = toMin(e.endTime || e.startTime);
+      top = Math.max(0, (s - BASE_MIN) / 60 * SH);
+      height = Math.max(16, (en - s) / 60 * SH);
+    }
+    const blk = document.createElement('div');
+    blk.className = 'ev-event';
+    blk.style.top = top + 'px'; blk.style.height = height + 'px';
+    blk.textContent = '📌 ' + e.label;
+    blk.addEventListener('click', () => openEventPopup(e));
+    col.appendChild(blk);
+  }
+
+  // ---------------- 月表示 ----------------
+  async function renderMonth() {
+    const year = curDate.getFullYear(), month = curDate.getMonth() + 1;
+    const data = await fetchMonth(year, month);
+    applyPalette(data);
+    renderLegend();
+
+    const el = document.getElementById('monthView');
+    let html = '';
+    DOW_LABELS.forEach((lbl, i) => {
+      const cls = i === 5 ? 'dow-sat' : (i === 6 ? 'dow-sun' : '');
+      html += `<div class="m-head ${cls}">${lbl}</div>`;
+    });
+
+    const firstOfMonth = new Date(year, month - 1, 1);
+    const startPad = (firstOfMonth.getDay() + 6) % 7; // 月曜始まり
+    const daysInMonth = new Date(year, month, 0).getDate();
+    const gridStart = addDays(firstOfMonth, -startPad);
+    const totalCells = Math.ceil((startPad + daysInMonth) / 7) * 7;
+
+    const resvByDate = {}, evByDate = {};
+    (data.reservations || []).forEach((r) => { (resvByDate[r.date] = resvByDate[r.date] || []).push(r); });
+    (data.events || []).forEach((e) => { (evByDate[e.date] = evByDate[e.date] || []).push(e); });
+
+    for (let i = 0; i < totalCells; i++) {
+      const d = addDays(gridStart, i);
+      const ds = fmtDate(d);
+      const inMonth = d.getMonth() === month - 1;
+      const jsDay = d.getDay();
+      const cls = ['mday'];
+      if (!inMonth) cls.push('other');
+      if (jsDay === 0) cls.push('dow-sun'); if (jsDay === 6) cls.push('dow-sat');
+      const isToday = ds === todayStr();
+      let inner = `<div class="dnum ${isToday ? 'today' : ''}">${d.getDate()}</div>`;
+      if (inMonth && ME.isOwner) inner += `<div class="m-add-icon" data-date="${ds}">📌</div>`;
+      if (inMonth) {
+        const list = (resvByDate[ds] || []).slice(0, 3);
+        list.forEach((r) => {
+          const c = colorFor(r.staffName);
+          inner += `<div class="mev" data-idx="${(resvByDate[ds]||[]).indexOf(r)}" data-date="${ds}" style="background:${c.bg}; border-left-color:${c.border}; color:${c.tx};">${r.startTime} ${escHtml(r.realname)}</div>`;
+        });
+        if ((resvByDate[ds] || []).length > 3) inner += `<div class="m-more">他${(resvByDate[ds].length - 3)}件</div>`;
+        (evByDate[ds] || []).forEach((e) => {
+          inner += `<div class="mevent-bar" data-date="${ds}" data-label="${escHtml(e.label)}">📌 ${escHtml(e.label)}</div>`;
+        });
+      }
+      html += `<div class="${cls.join(' ')}" data-date="${ds}" data-inmonth="${inMonth}">${inner}</div>`;
+    }
+    el.innerHTML = html;
+
+    el.querySelectorAll('.mday').forEach((cell) => {
+      if (cell.dataset.inmonth !== 'true') return;
+      cell.addEventListener('click', (ev) => {
+        if (ev.target.closest('.mev') || ev.target.closest('.mevent-bar') || ev.target.closest('.m-add-icon')) return;
+        openAddReservation(cell.dataset.date, '');
+      });
+    });
+    el.querySelectorAll('.mev').forEach((chip) => {
+      chip.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        const ds = chip.dataset.date;
+        const r = (resvByDate[ds] || [])[Number(chip.dataset.idx)];
+        if (r) openReservationPopup(r);
+      });
+    });
+    el.querySelectorAll('.mevent-bar').forEach((chip) => {
+      chip.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        const ds = chip.dataset.date;
+        const e = (evByDate[ds] || []).find((x) => x.label === chip.dataset.label);
+        if (e) openEventPopup(e);
+      });
+    });
+    el.querySelectorAll('.m-add-icon').forEach((icon) => {
+      icon.addEventListener('click', (ev) => { ev.stopPropagation(); openEventManager(icon.dataset.date); });
+    });
+  }
+
+  async function render() {
+    updateNavLabel();
+    document.getElementById('weekView').style.display = view === 'week' ? '' : 'none';
+    document.getElementById('monthView').style.display = view === 'month' ? '' : 'none';
+    try {
+      if (view === 'week') await renderWeek(); else await renderMonth();
+    } catch (e) {
+      if (e.message === 'UNAUTHORIZED') { window.location.href = '/admin/login.html?next=' + encodeURIComponent(window.location.pathname); return; }
+      alert(e.message);
+    }
+  }
+
+  function escHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  // ---------------- ナビゲーション ----------------
+  document.getElementById('viewWeekBtn').addEventListener('click', () => { view = 'week'; document.getElementById('viewWeekBtn').classList.add('active'); document.getElementById('viewMonthBtn').classList.remove('active'); render(); });
+  document.getElementById('viewMonthBtn').addEventListener('click', () => { view = 'month'; document.getElementById('viewMonthBtn').classList.add('active'); document.getElementById('viewWeekBtn').classList.remove('active'); render(); });
+  document.getElementById('navPrevBtn').addEventListener('click', () => { curDate = view === 'week' ? addDays(curDate, -7) : new Date(curDate.getFullYear(), curDate.getMonth()-1, 1); render(); });
+  document.getElementById('navNextBtn').addEventListener('click', () => { curDate = view === 'week' ? addDays(curDate, 7) : new Date(curDate.getFullYear(), curDate.getMonth()+1, 1); render(); });
+  document.getElementById('navTodayBtn').addEventListener('click', () => { curDate = new Date(); curDate.setHours(0,0,0,0); render(); });
+  document.getElementById('reloadBtn').addEventListener('click', () => { weekCache = {}; monthCache = {}; render(); });
+
+  // ---------------- 予約詳細ポップアップ ----------------
+  function openReservationPopup(r) {
+    currentPopupResv = r;
+    document.getElementById('rpTitle').textContent = (r.isProvisional ? '仮予約' : '予約') + 'の詳細：' + r.realname + '様';
+    document.getElementById('rpDatetime').textContent = `${r.date} ${r.startTime}〜${r.endTime}`;
+    document.getElementById('rpStaff').textContent = r.staffName;
+    document.getElementById('rpMenu').textContent = r.menu || '';
+    document.getElementById('resPopup').classList.add('show');
+  }
+  document.getElementById('rpCloseBtn').addEventListener('click', () => document.getElementById('resPopup').classList.remove('show'));
+  document.getElementById('resPopup').addEventListener('click', (e) => { if (e.target.id === 'resPopup') e.currentTarget.classList.remove('show'); });
+  document.getElementById('rpAddBtn').addEventListener('click', () => {
+    document.getElementById('resPopup').classList.remove('show');
+    openAddReservation(currentPopupResv.date, '');
+  });
+  document.getElementById('rpEditBtn').addEventListener('click', () => {
+    document.getElementById('resPopup').classList.remove('show');
+    openEditReservation(currentPopupResv);
+  });
+  document.getElementById('rpCancelBtn').addEventListener('click', async () => {
+    if (!confirm(`${currentPopupResv.realname}様の予約（${currentPopupResv.date} ${currentPopupResv.startTime}）をキャンセルしますか？`)) return;
+    try {
+      const r = await staffFetch('/api/staff/reservations/' + currentPopupResv.id, { method: 'DELETE' });
+      if (!r.success) { alert(r.message || 'キャンセルに失敗しました'); return; }
+      document.getElementById('resPopup').classList.remove('show');
+      weekCache = {}; monthCache = {};
+      render();
+    } catch (e) { alert(e.message); }
+  });
+
+  // ---------------- イベント詳細ポップアップ ----------------
+  function openEventPopup(e) {
+    currentPopupEvent = e;
+    document.getElementById('epTitle').textContent = '📌 ' + e.label;
+    document.getElementById('epDatetime').textContent = e.startTime ? `${e.date} ${e.startTime}〜${e.endTime}` : `${e.date}（終日）`;
+    document.getElementById('epManageBtn').style.display = ME.isOwner ? '' : 'none';
+    document.getElementById('evPopup').classList.add('show');
+  }
+  document.getElementById('epCloseBtn').addEventListener('click', () => document.getElementById('evPopup').classList.remove('show'));
+  document.getElementById('evPopup').addEventListener('click', (e) => { if (e.target.id === 'evPopup') e.currentTarget.classList.remove('show'); });
+  document.getElementById('epAddBtn').addEventListener('click', () => {
+    document.getElementById('evPopup').classList.remove('show');
+    openAddReservation(currentPopupEvent.date, '');
+  });
+  document.getElementById('epManageBtn').addEventListener('click', () => {
+    document.getElementById('evPopup').classList.remove('show');
+    openEventManager(currentPopupEvent.date);
+  });
+
+  // ---------------- 予約 追加/編集モーダル ----------------
+  function openAddReservation(date, time) {
+    editingResvId = null;
+    document.getElementById('rmTitle').textContent = '＋ 予約を追加';
+    document.getElementById('rmRealname').value = '';
+    document.getElementById('rmStaff').value = ME.isOwner ? '未定' : (staffList.find((s) => s.realName === ME.name) ? ME.name : '未定');
+    document.getElementById('rmMenu').selectedIndex = 0;
+    document.getElementById('rmDate').value = date;
+    document.getElementById('rmTime').value = time || '10:00';
+    document.getElementById('rmNote').value = '';
+    document.getElementById('rmErr').style.display = 'none';
+    document.getElementById('resModal').classList.add('show');
+  }
+  function openEditReservation(r) {
+    editingResvId = r.id;
+    document.getElementById('rmTitle').textContent = '✏️ 予約を編集';
+    document.getElementById('rmRealname').value = r.realname;
+    document.getElementById('rmStaff').value = r.staffName;
+    document.getElementById('rmMenu').value = r.menu;
+    document.getElementById('rmDate').value = r.date;
+    document.getElementById('rmTime').value = r.startTime;
+    document.getElementById('rmNote').value = '';
+    document.getElementById('rmErr').style.display = 'none';
+    document.getElementById('resModal').classList.add('show');
+  }
+  document.getElementById('rmCancelBtn').addEventListener('click', () => document.getElementById('resModal').classList.remove('show'));
+  document.getElementById('rmSaveBtn').addEventListener('click', async () => {
+    const errBox = document.getElementById('rmErr');
+    errBox.style.display = 'none';
+    const realname = document.getElementById('rmRealname').value.trim();
+    const staffName = document.getElementById('rmStaff').value;
+    const menu = document.getElementById('rmMenu').value;
+    const date = document.getElementById('rmDate').value;
+    const time = document.getElementById('rmTime').value;
+    const note = document.getElementById('rmNote').value.trim();
+    if (!realname || !staffName || !menu || !date || !time) {
+      errBox.textContent = 'お客様氏名・担当・メニュー・日付・時刻は必須です';
+      errBox.style.display = 'block';
+      return;
+    }
+    try {
+      let r;
+      if (editingResvId) {
+        r = await staffFetch('/api/staff/reservations/' + editingResvId, {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ staffName, menu, date, time, note })
+        });
+      } else {
+        r = await staffFetch('/api/staff/reservations', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ realname, staffName, menu, date, time, note })
+        });
+        if (r.isLimitWarning) {
+          if (confirm(r.message + '\n続行しますか？')) {
+            r = await staffFetch('/api/staff/reservations', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ realname, staffName, menu, date, time, note, ownerOverride: true })
+            });
+          } else { return; }
+        }
+      }
+      if (!r.success) { errBox.textContent = r.message || '保存に失敗しました'; errBox.style.display = 'block'; return; }
+      document.getElementById('resModal').classList.remove('show');
+      weekCache = {}; monthCache = {};
+      render();
+    } catch (e) { errBox.textContent = e.message; errBox.style.display = 'block'; }
+  });
+
+  // ---------------- 行事管理モーダル（オーナー専用） ----------------
+  let emCurrentDate = null;
+  async function openEventManager(date) {
+    if (!ME.isOwner) return;
+    emCurrentDate = date;
+    document.getElementById('emDateLabel').textContent = date;
+    resetEventForm();
+    await loadEventManagerList();
+    document.getElementById('eventMgrModal').classList.add('show');
+  }
+  function resetEventForm() {
+    emEditingId = null;
+    document.getElementById('emTitle').value = '';
+    document.getElementById('emAllday').checked = false;
+    document.getElementById('emStart').value = '09:00';
+    document.getElementById('emEnd').value = '18:00';
+    document.getElementById('emRestrict').checked = false;
+    document.getElementById('emTimeRow').style.display = 'flex';
+    document.getElementById('emErr').style.display = 'none';
+    document.getElementById('emSaveBtn').textContent = '追加する';
+  }
+  document.getElementById('emAllday').addEventListener('change', (e) => {
+    document.getElementById('emTimeRow').style.display = e.target.checked ? 'none' : 'flex';
+  });
+  async function loadEventManagerList() {
+    const listEl = document.getElementById('emList');
+    listEl.innerHTML = '読み込み中...';
+    try {
+      const r = await staffFetch('/api/staff/calendar/events?date=' + emCurrentDate);
+      const rows = r.events || [];
+      if (rows.length === 0) { listEl.innerHTML = '<div style="font-size:12px; color:var(--ink-soft);">登録されている行事はありません</div>'; return; }
+      listEl.innerHTML = '';
+      rows.forEach((ev) => {
+        const row = document.createElement('div');
+        row.className = 'ev-list-item';
+        row.innerHTML = `
+          <div>${escHtml(ev.label)}（${ev.startTime ? ev.startTime + '〜' + ev.endTime : '終日'}）${ev.restrictBooking ? ' 🚫予約ブロック' : ''}</div>
+          <div class="ev-btns"><button type="button" data-act="edit">編集</button><button type="button" data-act="del">削除</button></div>
+        `;
+        row.querySelector('[data-act=edit]').addEventListener('click', () => {
+          emEditingId = ev.id;
+          document.getElementById('emTitle').value = ev.label;
+          const isAllday = ev.startTime === '00:00' && ev.endTime === '23:59';
+          document.getElementById('emAllday').checked = isAllday;
+          document.getElementById('emTimeRow').style.display = isAllday ? 'none' : 'flex';
+          document.getElementById('emStart').value = ev.startTime || '09:00';
+          document.getElementById('emEnd').value = ev.endTime || '18:00';
+          document.getElementById('emRestrict').checked = ev.restrictBooking;
+          document.getElementById('emSaveBtn').textContent = '変更を保存する';
+        });
+        row.querySelector('[data-act=del]').addEventListener('click', async () => {
+          if (!confirm(`「${ev.label}」を削除しますか？`)) return;
+          try {
+            await staffFetch('/api/admin/events/' + ev.id, { method: 'DELETE' });
+            weekCache = {}; monthCache = {};
+            await loadEventManagerList();
+            render();
+          } catch (e) { alert(e.message); }
+        });
+        listEl.appendChild(row);
+      });
+    } catch (e) { listEl.innerHTML = '<div class="modal-err">' + escHtml(e.message) + '</div>'; }
+  }
+  document.getElementById('emResetBtn').addEventListener('click', resetEventForm);
+  document.getElementById('emCloseBtn').addEventListener('click', () => document.getElementById('eventMgrModal').classList.remove('show'));
+  document.getElementById('eventMgrModal').addEventListener('click', (e) => { if (e.target.id === 'eventMgrModal') e.currentTarget.classList.remove('show'); });
+  document.getElementById('emSaveBtn').addEventListener('click', async () => {
+    const errBox = document.getElementById('emErr');
+    errBox.style.display = 'none';
+    const title = document.getElementById('emTitle').value.trim();
+    const allday = document.getElementById('emAllday').checked;
+    const startTime = allday ? '00:00' : document.getElementById('emStart').value;
+    const endTime = allday ? '23:59' : document.getElementById('emEnd').value;
+    const restrictBooking = document.getElementById('emRestrict').checked;
+    if (!title || !startTime || !endTime) { errBox.textContent = '行事名・時刻は必須です'; errBox.style.display = 'block'; return; }
+    try {
+      const body = JSON.stringify({ title, date: emCurrentDate, startTime, endTime, restrictBooking });
+      let r;
+      if (emEditingId) {
+        r = await staffFetch('/api/admin/events/' + emEditingId, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body });
+      } else {
+        r = await staffFetch('/api/admin/events', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+      }
+      if (!r.success) { errBox.textContent = r.message || '保存に失敗しました'; errBox.style.display = 'block'; return; }
+      resetEventForm();
+      weekCache = {}; monthCache = {};
+      await loadEventManagerList();
+      render();
+    } catch (e) { errBox.textContent = e.message; errBox.style.display = 'block'; }
+  });
+
+  init();
+})();
+</script>
+</body>
+</html>
