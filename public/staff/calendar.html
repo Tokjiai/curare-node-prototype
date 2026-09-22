@@ -111,6 +111,7 @@
   .cust-results .cust-row .k{color:var(--ink-faint); font-size:11px; margin-left:6px;}
   .cust-results .cust-empty{padding:8px 10px; font-size:12px; color:var(--ink-faint);}
   .cust-selected{margin-top:5px; font-size:11.5px; color:var(--accent); font-weight:700;}
+  .cust-hint{margin-top:4px; font-size:11px; color:var(--ink-faint);}
   .cust-new-toggle{margin-top:6px; background:none; border:none; padding:0; color:var(--accent); font-family:inherit; font-size:11.5px; font-weight:700; cursor:pointer; text-decoration:underline;}
   .cust-new-box{margin-top:8px; padding:10px; background:var(--bg); border-radius:9px;}
   .cust-keep-label{display:flex; align-items:center; gap:6px; font-size:12px; font-weight:400; margin-bottom:4px;}
@@ -203,11 +204,12 @@
     <div class="modal-box">
       <div class="modal-title" id="rmTitle">＋ 予約を追加</div>
       <div class="modal-field" style="position:relative;">
-        <label>お客様氏名</label>
+        <label>お客様氏名（検索して選択、または新規登録）</label>
         <input type="text" id="rmRealname" autocomplete="off" placeholder="お名前を入力して既存の顧客から検索...">
         <input type="hidden" id="rmCustomerId" value="">
         <div id="rmCustResults" class="cust-results" style="display:none;"></div>
         <div id="rmCustSelected" class="cust-selected" style="display:none;"></div>
+        <div class="cust-hint">※ 一覧から選ぶか、下から新規登録してください（自由入力のままでは保存できません）</div>
         <button type="button" id="rmNewCustToggle" class="cust-new-toggle">＋ 新規顧客として登録する</button>
         <div id="rmNewCustBox" class="cust-new-box" style="display:none;">
           <div class="modal-field"><label>フリガナ</label><input type="text" id="rmNewCustKana" placeholder="スペース無しで入力"></div>
@@ -727,6 +729,20 @@
       errBox.style.display = 'block';
       return;
     }
+    // ★2026-09-22追加：社長承認事項（README47-5参照）。「＋新規顧客として登録する」は
+    //   GAS版には無い簡略化だが、既存に同じ人がいないことが前提のため、登録実行の直前に
+    //   もう一度その場で本名の完全一致検索を行い、既存顧客が見つかった場合は登録させず
+    //   検索結果から選ぶよう促す（サーバー側でも本名の重複はcreateCustomerManually()が
+    //   409で拒否するため、これは早期に気付かせるための二重チェック）
+    try {
+      const dupCheck = await staffFetch('/api/staff/customers/search?q=' + encodeURIComponent(realname));
+      const exact = (dupCheck.customers || []).find((c) => c.realname === realname);
+      if (exact) {
+        errBox.textContent = `既に同名の顧客が登録されています（フリガナ：${exact.kana || '未登録'}）。上の検索結果から選択してください`;
+        errBox.style.display = 'block';
+        return;
+      }
+    } catch (e) { /* 重複チェックの通信に失敗しても、サーバー側の最終チェック（409）に任せて登録処理は続行する */ }
     try {
       const r = await staffFetch('/api/staff/customers', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -770,6 +786,13 @@
     document.getElementById('rmTitle').textContent = '✏️ 予約を編集';
     document.getElementById('rmRealname').value = r.realname;
     resetCustomerPicker();
+    // ★編集は顧客そのものの変更を行う機能ではないため、既に紐付いているcustomerIdが
+    //   あれば保持する（無ければ空のままでよい＝新規機能追加前からある旧予約データ）
+    if (r.customerId) {
+      document.getElementById('rmCustomerId').value = r.customerId;
+      document.getElementById('rmCustSelected').textContent = '✓ 既存の顧客に紐付いています';
+      document.getElementById('rmCustSelected').style.display = 'block';
+    }
     document.getElementById('rmStaff').value = r.staffName;
     applyMenuToForm(r.menu);
     document.getElementById('rmDate').value = r.date;
@@ -791,6 +814,16 @@
     const note = document.getElementById('rmNote').value.trim();
     if (!realname || !staffName || !document.getElementById('rmMenu').value || !date || !time) {
       errBox.textContent = 'お客様氏名・担当・メインメニュー・日付・時刻は必須です';
+      errBox.style.display = 'block';
+      return;
+    }
+    // ★2026-09-22追加：社長方針（README47-5参照）。スタッフ入力の負担軽減とGAS版との
+    //   整合のため、新規予約の登録時はフリーテキストのままでの保存を禁止し、検索して
+    //   既存顧客を選ぶか「＋新規顧客として登録する」で登録するかのどちらかを必須とする
+    //   （customerIdが空のまま保存はできない）。既存予約の編集時は、予約の顧客が
+    //   誰であるかを変更する機能ではないため、この必須チェックは対象外とする
+    if (!editingResvId && !customerId) {
+      errBox.textContent = '既存の顧客を検索して選択するか、「＋新規顧客として登録する」から登録してください（自由入力のままでは保存できません）';
       errBox.style.display = 'block';
       return;
     }
