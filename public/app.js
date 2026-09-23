@@ -15,7 +15,11 @@ const state = {
   // ★2026-09-22追加：GAS版customer_form.htmlのcid連携（URLの?cid=顧客IDで
   //   本人特定・受付拒否チェックを行う仕組み）。詳細はloadStoreInfo参照
   customerId: null,
-  customerRecognized: false
+  customerRecognized: false,
+  // ★2026-09-23追加：GAS版customer_form.htmlのS.selectedKeepUpgrade相当。
+  //   「キープメンバーへの変更を希望する」が選択中かどうか（セッション内のみ・target:'visitor'限定）
+  keepUpgradeSelected: false,
+  custTarget: 'new'
 };
 
 // ★2026-09-22追加：URLの?cid=顧客IDを読み取る（GAS版doGetのe.parameter.cid相当。
@@ -96,25 +100,35 @@ async function loadStoreInfo() {
     document.getElementById('nameInput').style.display = 'none';
   }
 
-  // ★2026-09-23追加：既存のお客様（キープメンバー以外）向け「キープメンバーへの
-  //   変更希望」申告チェックボックス。既に申告済みの場合はチェック済み・操作不可にし、
-  //   「ご申告済みです（店舗にて確認中）」の案内に差し替える
+  // ★2026-09-23同日修正：社長のご指摘を受け、GAS版customer_form.htmlのbuildKeepUpgradeCard/
+  //   selectKeepUpgradeと同じ挙動に作り直した。①表示対象はGAS版のisVisitor条件と同じく
+  //   target==='visitor'（来店実績のある既存のお客様・キープ以外）のみ。'new'（初めての方）
+  //   には出さない（来店実績が無いのにキープメンバー云々は不自然なため）②GAS版はこの選択を
+  //   顧客マスタへ保存せず常にセッションのみ・未選択スタートのため、Node版も過去の申告有無に
+  //   関わらず毎回チェック無しの状態で表示する（以前の実装は既に申告済みなら初期状態で
+  //   チェック済み表示にしていたが、社長のテストで「最初からTRUEになっている」バグとして
+  //   報告されたため撤去。過去の申告状況はオーナー管理画面の顧客一覧バッジで確認する運用に
+  //   一本化した）
+  state.keepUpgradeSelected = false;
+  state.custTarget = custInfo.target || 'new';
   const keepRow = document.getElementById('keepRequestRow');
   const keepCheck = document.getElementById('keepRequestCheck');
-  const keepLabel = document.getElementById('keepRequestLabel');
-  if (custInfo.target !== 'keep') {
+  if (custInfo.target === 'visitor') {
     keepRow.style.display = 'block';
-    if (custInfo.keepMemberRequested) {
-      keepCheck.checked = true;
-      keepCheck.disabled = true;
-      keepLabel.textContent = 'キープメンバーへの変更を申告済みです（店舗にて確認中）';
-    } else {
-      keepCheck.checked = false;
-      keepCheck.disabled = false;
-      keepLabel.textContent = 'キープメンバーへの変更を希望する';
-    }
+    keepCheck.checked = false;
+    keepCheck.disabled = false;
   } else {
     keepRow.style.display = 'none';
+  }
+  // ★2026-09-23追加：GAS版selectKeepUpgradeの移植。チェックのON/OFFで、
+  //   メンバー限定メニューの選択可否をその場（クライアント側のみ・サーバー通信無し）で
+  //   切り替える。onchangeは毎回付け替えると重複登録されるため、要素ごと一度だけ設定する。
+  if (!keepCheck.dataset.bound) {
+    keepCheck.addEventListener('change', () => {
+      state.keepUpgradeSelected = keepCheck.checked;
+      applyKeepUpgradeGating();
+    });
+    keepCheck.dataset.bound = '1';
   }
   const sel = document.getElementById('staffSelect');
   sel.innerHTML = '';
@@ -158,14 +172,20 @@ async function loadStoreInfo() {
       //   （GAS版はカード型UIでバッジ表示だが、単一ページ簡略版のプルダウンではテキスト
       //   接頭辞で代替。対象外のisMemberOnly商品はサーバー側で既に除外済みのため、ここに
       //   来るisMemberOnly項目＝キープメンバー本人が見ている状態）
+      // ★2026-09-23同日修正：requiresKeepUpgrade（＝既存客・キープ以外に見えている
+      //   メンバー限定メニュー）は🔒プレフィックスにし、実際に選択できるかどうかは
+      //   applyKeepUpgradeGating()がoption.disabledで制御する（GAS版のdisabled-until-upgrade）
       let prefix = '';
       if (m.isFeatured) prefix = '★初回おすすめ　';
+      else if (m.requiresKeepUpgrade) prefix = '🔒メンバー限定（変更希望を選択すると選べます）　';
       else if (m.isMemberOnly) prefix = '💎メンバー限定　';
       opt.textContent = prefix + m.name + priceLabel;
+      opt.dataset.requiresKeepUpgrade = m.requiresKeepUpgrade ? '1' : '';
       menuSel.appendChild(opt);
     });
     menuSel.addEventListener('change', updateTotalPrice);
 
+    applyKeepUpgradeGating();
     renderOptionMenu();
   }
 
@@ -233,6 +253,27 @@ function renderOptionMenu() {
   updateTotalPrice();
 }
 
+// ★2026-09-23追加：GAS版selectKeepUpgradeの移植。「キープメンバーへの変更を希望する」
+//   のON/OFFに応じて、メンバー限定メニュー（requiresKeepUpgrade付きの<option>）を
+//   選択可能／不可に切り替える。OFFに戻した時、現在の選択がメンバー限定メニューのままだと
+//   送信できてしまうため、GAS版と同じくOFFへ戻すと自動的に選択を解除する
+//   （if(S.selectedMain&&S.selectedMain.isMemberOnly) S.selectedMain=null; 相当）。
+function applyKeepUpgradeGating() {
+  const menuSel = document.getElementById('menuSelect');
+  if (!menuSel) return;
+  let needsReset = false;
+  Array.from(menuSel.options).forEach((opt) => {
+    if (!opt.dataset.requiresKeepUpgrade) return;
+    opt.disabled = !state.keepUpgradeSelected;
+    if (opt.disabled && opt.selected) needsReset = true;
+  });
+  if (needsReset) {
+    const firstEnabled = Array.from(menuSel.options).find((opt) => !opt.disabled);
+    if (firstEnabled) menuSel.value = firstEnabled.value;
+  }
+  updateTotalPrice();
+}
+
 function updateTotalPrice() {
   const row = document.getElementById('totalPriceRow');
   const valueEl = document.getElementById('totalPriceValue');
@@ -265,6 +306,9 @@ function buildMenuLabel() {
   state.optionMenuItems.forEach((m) => {
     if (state.selectedOptionIds.has(m.id)) parts.push(m.name);
   });
+  // ★2026-09-23追加：GAS版calcTotal()のnameList.push('キープメンバー変更希望')相当。
+  //   選択中なら、スタッフが予約一覧のメニュー欄を見ただけで分かるよう文言を追記する
+  if (state.keepUpgradeSelected) parts.push('キープメンバー変更希望');
   return parts.join('　＋　');
 }
 
@@ -345,8 +389,8 @@ async function submitRegistrationIfNeeded() {
   const needsFullReg = regCard.style.display !== 'none';
   const keepRow = document.getElementById('keepRequestRow');
   const keepCheck = document.getElementById('keepRequestCheck');
-  const keepRowVisible = keepRow.style.display !== 'none';
-  const keepRequestToSend = keepRowVisible && !keepCheck.disabled;
+  // ★2026-09-23同日修正：keepRowはtarget==='visitor'の時だけ表示される（loadStoreInfo参照）
+  const keepRequestToSend = keepRow.style.display !== 'none';
 
   if (!needsFullReg && !(keepRequestToSend && keepCheck.checked)) {
     return { success: true };
@@ -443,10 +487,15 @@ async function submitReservation() {
       const data2 = await res2.json();
       msgEl.innerHTML = data2.success
         ? `<div class="msg ok">${data2.message}</div>`
-        : `<div class="msg ng">${data2.error || '登録に失敗しました'}</div>`;
+        : `<div class="msg ng">${data2.message || data2.error || '登録に失敗しました'}</div>`;
     }
   } else {
-    msgEl.innerHTML = `<div class="msg ng">${data.error || '登録に失敗しました'}</div>`;
+    // ★2026-09-23修正：以前はdata.errorしか見ておらず、booking_blocked／二重予約
+    //   （isDoubleBooking）などdata.messageに実際の失敗理由が入っているケースで
+    //   常に汎用文言「登録に失敗しました」しか表示されず、お客様が理由を確認できない
+    //   不具合があった（社長のテストで「途中で弾かれます」とだけ見える形で発覚）。
+    //   data.message（サーバーが用意した具体的な理由）を優先して表示するよう修正。
+    msgEl.innerHTML = `<div class="msg ng">${data.message || data.error || '登録に失敗しました'}</div>`;
   }
 }
 

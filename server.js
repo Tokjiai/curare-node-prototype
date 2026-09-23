@@ -248,13 +248,25 @@ app.get('/api/store', (req, res) => {
     SELECT id, category, name, duration_min, price, target FROM menu_items
     WHERE store_id = ? AND is_active = 1 ORDER BY display_order ASC, id ASC
   `).all(storeId);
+  // ★2026-09-23追加：GAS版customer_form.html（selectKeepUpgrade/buildKeepUpgradeCard）の
+  //   移植に伴う変更。GAS版は「既存のお客様（キープ以外）」に対して、メンバー限定メニューを
+  //   最初から除外するのではなく、見えてはいるが選択できない状態（disabled-until-upgrade）で
+  //   一覧に含めておき、「キープメンバーへの変更を希望する」を選択した瞬間にその場で選択可能
+  //   にする（＝同じ来店で即メンバーコースを予約できる）作りになっている。この挙動を再現する
+  //   ため、target==='visitor'の場合のみメンバー限定メニューもmenuTargetMatches_の対象外で
+  //   あっても含め、requiresKeepUpgrade:trueを付与してクライアント側で「変更希望」選択まで
+  //   選択不可にする（'new'＝来店実績0のお客様は対象外。GAS版のisVisitor条件と同じ）。
   const menuItems = menuItemsRaw
-    .filter((item) => menuTargetMatches_(item.target, custTarget))
-    .map((item) => ({
-      ...item,
-      isFeatured: custTarget === 'new' && item.target === '初回',
-      isMemberOnly: item.target === 'キープメンバー' || (item.name || '').indexOf('メンバーコース') >= 0
-    }));
+    .filter((item) => menuTargetMatches_(item.target, custTarget) || (item.target === 'キープメンバー' && custTarget === 'visitor'))
+    .map((item) => {
+      const isMemberOnly = item.target === 'キープメンバー' || (item.name || '').indexOf('メンバーコース') >= 0;
+      return {
+        ...item,
+        isFeatured: custTarget === 'new' && item.target === '初回',
+        isMemberOnly,
+        requiresKeepUpgrade: isMemberOnly && custTarget === 'visitor'
+      };
+    });
   // ★2026-09-20追加／2026-09-23拡張：受付ルール・注意書き（rule2）。
   //   ★2026-09-23：GAS版 getRule2Notices_ と同じく、顧客区分（target）に応じて
   //   '全員'／'初回'／'リピーター'の出し分けを行うようにした。

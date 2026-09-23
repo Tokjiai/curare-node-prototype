@@ -2059,8 +2059,16 @@ async function main() {
   {
     const r = await fetch(BASE + '/api/store?store=1&cid=C0008').then((res) => res.json());
     assert(r.customer.target === 'visitor' && r.customer.theme === 'green', 'C0008（既存客・キープ以外）はtarget:visitor・theme:greenになる');
-    assert(!r.menuItems.some((m) => m.name === 'メンバーコース(90分)') && !r.menuItems.some((m) => m.name === '初回限定フェイシャル体験(60分)'),
-      '既存客・キープ以外には初回限定／メンバー限定どちらのメニューも表示されない');
+    assert(!r.menuItems.some((m) => m.name === '初回限定フェイシャル体験(60分)'),
+      '既存客・キープ以外には初回限定メニューは表示されない');
+    // ★2026-09-23同日修正：GAS版customer_form.htmlのbuildKeepUpgradeCard/selectKeepUpgrade
+    //   移植に伴う仕様変更。既存客・キープ以外にもメンバー限定メニューは「見えるが選択には
+    //   キープメンバー変更希望の選択が必要」という形で一覧に含まれるようになった（以前は
+    //   完全に除外していたが、GAS版の実際の挙動＝一覧には出すがdisabled-until-upgradeに
+    //   合わせて修正）
+    const memberItem = r.menuItems.find((m) => m.name === 'メンバーコース(90分)');
+    assert(!!memberItem && memberItem.requiresKeepUpgrade === true,
+      '既存客・キープ以外にもメンバー限定メニューはrequiresKeepUpgrade:true付きで一覧に含まれる（キープメンバー変更希望を選ぶと選択可能になる想定）');
     assert(r.notices.some((t) => t.includes('メンバー特典')), '既存客・キープ以外にも「リピーター」向けの注意書きが表示される');
   }
   {
@@ -2197,6 +2205,16 @@ async function main() {
     // 既に申告済み顧客（シードデータC0008・keep_member_requested=1）はGET /api/storeでも申告済みと分かる
     const r = await anon.get('/api/store?store=1&cid=C0008');
     assert(r.body.customer.keepMemberRequested === true, 'シードデータで申告済みのC0008はkeepMemberRequested:trueで返る（一覧バッジ表示用データの確認）');
+  }
+  {
+    // ★2026-09-23同日修正：社長のご指摘②への対応確認。GAS版customer_form.htmlの
+    //   buildKeepUpgradeCard/selectKeepUpgrade相当の挙動：キープメンバー本人（target:'keep'）
+    //   には元々メンバー限定メニューが通常表示され、requiresKeepUpgradeは付かない
+    //   （既に選択できる状態のため、変更希望を選ぶ必要が無い）
+    const r = await anon.get('/api/store?store=1&cid=C0006');
+    const memberItem = r.body.menuItems.find((m) => m.name === 'メンバーコース(90分)');
+    assert(!!memberItem && memberItem.isMemberOnly === true && !memberItem.requiresKeepUpgrade,
+      'キープメンバー本人にはメンバー限定メニューが最初から（requiresKeepUpgrade無しで）選択可能な状態で表示される');
   }
   {
     // --- 1クリックトグル（オーナー管理画面「顧客管理」一覧行から直接ON/OFF） ---

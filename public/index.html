@@ -176,15 +176,23 @@
       <label id="nameInputLabel">お名前</label>
       <input type="text" id="nameInput" placeholder="例：山田 花子">
 
-      <!-- ★2026-09-23追加：既存のお客様（キープメンバー以外）が、ご自身の希望で
-           「キープメンバーへの変更」を申告できるチェックボックス（お客様発信の申告を
-           顧客マスタのkeep_member_requestedに記録し、オーナー管理画面の顧客管理一覧で
-           確認できるようにする。GAS版には無い、社長からの追加要望による新機能）。
-           既に申告済みの場合はチェック済み・disabledで「申請済み」表示にする。 -->
-      <div id="keepRequestRow" style="display:none; margin:10px 0; padding:10px; background:var(--pink-light); border-radius:8px;">
-        <label style="display:flex; align-items:center; gap:8px; font-weight:normal;">
-          <input type="checkbox" id="keepRequestCheck" style="width:auto;">
-          <span id="keepRequestLabel">キープメンバーへの変更を希望する</span>
+      <!-- ★2026-09-23追加・同日修正：既存のお客様（キープメンバー以外＝target:'visitor'の
+           場合のみ。GAS版customer_form.htmlのisVisitor条件と同じ）向けの「キープメンバー
+           への変更を希望する」選択欄。GAS版のbuildKeepUpgradeCard/selectKeepUpgrade相当。
+           【GAS版に合わせて再実装】チェックを入れるとメンバー限定メニュー（下の
+           メインメニューの選択肢）がその場で選択可能になる。GAS版はこの選択状態を
+           顧客マスタへ保存せず（毎回セッションのみ・常に未選択からスタート）、予約の
+           メニュー欄に「キープメンバー変更希望」という文言を追加するだけの作り。
+           Node版もこれに合わせて毎回未選択からスタートするが、あわせて
+           customers.keep_member_requestedにも記録し、オーナー管理画面の顧客管理一覧
+           （48-10）でも確認できるようにしている（GAS版には無い付加機能）。 -->
+      <div id="keepRequestRow" style="display:none; margin:10px 0; padding:12px; background:var(--pink-light); border-radius:8px;">
+        <label style="display:flex; align-items:flex-start; gap:8px; font-weight:normal; cursor:pointer;">
+          <input type="checkbox" id="keepRequestCheck" style="width:auto; margin-top:3px;">
+          <span>
+            <span style="font-weight:600;">★ キープメンバーへの変更を希望する</span><br>
+            <span style="font-size:12.5px; color:#666;">チェックを入れると、下のメインメニューでメンバー限定コースが選べるようになります。</span>
+          </span>
         </label>
       </div>
       <label>メインメニュー</label>
