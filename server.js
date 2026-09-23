@@ -176,11 +176,11 @@ function resolveStoreId(storeSlugOrId) {
 //   返すようにした。cid未指定・該当顧客なしの場合はGAS版同様 target:'new', theme:'green'
 //   がデフォルト（＝初めての方向けの表示）となる。
 function getCustomerFormInfo_(storeId, cid) {
-  if (!cid) return { found: false, customerId: '', bookingBlocked: false, target: 'new', theme: 'green', menuStaffName: '' };
+  if (!cid) return { found: false, customerId: '', bookingBlocked: false, target: 'new', theme: 'green', menuStaffName: '', infoConfirmed: false, address: '', keepMemberRequested: false };
   const row = db.prepare(
     'SELECT * FROM customers WHERE store_id = ? AND customer_id = ? AND is_deleted = 0'
   ).get(storeId, String(cid));
-  if (!row) return { found: false, customerId: String(cid), bookingBlocked: false, target: 'new', theme: 'green', menuStaffName: '' };
+  if (!row) return { found: false, customerId: String(cid), bookingBlocked: false, target: 'new', theme: 'green', menuStaffName: '', infoConfirmed: false, address: '', keepMemberRequested: false };
   const isKeepMember = !!row.is_keep_member;
   const visitCount = row.total_visits || 0;
   const target = visitCount === 0 ? 'new' : (isKeepMember ? 'keep' : 'visitor');
@@ -196,7 +196,12 @@ function getCustomerFormInfo_(storeId, cid) {
     bookingBlocked: !!row.booking_blocked,
     target,
     theme,
-    menuStaffName: (isKeepMember && row.staff_name) ? row.staff_name : ''
+    menuStaffName: (isKeepMember && row.staff_name) ? row.staff_name : '',
+    // ★2026-09-23追加：お客様予約フォームの新規登録画面（48-10）用。
+    //   infoConfirmed=falseの場合、target!=='keep'ならフォーム側で登録画面を出す。
+    infoConfirmed: !!row.info_confirmed,
+    address: row.address || '',
+    keepMemberRequested: !!row.keep_member_requested
   };
 }
 
@@ -319,8 +324,15 @@ app.get('/api/timeslots', (req, res) => {
 // GET /api/reservations?store=...
 //   予約一覧取得（キャンセルされたものを除く、日付昇順）
 // ----------------------------------------------------------------------------
-app.get('/api/reservations', (req, res) => {
-  const storeId = resolveStoreId(req.query.store);
+// ★2026-09-23修正：セキュリティ上の問題を発見・修正。以前はこのエンドポイントに
+//   認証が一切無く、お客様予約フォーム（未ログインで誰でも開けるページ）が
+//   店舗全体の全予約（他のお客様の氏名・日時・メニュー）を一覧表示するために呼んで
+//   いた。GAS版の customer_form.html にはそもそもこのような店舗全体の予約一覧を
+//   お客様へ見せる機能は存在せず、個人情報の露出でしかなかったため、①お客様予約
+//   フォーム側の表示（public/index.html・app.js）を削除し②このエンドポイント自体も
+//   requireStaffSession必須（スタッフ・オーナーのみ）に変更した。
+app.get('/api/reservations', requireStaffSession, (req, res) => {
+  const storeId = req.session.staff.storeId;
   const rows = db.prepare(`
     SELECT * FROM reservations
     WHERE store_id = ? AND realname != 'キャンセル'
@@ -454,6 +466,32 @@ app.post('/api/reservations', (req, res) => {
       ? '✅ 予約を確定しました'
       : '✅ 仮予約として受け付けました。店舗より確定のご連絡をいたします';
     res.json({ success: true, message: baseMessage, status: yoyakuStatus, reservationId: info.lastInsertRowid });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// ★2026-09-23追加：POST /api/customer-registration
+//   お客様予約フォームからの「新規登録」／「キープメンバーへの変更希望」送信を
+//   受け付ける公開エンドポイント（GAS版 registerNewCustomer 相当）。ログイン不要
+//   （store・cidをパラメータで受け取るのは他の公開/api/store等と同じ）。
+//   本体のロジック（バリデーション・重複判定・登録/更新の分岐）は
+//   lib/customerMerge.js の registerCustomerFromPublicForm に実装している。
+//
+//   POST body: { store, customerId(省略可), lastName, firstName, lastKana, firstKana,
+//                phone, address, lineName, userId, keepMemberRequested(true/false/省略可) }
+// ----------------------------------------------------------------------------
+app.post('/api/customer-registration', (req, res) => {
+  try {
+    const data = req.body || {};
+    const storeId = resolveStoreId(data.store);
+    const result = registerCustomerFromPublicForm(db, storeId, data);
+    if (!result.success) {
+      return res.status(result.status || 400).json({ success: false, message: result.message });
+    }
+    res.json({ success: true, customerId: result.customerId });
   } catch (e) {
     console.error(e);
     res.status(500).json({ success: false, error: e.message });
@@ -1830,7 +1868,7 @@ app.put('/api/admin/staff/:id', requireOwnerSession, (req, res) => {
 //   統合（片方に情報を集約して片方を論理削除）または「別人」として見送るかを
 //   オーナーが判断できるようにする。
 // ============================================================================
-const { normalizePhoneDigits, findMergeCandidates, mergeCustomerRecords, createCustomerManually } = require('./lib/customerMerge');
+const { normalizePhoneDigits, findMergeCandidates, mergeCustomerRecords, createCustomerManually, registerCustomerFromPublicForm } = require('./lib/customerMerge');
 
 // ----------------------------------------------------------------------------
 // ★2026-09-22追加：顧客マスタへの新規登録（GAS版reservation_form_functions.gs
@@ -1979,6 +2017,37 @@ app.put('/api/admin/customers/:customerId', requireOwnerSession, (req, res) => {
       updated_by: req.session.staff.name
     });
     res.json({ success: true, message: '✅ 顧客情報を保存しました' });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// ★2026-09-23追加：POST /api/admin/customers/:customerId/toggle-keep-member
+//   GAS版 owner_ui.html の顧客一覧トグルスイッチ（toggleCustomerKeepMember /
+//   toggleCustomerKeepMember_body_、対象列を1回のsetValueで書き換えるだけの軽量な
+//   1クリック操作）の移植。既存の編集モーダル（#cm-keep チェックボックス→
+//   PUT /api/admin/customers/:customerId、顧客レコード全体を送信）とは別の、
+//   一覧行から直接ON/OFFできる専用エンドポイント。あえて既存のPUTを使い回さず
+//   新設したのは、一覧行はフロント側に対象顧客の全フィールドを保持していない
+//   （軽量化のため一覧APIは主要列のみ返している）ため、PUTを流用すると
+//   他のフィールドを空値で上書きしてしまう事故につながるため。
+//   is_keep_memberの1列だけを書き換える。
+// ----------------------------------------------------------------------------
+app.post('/api/admin/customers/:customerId/toggle-keep-member', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const existing = findCustomerByCid_(storeId, req.params.customerId);
+    if (!existing) {
+      return res.status(404).json({ success: false, message: '対象の顧客が見つかりません（他店舗のデータは操作できません）' });
+    }
+    const newValue = existing.is_keep_member ? 0 : 1;
+    db.prepare(`
+      UPDATE customers SET is_keep_member = ?, updated_by = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE store_id = ? AND customer_id = ?
+    `).run(newValue, req.session.staff.name, storeId, existing.customer_id);
+    res.json({ success: true, isKeepMember: !!newValue });
   } catch (e) {
     console.error(e);
     res.status(500).json({ success: false, error: e.message });

@@ -137,10 +137,56 @@
       <p style="font-size:14px; color:var(--pink-accent);"><span id="customerBadgeName"></span>様、<span id="customerBadgeGreeting">いつもご利用ありがとうございます</span>。</p>
     </div>
 
+    <!-- ★2026-09-23追加：GAS版customer_form.htmlの新規登録オーバーレイ（g0r）相当。
+         氏名・電話番号がまだ顧客マスタに確定していない方（target!=='keep' かつ
+         infoConfirmed===false）にだけ表示し、姓/名/フリガナ姓/フリガナ名/電話番号/
+         住所の入力を必須で求める。詳細はREADME_PROTOTYPE.md 48-10参照 -->
+    <div class="card" id="registrationCard" style="display:none;">
+      <h2 class="section-title">お客様情報のご登録（初回のみ）</h2>
+      <p class="note">ご予約の前に、お客様情報のご登録をお願いいたします。</p>
+      <div style="display:flex; gap:8px;">
+        <div style="flex:1;">
+          <label>姓</label>
+          <input type="text" id="regLastName" placeholder="例：山田">
+        </div>
+        <div style="flex:1;">
+          <label>名</label>
+          <input type="text" id="regFirstName" placeholder="例：花子">
+        </div>
+      </div>
+      <div style="display:flex; gap:8px;">
+        <div style="flex:1;">
+          <label>フリガナ姓</label>
+          <input type="text" id="regLastKana" placeholder="例：ヤマダ">
+        </div>
+        <div style="flex:1;">
+          <label>フリガナ名</label>
+          <input type="text" id="regFirstKana" placeholder="例：ハナコ">
+        </div>
+      </div>
+      <label>電話番号</label>
+      <input type="text" id="regPhone" placeholder="例：09012345678">
+      <label>ご住所</label>
+      <input type="text" id="regAddress" placeholder="例：大分県大分市〇〇町1-2-3">
+      <div id="regMsg"></div>
+    </div>
+
     <div class="card" id="formCard" style="display:none;">
       <h2 class="section-title">⑤ お客様情報を入力</h2>
       <label id="nameInputLabel">お名前</label>
       <input type="text" id="nameInput" placeholder="例：山田 花子">
+
+      <!-- ★2026-09-23追加：既存のお客様（キープメンバー以外）が、ご自身の希望で
+           「キープメンバーへの変更」を申告できるチェックボックス（お客様発信の申告を
+           顧客マスタのkeep_member_requestedに記録し、オーナー管理画面の顧客管理一覧で
+           確認できるようにする。GAS版には無い、社長からの追加要望による新機能）。
+           既に申告済みの場合はチェック済み・disabledで「申請済み」表示にする。 -->
+      <div id="keepRequestRow" style="display:none; margin:10px 0; padding:10px; background:var(--pink-light); border-radius:8px;">
+        <label style="display:flex; align-items:center; gap:8px; font-weight:normal;">
+          <input type="checkbox" id="keepRequestCheck" style="width:auto;">
+          <span id="keepRequestLabel">キープメンバーへの変更を希望する</span>
+        </label>
+      </div>
       <label>メインメニュー</label>
       <select id="menuSelect">
         <option>フェイシャル(60分)</option>
@@ -161,11 +207,6 @@
       <input type="text" id="noteInput" placeholder="ご要望など">
       <button class="primary" id="submitBtn" type="button">この内容で予約する</button>
       <div id="submitMsg"></div>
-    </div>
-
-    <div class="card">
-      <h2 class="section-title">現在の予約一覧（店舗全体）</h2>
-      <ul class="reserv-list" id="reservList"><li>読み込み中...</li></ul>
     </div>
 
     <p class="note" id="storePhoneNote" style="text-align:center;"></p>

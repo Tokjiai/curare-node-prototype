@@ -74,6 +74,20 @@
   .btn-edit{padding:5px 10px; border-radius:7px; border:1px solid var(--line); background:#fff; font-size:12px; cursor:pointer; font-family:inherit;}
   .check-row{display:flex; align-items:center; gap:6px; font-size:12.5px; color:var(--ink-soft); margin-bottom:10px;}
 
+  /* ★2026-09-23追加：顧客一覧の「キープメンバー」1クリックトグルスイッチ
+     （GAS版owner_ui.htmlのトグルスイッチ相当）。編集モーダルを開かずに一覧行から
+     直接ON/OFFできる。既存の編集モーダル内チェックボックス（#cm-keep）とは別物で、
+     どちらも並行して残す。 */
+  .keep-toggle-wrap{display:flex; align-items:center; gap:6px;}
+  .keep-toggle{position:relative; display:inline-block; width:38px; height:21px; flex-shrink:0;}
+  .keep-toggle input{opacity:0; width:0; height:0;}
+  .keep-toggle .slider{position:absolute; cursor:pointer; inset:0; background-color:#ccc; border-radius:21px; transition:background-color .15s;}
+  .keep-toggle .slider::before{position:absolute; content:""; height:15px; width:15px; left:3px; bottom:3px; background-color:#fff; border-radius:50%; transition:transform .15s;}
+  .keep-toggle input:checked + .slider{background-color:var(--accent);}
+  .keep-toggle input:checked + .slider::before{transform:translateX(17px);}
+  .keep-toggle input:disabled + .slider{opacity:0.5; cursor:not-allowed;}
+  .keep-request-badge{font-size:10px; font-weight:700; border-radius:6px; padding:2px 5px; background:#FFF3D6; color:#8a6d1a; white-space:nowrap;}
+
   .overlay{display:none; position:fixed; inset:0; background:rgba(43,43,39,0.45); align-items:center; justify-content:center; z-index:50; padding:20px;}
   .overlay.show{display:flex;}
   .modal{background:#fff; border-radius:16px; padding:22px 24px; width:100%; max-width:560px; max-height:88vh; overflow-y:auto;}
@@ -153,7 +167,7 @@
           <thead>
             <tr>
               <th>顧客ID</th><th>氏名</th><th>フリガナ</th><th>電話番号</th>
-              <th>最終来店日</th><th>来店回数</th><th>メモ</th><th></th>
+              <th>最終来店日</th><th>来店回数</th><th>キープメンバー</th><th>メモ</th><th></th>
             </tr>
           </thead>
           <tbody id="tbody"></tbody>
@@ -396,6 +410,9 @@
       let badges = '';
       if (c.status === 'inactive') badges += '<span class="status-badge inactive">非アクティブ</span>';
       if (c.is_deleted) badges += '<span class="status-badge deleted">削除済み</span>';
+      // ★2026-09-23追加：お客様予約フォームから「キープメンバーへの変更希望」の
+      //   申告があった顧客には、一覧上で分かるようバッジを出す（社長からの確認導線）
+      const keepRequestBadge = c.keep_member_requested ? '<span class="keep-request-badge">変更希望あり</span>' : '';
       tr.innerHTML = `
         <td>${esc(c.customer_id)}</td>
         <td>${esc(c.realname)}${badges}</td>
@@ -403,10 +420,40 @@
         <td>${esc(c.phone || '')}</td>
         <td>${esc(c.last_visit_date || '')}</td>
         <td>${esc(c.total_visits)}</td>
+        <td>
+          <div class="keep-toggle-wrap">
+            <label class="keep-toggle">
+              <input type="checkbox" class="keep-toggle-input" data-cid="${esc(c.customer_id)}" ${c.is_keep_member ? 'checked' : ''} ${c.is_deleted ? 'disabled' : ''}>
+              <span class="slider"></span>
+            </label>
+            ${keepRequestBadge}
+          </div>
+        </td>
         <td class="memo">${esc(c.memo || '')}</td>
         <td><button type="button" class="btn-edit" data-cid="${esc(c.customer_id)}">編集</button></td>
       `;
       tr.querySelector('.btn-edit').addEventListener('click', () => openCustomerModal(c.customer_id));
+      // ★2026-09-23追加：1クリックでキープメンバーのON/OFFを切り替える（GAS版
+      //   toggleCustomerKeepMember相当）。編集モーダルを開かずに即保存する。
+      //   楽観的UI＋失敗時はチェック状態を元に戻す（GAS版toggleCmKeepMember_のUXを踏襲）。
+      const toggleInput = tr.querySelector('.keep-toggle-input');
+      toggleInput.addEventListener('change', async () => {
+        const desired = toggleInput.checked;
+        toggleInput.disabled = true;
+        try {
+          const result = await adminFetch(`/api/admin/customers/${encodeURIComponent(c.customer_id)}/toggle-keep-member`, {
+            method: 'POST'
+          });
+          if (!result || result.success === false) throw new Error((result && result.message) || '切り替えに失敗しました');
+          c.is_keep_member = result.isKeepMember ? 1 : 0;
+          toggleInput.checked = !!result.isKeepMember;
+        } catch (e) {
+          toggleInput.checked = !desired; // 失敗時はロールバック
+          alert('キープメンバーの切り替えに失敗しました：' + (e.message || ''));
+        } finally {
+          toggleInput.disabled = !!c.is_deleted ? true : false;
+        }
+      });
       tbody.appendChild(tr);
     });
     const page = Math.floor(offset / limit) + 1;

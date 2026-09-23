@@ -51,21 +51,70 @@ async function loadStoreInfo() {
   if (data.customer && data.customer.found) {
     state.customerId = data.customer.customerId;
     state.customerRecognized = true;
+    // ★2026-09-23修正：以前は「found:true（cidに一致する顧客マスタ行がある）」なら
+    //   無条件に本名を編集不可で表示していたが、GAS版のLINE友だち追加時の自動登録
+    //   （registerOrUpdateCustomerFromLine_body_）は、LINE表示名しか分からない段階では
+    //   本名（realname）を空欄のまま顧客IDだけを発行する（本名確定は別途、お客様自身の
+    //   入力を待つ）。Node版でも同様にcustomerIdだけ発行されLINE表示名しか無い顧客が
+    //   存在し得るため、realnameが空のときはお名前欄をロックせず、ご自身で入力できる
+    //   ようにした（以前の実装だと、本名未確定の初めての方が空欄のまま入力できなく
+    //   なってしまうバグだった）。
+    const hasRealname = !!(data.customer.realname && data.customer.realname.trim());
     const badge = document.getElementById('customerBadge');
-    document.getElementById('customerBadgeName').textContent = data.customer.realname;
+    document.getElementById('customerBadgeName').textContent =
+      hasRealname ? data.customer.realname : (data.customer.lineName || 'お客様');
     // ★2026-09-23追加：初めての方（visitCount===0）には「いつもご利用〜」ではなく
     //   初回向けの文言を出す（GAS版のtarget別出し分けの趣旨を踏襲）
     document.getElementById('customerBadgeGreeting').textContent =
       data.customer.target === 'new' ? 'この度はご予約ありがとうございます、初めてのご利用ですね' : 'いつもご利用ありがとうございます';
     badge.style.display = 'block';
-    // ★本人特定できている場合は、お名前欄を編集不可にして顧客マスタの本名を表示する
-    //   （GAS版同様、送信時もクライアントの入力値ではなくサーバー側で顧客マスタの
-    //   値を正として使う。server.jsのPOST /api/reservations参照）
-    const nameInput = document.getElementById('nameInput');
-    nameInput.value = data.customer.realname;
-    nameInput.readOnly = true;
-    nameInput.style.background = '#f5f5f5';
-    document.getElementById('nameInputLabel').textContent = 'お名前（ご登録内容から自動入力）';
+    if (hasRealname) {
+      // ★本名が確定している場合のみ、お名前欄を編集不可にして顧客マスタの本名を表示する
+      //   （GAS版同様、送信時もクライアントの入力値ではなくサーバー側で顧客マスタの
+      //   値を正として使う。server.jsのPOST /api/reservations参照）
+      const nameInput = document.getElementById('nameInput');
+      nameInput.value = data.customer.realname;
+      nameInput.readOnly = true;
+      nameInput.style.background = '#f5f5f5';
+      document.getElementById('nameInputLabel').textContent = 'お名前（ご登録内容から自動入力）';
+    } else {
+      // 本名未確定（LINE表示名のみ）の場合は、ご自身でお名前を入力していただく
+      document.getElementById('nameInputLabel').textContent = 'お名前（初めてのご利用のため入力してください）';
+    }
+  }
+
+  // ★2026-09-23追加：GAS版customer_form.htmlの新規登録オーバーレイ相当。
+  //   キープメンバー（target==='keep'）は既に登録済みとみなし対象外。
+  //   それ以外（'new'／'visitor'）で、顧客マスタのinfo_confirmedがfalseの場合のみ
+  //   氏名・フリガナ・電話番号・住所の入力欄（registrationCard）を必須表示する。
+  const custInfo = data.customer || { target: 'new', infoConfirmed: false, keepMemberRequested: false };
+  const needsRegistration = custInfo.target !== 'keep' && !custInfo.infoConfirmed;
+  document.getElementById('registrationCard').style.display = needsRegistration ? 'block' : 'none';
+  if (needsRegistration) {
+    // 登録画面を出す間は、通常のお名前欄（nameInput）は登録完了後に自動入力するため隠す
+    document.getElementById('nameInputLabel').style.display = 'none';
+    document.getElementById('nameInput').style.display = 'none';
+  }
+
+  // ★2026-09-23追加：既存のお客様（キープメンバー以外）向け「キープメンバーへの
+  //   変更希望」申告チェックボックス。既に申告済みの場合はチェック済み・操作不可にし、
+  //   「ご申告済みです（店舗にて確認中）」の案内に差し替える
+  const keepRow = document.getElementById('keepRequestRow');
+  const keepCheck = document.getElementById('keepRequestCheck');
+  const keepLabel = document.getElementById('keepRequestLabel');
+  if (custInfo.target !== 'keep') {
+    keepRow.style.display = 'block';
+    if (custInfo.keepMemberRequested) {
+      keepCheck.checked = true;
+      keepCheck.disabled = true;
+      keepLabel.textContent = 'キープメンバーへの変更を申告済みです（店舗にて確認中）';
+    } else {
+      keepCheck.checked = false;
+      keepCheck.disabled = false;
+      keepLabel.textContent = 'キープメンバーへの変更を希望する';
+    }
+  } else {
+    keepRow.style.display = 'none';
   }
   const sel = document.getElementById('staffSelect');
   sel.innerHTML = '';
@@ -286,7 +335,69 @@ async function selectZone(zone, boxEl) {
   });
 }
 
+// ★2026-09-23追加：GAS版のsubmitRegistrationOverlay() → submitBooking('green')の
+//   シーケンスを移植。予約送信の前に、①新規登録が必要なら/api/customer-registrationで
+//   本登録し、顧客IDと本名を確定させる②「キープメンバーへの変更希望」チェックが
+//   ON（かつ未申告）ならそれも同じ呼び出しで一緒に送る。どちらも不要な場合は何もせず
+//   success:trueを返す。
+async function submitRegistrationIfNeeded() {
+  const regCard = document.getElementById('registrationCard');
+  const needsFullReg = regCard.style.display !== 'none';
+  const keepRow = document.getElementById('keepRequestRow');
+  const keepCheck = document.getElementById('keepRequestCheck');
+  const keepRowVisible = keepRow.style.display !== 'none';
+  const keepRequestToSend = keepRowVisible && !keepCheck.disabled;
+
+  if (!needsFullReg && !(keepRequestToSend && keepCheck.checked)) {
+    return { success: true };
+  }
+
+  const payload = { store: state.storeSlug };
+  if (state.customerId) payload.customerId = state.customerId;
+  let combinedName = null;
+
+  if (needsFullReg) {
+    const lastName = document.getElementById('regLastName').value.trim();
+    const firstName = document.getElementById('regFirstName').value.trim();
+    if (!lastName || !firstName) return { success: false, message: '姓・名を入力してください' };
+    payload.lastName = lastName;
+    payload.firstName = firstName;
+    payload.lastKana = document.getElementById('regLastKana').value.trim();
+    payload.firstKana = document.getElementById('regFirstKana').value.trim();
+    payload.phone = document.getElementById('regPhone').value.trim();
+    payload.address = document.getElementById('regAddress').value.trim();
+    combinedName = `${lastName} ${firstName}`;
+  }
+  if (keepRequestToSend) {
+    payload.keepMemberRequested = keepCheck.checked;
+  }
+
+  const res = await fetch('/api/customer-registration', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+  });
+  const data = await res.json();
+  if (data.success) {
+    state.customerId = data.customerId;
+    if (combinedName) {
+      const nameInput = document.getElementById('nameInput');
+      nameInput.value = combinedName;
+      nameInput.style.display = '';
+      document.getElementById('nameInputLabel').style.display = '';
+    }
+    regCard.style.display = 'none';
+  }
+  return data;
+}
+
 async function submitReservation() {
+  const regMsgEl = document.getElementById('regMsg');
+  regMsgEl.innerHTML = '';
+  const regResult = await submitRegistrationIfNeeded();
+  if (!regResult.success) {
+    regMsgEl.innerHTML = `<div class="msg ng">${regResult.message || '入力内容をご確認ください'}</div>`;
+    return;
+  }
+
   const name = document.getElementById('nameInput').value.trim();
   const menu = buildMenuLabel();
   const note = document.getElementById('noteInput').value.trim();
@@ -322,7 +433,6 @@ async function submitReservation() {
 
   if (data.success) {
     msgEl.innerHTML = `<div class="msg ok">${data.message}</div>`;
-    loadReservations();
     checkAvailability();
   } else if (data.isLimitWarning) {
     if (confirm(data.message)) {
@@ -334,31 +444,13 @@ async function submitReservation() {
       msgEl.innerHTML = data2.success
         ? `<div class="msg ok">${data2.message}</div>`
         : `<div class="msg ng">${data2.error || '登録に失敗しました'}</div>`;
-      loadReservations();
     }
   } else {
     msgEl.innerHTML = `<div class="msg ng">${data.error || '登録に失敗しました'}</div>`;
   }
 }
 
-async function loadReservations() {
-  const res = await fetch(`/api/reservations?store=${state.storeSlug}`);
-  const data = await res.json();
-  const list = document.getElementById('reservList');
-  list.innerHTML = '';
-  if (data.reservations.length === 0) {
-    list.innerHTML = '<li>予約はまだありません</li>';
-    return;
-  }
-  data.reservations.forEach((r) => {
-    const li = document.createElement('li');
-    li.textContent = `${r.reservation_date} ${r.reservation_time} / ${r.staff_name} / ${r.realname}様 / ${r.menu}`;
-    list.appendChild(li);
-  });
-}
-
 document.getElementById('checkBtn').addEventListener('click', checkAvailability);
 document.getElementById('submitBtn').addEventListener('click', submitReservation);
 
 loadStoreInfo();
-loadReservations();

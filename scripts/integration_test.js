@@ -2044,6 +2044,11 @@ async function main() {
     const r = await fetch(BASE + '/api/store?store=1&cid=C0007').then((res) => res.json());
     assert(r.customer.target === 'new' && r.customer.theme === 'green', 'C0007（初めての方）はtarget:new・theme:greenになる');
     assert(r.customer.menuStaffName === '', '初めての方にはmenuStaffNameが空で返る');
+    // ★2026-09-23追加：C0007はLINE友だち追加のみで本名未確定という現実的な状態を再現した
+    //   テストデータ（GAS版webhook_handler.jsのregisterOrUpdateCustomerFromLine_body_と同じく
+    //   本名は空欄・LINE表示名のみ設定）。found:trueだが本名（realname）は空のままであることを確認
+    assert(r.customer.found === true && r.customer.realname === '' && r.customer.lineName === 'あやか',
+      'C0007はLINE友だち追加のみ・本名未確定（realname空欄・lineNameのみ設定）の状態で見つかる');
     assert(r.menuItems.some((m) => m.name === '初回限定フェイシャル体験(60分)'), '初めての方には初回限定メニューが表示される');
     assert(!r.menuItems.some((m) => m.name === 'メンバーコース(90分)'), '初めての方にはメンバー限定メニューは表示されない');
     const featuredItem = r.menuItems.find((m) => m.name === '初回限定フェイシャル体験(60分)');
@@ -2106,6 +2111,133 @@ async function main() {
       })
     }).then((res) => res.json());
     assert(r.success === true && r.status === '仮予約', '顧客ID未連携（cid無し）の予約は「仮予約」になる');
+  }
+
+  // --------------------------------------------------------------------------
+  // 36. GET /api/reservations の認証必須化（★2026-09-23修正：店舗全体の全予約
+  //     （他のお客様の氏名を含む）が未ログインで誰でも取得できてしまっていた
+  //     セキュリティ上の不具合の修正確認。GAS版のcustomer_form.htmlにはこのような
+  //     店舗全体の予約一覧をお客様へ見せる機能はそもそも存在しない）
+  // --------------------------------------------------------------------------
+  console.log('--- 36. GET /api/reservationsの認証必須化 ---');
+  {
+    const r = await anon.get('/api/reservations?store=1');
+    assert(r.status === 401, '未ログインでは店舗全体の予約一覧（GET /api/reservations）を取得できない（他のお客様の氏名の露出防止）');
+  }
+  {
+    const r = await hanako.get('/api/reservations');
+    assert(r.status === 200 && Array.isArray(r.body.reservations), 'ログイン中のスタッフは自店舗の予約一覧を取得できる（内部利用のためのエンドポイントとして存置）');
+  }
+  {
+    const r = await owner2.get('/api/reservations');
+    const anyStore1Only = r.body.reservations.some((res) => res.realname === '田中 美穂（改）');
+    assert(r.status === 200 && !anyStore1Only, '他店舗のオーナーには自店舗（store2）の予約のみが返り、store1のデータは含まれない（店舗スコープ確認）');
+  }
+
+  // --------------------------------------------------------------------------
+  // 37. お客様予約フォームの新規登録・キープメンバー変更希望・1クリックトグル
+  //     （★2026-09-23追加：社長からのご指摘「①初めての方の名前がわかる理由・
+  //     顧客ID発行ロジックが無い」「③キープメンバーへの変更ロジックが無い」への
+  //     対応。GAS版customer_form.htmlの新規登録オーバーレイ・findOrCreateCustomer_
+  //     の移植（lib/customerMerge.js registerCustomerFromPublicForm）と、
+  //     お客様発信の「キープメンバーへの変更希望」申告（今回の新機能）、
+  //     オーナー管理画面「顧客管理」の1クリックトグル（GAS版owner_ui.html相当）の確認。
+  // --------------------------------------------------------------------------
+  console.log('--- 37. お客様予約フォームの新規登録・キープメンバー変更希望・1クリックトグル ---');
+  {
+    const r = await anon.postJson('/api/customer-registration', { store: '1' });
+    assert(r.status === 400, '姓名未入力の新規登録は400エラーになる');
+  }
+  {
+    const r = await anon.postJson('/api/customer-registration', {
+      store: '1', lastName: '統合', firstName: '花子', lastKana: 'トウゴウ', firstKana: 'ハナコ', phone: '090', address: '大分県'
+    });
+    assert(r.status === 400, '電話番号の形式が不正な新規登録は400エラーになる');
+  }
+  {
+    const r = await anon.postJson('/api/customer-registration', {
+      store: '1', lastName: '統合', firstName: '花子', lastKana: 'とうごう', firstKana: 'はなこ', phone: '09099990001', address: '大分県大分市1-1-1'
+    });
+    assert(r.status === 400, 'フリガナが平仮名の新規登録は400エラーになる（GAS版と同じく全角カタカナのみ許容）');
+  }
+  let newRegCid = null;
+  {
+    const r = await anon.postJson('/api/customer-registration', {
+      store: '1', lastName: '統合', firstName: '花子', lastKana: 'トウゴウ', firstKana: 'ハナコ', phone: '090-9999-0001', address: '大分県大分市1-1-1'
+    });
+    assert(r.status === 200 && r.body.success === true && !!r.body.customerId, '必須項目がすべて揃った新規登録は成功し顧客IDが発行される（GAS版findOrCreateCustomer_相当）');
+    newRegCid = r.body.customerId;
+  }
+  {
+    const r = await anon.get(`/api/store?store=1&cid=${newRegCid}`);
+    assert(r.body.customer.infoConfirmed === true, '新規登録した顧客はinfo_confirmed（登録確定フラグ）がtrueになる');
+    assert(r.body.customer.address === '大分県大分市1-1-1', '新規登録した顧客の住所が保存されている');
+    assert(r.body.customer.realname === '統合 花子', '新規登録した顧客の氏名が姓＋名（半角スペース区切り）で結合保存されている');
+  }
+  {
+    // 同じ電話番号で再度登録リクエスト → 新規発行ではなく既存の顧客ID（電話番号一致）へ統合される
+    const r = await anon.postJson('/api/customer-registration', {
+      store: '1', lastName: '統合', firstName: '花子', lastKana: 'トウゴウ', firstKana: 'ハナコ', phone: '09099990001', address: '大分県大分市1-1-1（更新）'
+    });
+    assert(r.body.success === true && r.body.customerId === newRegCid, '同一電話番号での再登録は新規発行せず既存の顧客IDに統合される（GAS版と同じ電話番号優先の重複判定）');
+  }
+  {
+    // 更新モード：customerId指定・氏名等は未入力 →「キープメンバーへの変更希望」だけを送信できる
+    //  （すでに本登録済みの既存客が、再度氏名・住所を入力させられずに希望だけ送れることの確認）
+    const r = await anon.postJson('/api/customer-registration', {
+      store: '1', customerId: 'C0007', keepMemberRequested: true
+    });
+    assert(r.status === 200 && r.body.success === true, '本登録が済んでいない顧客でも、customerIdが分かっていればキープメンバー変更希望だけを送信できる（氏名等の再入力は不要）');
+  }
+  {
+    const r = await anon.get('/api/store?store=1&cid=C0007');
+    assert(r.body.customer.keepMemberRequested === true, 'キープメンバー変更希望の申告がkeepMemberRequestedへ保存されている');
+  }
+  {
+    // 既に申告済み顧客（シードデータC0008・keep_member_requested=1）はGET /api/storeでも申告済みと分かる
+    const r = await anon.get('/api/store?store=1&cid=C0008');
+    assert(r.body.customer.keepMemberRequested === true, 'シードデータで申告済みのC0008はkeepMemberRequested:trueで返る（一覧バッジ表示用データの確認）');
+  }
+  {
+    // --- 1クリックトグル（オーナー管理画面「顧客管理」一覧行から直接ON/OFF） ---
+    const r = await anon.postJson(`/api/admin/customers/C0008/toggle-keep-member`, {});
+    assert(r.status === 401, '未ログインでは1クリックトグルを操作できない');
+  }
+  {
+    const before = await ownerFresh.get('/api/admin/customers?q=渡辺');
+    const beforeVal = !!before.body.customers.find((c) => c.customer_id === 'C0008').is_keep_member;
+    assert(beforeVal === false, '（前提確認）C0008はトグル前はキープメンバーではない');
+
+    const r = await ownerFresh.postJson('/api/admin/customers/C0008/toggle-keep-member', {});
+    assert(r.status === 200 && r.body.success === true && r.body.isKeepMember === true, 'オーナーが1クリックでキープメンバーをONにできる（GAS版toggleCustomerKeepMember相当）');
+
+    const after = await ownerFresh.get('/api/admin/customers?q=渡辺');
+    const afterVal = !!after.body.customers.find((c) => c.customer_id === 'C0008').is_keep_member;
+    assert(afterVal === true, 'トグル操作の結果が顧客マスタへ実際に保存されている');
+
+    const r2 = await ownerFresh.postJson('/api/admin/customers/C0008/toggle-keep-member', {});
+    assert(r2.status === 200 && r2.body.isKeepMember === false, 'もう一度押すとOFFに戻る（トグル＝反転動作の確認）');
+  }
+  {
+    // 他店舗のオーナーは他店の顧客をトグルできない（店舗スコープ確認）
+    const r = await owner2.postJson('/api/admin/customers/C0008/toggle-keep-member', {});
+    assert(r.status === 404, '他店舗のオーナーは他店の顧客をトグルできない（店舗スコープ確認）');
+  }
+  {
+    // ★既存の編集モーダル（PUT /api/admin/customers/:id、フルレコード送信）は
+    //   引き続き動作し、is_keep_memberも従来どおり変更できる（今回の1クリック
+    //   トグル追加により既存の編集モーダル経路が壊れていないことの確認）
+    const current = await ownerFresh.get('/api/admin/customers?q=渡辺');
+    const c = current.body.customers.find((x) => x.customer_id === 'C0008');
+    const r = await ownerFresh.putJson('/api/admin/customers/C0008', {
+      realname: c.realname, kana: c.kana, phone: c.phone, totalVisits: c.total_visits,
+      staffName: c.staff_name, status: c.status, memo: c.memo,
+      isKeepMember: true, optSupport: !!c.opt_support, bookingBlocked: !!c.booking_blocked, notifyEnabled: !!c.notify_enabled
+    });
+    assert(r.status === 200 && r.body.success === true, '既存の編集モーダル（PUT・フルレコード送信）は1クリックトグル追加後も引き続き動作する');
+    const after = await ownerFresh.get('/api/admin/customers?q=渡辺');
+    const afterVal = !!after.body.customers.find((x) => x.customer_id === 'C0008').is_keep_member;
+    assert(afterVal === true, '編集モーダル経由のキープメンバー変更も正しく保存される（既存の2経路が両方使える確認）');
   }
 
   // --------------------------------------------------------------------------

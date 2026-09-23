@@ -244,6 +244,22 @@ CREATE TABLE IF NOT EXISTS customers (
   booking_blocked    INTEGER NOT NULL DEFAULT 0,  -- ★2026-09-19追加：この顧客からの予約をブロックする
   notify_enabled     INTEGER NOT NULL DEFAULT 1,  -- ★2026-09-19追加：LINE通知の対象にするか
   updated_by         VARCHAR(50),                 -- ★2026-09-19追加：最終更新者（スタッフ名）
+  address            VARCHAR(255),                -- ★2026-09-23追加：ご住所（GAS版registerNewCustomer/
+                                                    --   findOrCreateCustomer_のaddr相当。以前はaddr列が
+                                                    --   無くmemoに含める運用だったが、お客様予約フォーム
+                                                    --   の新規登録（48-10）で正式な入力項目になったため
+                                                    --   独立列にした）
+  info_confirmed     INTEGER NOT NULL DEFAULT 0,   -- ★2026-09-23追加：GAS版顧客マスタ15列目「情報確定
+                                                    --   フラグ」相当。お客様予約フォームの新規登録
+                                                    --   （氏名・フリガナ・電話番号・住所の入力）が完了
+                                                    --   した顧客は1。LINE友だち追加のみ・スタッフ未入力の
+                                                    --   顧客は0のままで、公開予約フォームで登録画面が
+                                                    --   再度案内される
+  keep_member_requested INTEGER NOT NULL DEFAULT 0, -- ★2026-09-23追加：お客様予約フォームからの
+                                                    --   「キープメンバー希望」申告（GAS版には無いNode版
+                                                    --   独自機能・社長のご依頼で追加）。実際の付与判断は
+                                                    --   引き続きオーナーが行う（顧客管理画面で申告フラグ
+                                                    --   を見てキープメンバーに切り替える）
   created_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(store_id, customer_id)

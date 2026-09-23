@@ -202,10 +202,12 @@ function seedData() {
   // --- 顧客マスタ（顧客マスタシート相当）：5名分のダミーデータ ------------------
   const insertCustomer = db.prepare(`
     INSERT INTO customers
-      (store_id, customer_id, realname, kana, phone, line_name, user_id, birthday, first_visit_date, last_visit_date, total_visits, memo)
+      (store_id, customer_id, realname, kana, phone, line_name, user_id, birthday, first_visit_date, last_visit_date, total_visits, memo, info_confirmed)
     VALUES
-      (@store_id, @customer_id, @realname, @kana, @phone, @line_name, @user_id, @birthday, @first_visit_date, @last_visit_date, @total_visits, @memo)
+      (@store_id, @customer_id, @realname, @kana, @phone, @line_name, @user_id, @birthday, @first_visit_date, @last_visit_date, @total_visits, @memo, 1)
   `);
+  // ★2026-09-23追加：既存の来店実績があり氏名・電話番号も揃っている顧客なので、お客様
+  //   予約フォームの新規登録画面（48-10）は不要＝info_confirmed（登録確定フラグ）を1にする
   insertCustomer.run({ store_id: storeId, customer_id: 'C0001', realname: '田中 美穂', kana: 'タナカ ミホ', phone: '090-1111-2222', line_name: 'みほ', user_id: 'U0001', birthday: '1990-04-12', first_visit_date: fmt(addDays(-200)), last_visit_date: fmt(addDays(-10)), total_visits: 12, memo: '敏感肌。強い圧NG。' });
   insertCustomer.run({ store_id: storeId, customer_id: 'C0002', realname: '佐藤 由紀', kana: 'サトウ ユキ', phone: '090-2222-3333', line_name: 'ゆき', user_id: 'U0002', birthday: '1985-11-02', first_visit_date: fmt(addDays(-150)), last_visit_date: fmt(addDays(-30)), total_visits: 6, memo: '' });
   insertCustomer.run({ store_id: storeId, customer_id: 'C0003', realname: '鈴木 花', kana: 'スズキ ハナ', phone: '090-3333-4444', line_name: 'はな', user_id: 'U0003', birthday: '1993-07-20', first_visit_date: fmt(addDays(-90)), last_visit_date: fmt(addDays(-5)), total_visits: 4, memo: '夜間の予約が多い' });
@@ -218,18 +220,29 @@ function seedData() {
   //   予定のため、is_keep_member／staff_name（前回担当）はここで直接シードする。
   const insertCustomerFull = db.prepare(`
     INSERT INTO customers
-      (store_id, customer_id, realname, kana, phone, line_name, user_id, birthday, first_visit_date, last_visit_date, total_visits, memo, is_keep_member, staff_name, booking_blocked)
+      (store_id, customer_id, realname, kana, phone, line_name, user_id, birthday, first_visit_date, last_visit_date, total_visits, memo, is_keep_member, staff_name, booking_blocked, status, address, info_confirmed, keep_member_requested)
     VALUES
-      (@store_id, @customer_id, @realname, @kana, @phone, @line_name, @user_id, @birthday, @first_visit_date, @last_visit_date, @total_visits, @memo, @is_keep_member, @staff_name, @booking_blocked)
+      (@store_id, @customer_id, @realname, @kana, @phone, @line_name, @user_id, @birthday, @first_visit_date, @last_visit_date, @total_visits, @memo, @is_keep_member, @staff_name, @booking_blocked, @status, @address, @info_confirmed, @keep_member_requested)
   `);
   // C0006：キープメンバー（来店実績あり・前回担当＝花子）→ お客様フォームで花子を指名すると
-  //   即「確定」・pinkテーマ・メンバー限定メニューが見える想定
-  insertCustomerFull.run({ store_id: storeId, customer_id: 'C0006', realname: '中村 さゆり', kana: 'ナカムラ サユリ', phone: '090-6666-7777', line_name: 'さゆり', user_id: 'U0006', birthday: '1988-03-15', first_visit_date: fmt(addDays(-300)), last_visit_date: fmt(addDays(-15)), total_visits: 15, memo: 'キープメンバー（テスト用）', is_keep_member: 1, staff_name: '花子', booking_blocked: 0 });
-  // C0007：初めての方（来店実績0）→ greenテーマ・初回おすすめメニューにバッジが付く想定
-  insertCustomerFull.run({ store_id: storeId, customer_id: 'C0007', realname: '小林 あやか', kana: 'コバヤシ アヤカ', phone: '090-7777-8888', line_name: 'あやか', user_id: 'U0007', birthday: '1999-12-01', first_visit_date: '', last_visit_date: '', total_visits: 0, memo: '初めての方（テスト用）', is_keep_member: 0, staff_name: '', booking_blocked: 0 });
+  //   即「確定」・pinkテーマ・メンバー限定メニューが見える想定。登録済みなのでinfo_confirmed=1
+  insertCustomerFull.run({ store_id: storeId, customer_id: 'C0006', realname: '中村 さゆり', kana: 'ナカムラ サユリ', phone: '090-6666-7777', line_name: 'さゆり', user_id: 'U0006', birthday: '1988-03-15', first_visit_date: fmt(addDays(-300)), last_visit_date: fmt(addDays(-15)), total_visits: 15, memo: 'キープメンバー（テスト用）', is_keep_member: 1, staff_name: '花子', booking_blocked: 0, status: 'active', address: '大分県大分市中央町1-2-3', info_confirmed: 1, keep_member_requested: 0 });
+  // ★2026-09-23修正：以前は「初めての方」なのに氏名・電話番号が最初から顧客マスタに
+  //   入っている不自然なデータだった（社長よりご指摘）。GAS版の実際の仕組み
+  //   （webhook_handler.js registerOrUpdateCustomerFromLine_body_）では、LINE友だち追加時点
+  //   では顧客IDとLINE表示名だけが発行され、本名・電話番号はまだ空欄（statusも'inactive'）
+  //   のまま。本名が確定するのは、お客様がご自身でフォームに入力する（今回未実装の
+  //   registerNewCustomer相当。README章48-8参照）か、来店後にスタッフが手動編集した時点。
+  //   このテストデータもその状態を正しく再現した（realname/kana/phoneは空、line_nameのみ設定）。
+  // C0007：初めての方（LINE友だち追加のみ・来店実績0・本名未確定）→ greenテーマ・
+  //   初回おすすめメニューにバッジが付く想定。お名前欄はロックされず自分で入力できる。
+  //   info_confirmed=0（住所・氏名未入力）なので、お客様予約フォームで新規登録画面（48-10）が出る
+  insertCustomerFull.run({ store_id: storeId, customer_id: 'C0007', realname: '', kana: '', phone: '', line_name: 'あやか', user_id: 'U0007', birthday: '', first_visit_date: '', last_visit_date: '', total_visits: 0, memo: '初めての方（LINE友だち追加のみ・本名未確定、テスト用）', is_keep_member: 0, staff_name: '', booking_blocked: 0, status: 'inactive', address: '', info_confirmed: 0, keep_member_requested: 0 });
   // C0008：既存のお客様（来店実績あり）だがキープメンバーではない → greenテーマ・
-  //   担当者を指名しても「仮予約」扱いになる想定
-  insertCustomerFull.run({ store_id: storeId, customer_id: 'C0008', realname: '渡辺 みゆき', kana: 'ワタナベ ミユキ', phone: '090-8888-9999', line_name: 'みゆき', user_id: 'U0008', birthday: '1995-06-25', first_visit_date: fmt(addDays(-60)), last_visit_date: fmt(addDays(-25)), total_visits: 3, memo: '既存のお客様・キープ以外（テスト用）', is_keep_member: 0, staff_name: '', booking_blocked: 0 });
+  //   担当者を指名しても「仮予約」扱いになる想定。登録済み（info_confirmed=1）かつ、
+  //   「キープメンバーへの変更希望」を既に申告済み（keep_member_requested=1）というデモケース
+  //   ＝オーナー管理画面「顧客管理」で申告バッジ／承認待ちの表示を確認できるようにする
+  insertCustomerFull.run({ store_id: storeId, customer_id: 'C0008', realname: '渡辺 みゆき', kana: 'ワタナベ ミユキ', phone: '090-8888-9999', line_name: 'みゆき', user_id: 'U0008', birthday: '1995-06-25', first_visit_date: fmt(addDays(-60)), last_visit_date: fmt(addDays(-25)), total_visits: 3, memo: '既存のお客様・キープ以外（テスト用）', is_keep_member: 0, staff_name: '', booking_blocked: 0, status: 'active', address: '大分県大分市府内町4-5-6', info_confirmed: 1, keep_member_requested: 1 });
 
   console.log('✅ シードデータ投入完了');
   console.log('   店舗: クラーレ寿 (storeId=1)');
