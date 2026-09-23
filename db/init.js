@@ -96,6 +96,15 @@ function seedData() {
   insertRule.run(storeId, 'CANCEL_DELETE_DAYS', 'キャンセル済み予約を自動削除するまでの日数', '60');
   insertRule.run(storeId, 'SHIFT_EXPAND_DAYS', 'シフトを何日先まで自動展開するか', '49');
   insertRule.run(storeId, 'UPCOMING_RESERVATION_DAYS', 'スタッフダッシュボードの「直近の予約」に表示する日数', '15');
+  // ★2026-09-23追加：常設スケジューラ（lib/scheduler.js）の実行時刻設定。GAS版は
+  //   Apps ScriptのトリガーUIで手動設定していたため固定値がコード上に無いが、
+  //   REMINDER_HOURのみowner_ui.html（rule1編集項目）に実在する店舗別設定値だった。
+  //   他の3つ（日次メンテ・朝/夕レポート）はGAS版に相当する設定項目が無いため、
+  //   このプロトタイプ独自の妥当な既定値を採用する（README §55参照）。
+  insertRule.run(storeId, 'DAILY_MAINTENANCE_HOUR', '日次メンテナンス処理を自動実行する時刻（0〜23時）', '5');
+  insertRule.run(storeId, 'MORNING_REPORT_HOUR', '朝レポートをオーナーへ自動送信する時刻（0〜23時）', '8');
+  insertRule.run(storeId, 'EVENING_REPORT_HOUR', '夕方レポート（＋スタッフ翌日予約通知）を自動送信する時刻（0〜23時）', '20');
+  insertRule.run(storeId, 'REMINDER_HOUR', '前日リマインダーをお客様へ自動送信する時刻（0〜23時、GAS版と同じ店舗別設定）', '18');
 
   // --- ゾーン設定（zonesシート相当。GASのデフォルト値と同じ） -----------------
   const insertZone = db.prepare(`

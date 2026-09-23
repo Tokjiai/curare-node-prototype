@@ -15,6 +15,8 @@
 
 const BASE = process.env.TEST_BASE_URL || 'http://localhost:3000';
 const db = require('../lib/db'); // ★11章（顧客統合）のテスト用フィクスチャ直接投入にのみ使用
+const engine = require('../lib/reservationEngine'); // ★44章（常設スケジューラ）のgetRuleValue_直接呼び出し用
+const { getRuleHour } = require('../lib/scheduler'); // ★44章：スケジューラのエクスポート関数を直接テスト
 
 let passCount = 0;
 let failCount = 0;
@@ -403,6 +405,12 @@ async function main() {
       (c.customerA.customer_id === 'CT901' && c.customerB.customer_id === 'CT900')
     );
     assert(r.status === 200 && !!ct900Candidate, '電話番号一致の重複候補（CT900⇔CT901）が検出される');
+    // ★2026-09-23追加：顧客台帳の統合候補カードに「一致理由・電話番号・来店回数」を
+    //   表示できるよう、APIレスポンスに必要なフィールドが揃っていることを確認
+    //   （社長よりGAS版customer_view.htmlとの視野性比較の依頼で見つかったギャップ）
+    assert(!!ct900Candidate.reason, '統合候補に一致理由（reason）が含まれる');
+    assert(!!ct900Candidate.phone, '統合候補に突合した電話番号（phone）が含まれる');
+    assert(typeof ct900Candidate.customerA.total_visits === 'number' && typeof ct900Candidate.customerB.total_visits === 'number', '統合候補の両顧客に来店回数（total_visits）が含まれる');
   }
   {
     const r = await owner2.get('/api/admin/customers/merge-candidates');
@@ -2624,6 +2632,159 @@ async function main() {
     assert(ownerView.body.slots.some((s) => s.warn === true && s.warnLabel), 'オーナーの表示には警告ラベル付きで選択可能な枠が含まれる');
     const noDate = await ownerFresh.get('/api/staff/available-slots?staffName=花子');
     assert(noDate.status === 400, 'dateを省略すると400エラーになる');
+  }
+
+  // --------------------------------------------------------------------------
+  // 42. GAS版との表示順の一致調査・修正（2026-09-23追加、社長指摘「表形式にした時の
+  //     表示順」への対応の第一弾）
+  // --------------------------------------------------------------------------
+  console.log('--- 42. GAS版との表示順の一致（スタッフ管理一覧） ---');
+  {
+    // GAS版getAdminStaffList（admin_ui_functions.js）はスタッフマスタシートを
+    // 上から順に読むだけでソートをかけない（＝スタッフを追加した順のまま表示）。
+    // Node版がORDER BY is_active DESC, name ASCで並べ替えていたのを、id ASC
+    // （＝登録順）に修正した。既存シードだと寿子→花子→美咲の順で登録されているため、
+    // 名前のアルファベット/かな順（花子→寿子→美咲）とは一致しないことを利用して確認する。
+    const list = await ownerFresh.get('/api/admin/staff');
+    assert(list.status === 200, 'スタッフ管理一覧を取得できる');
+    const names = list.body.staff.map((s) => s.name);
+    const ids = list.body.staff.map((s) => s.id);
+    const sortedIds = [...ids].sort((a, b) => a - b);
+    assert(JSON.stringify(ids) === JSON.stringify(sortedIds), 'スタッフ管理一覧はid昇順（＝マスタへの登録順）で返る（GAS版は名前順ソートをしていないため）');
+    assert(names[0] === '寿子', '先頭は最初に登録されたスタッフ（寿子）になる（name ASCなら花子が先頭になるはずなので区別できる）');
+  }
+
+  // --------------------------------------------------------------------------
+  // 43. 日次LINEレポート4種（前日リマインダー・朝レポート・夕方レポート・
+  //     スタッフ翌日予約通知）と、予約データの月次表示（2026-09-23追加）
+  //     GAS版triggers.jsの時間主導トリガー4種の移植（lib/dailyReports.js）。
+  // --------------------------------------------------------------------------
+  console.log('--- 43. 日次LINEレポート4種・予約データの月次表示 ---');
+  const fmt43 = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const tomorrow43 = (() => { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() + 1); return fmt43(d); })();
+  {
+    // フィクスチャ：オーナー（寿子）・花子にLINE userIdを付与し、美咲は未付与のまま
+    // （「LINE未連携のスタッフはスキップされる」ことを区別して確認するため）
+    db.prepare("UPDATE staff SET line_user_id = 'Utest_owner_43' WHERE store_id = 1 AND name = '寿子'").run();
+    db.prepare("UPDATE staff SET line_user_id = 'Utest_hanako_43' WHERE store_id = 1 AND name = '花子'").run();
+    db.prepare("UPDATE staff SET line_user_id = NULL WHERE store_id = 1 AND name = '美咲'").run();
+
+    // 明日・花子担当・LINE連携済み顧客（C0001等既存の顧客IDを使わず、テスト用に
+    // customer_idをNULLのまま、user_idだけ直接指定した予約を1件作る）
+    const insertTomorrow = db.prepare(`
+      INSERT INTO reservations (store_id, realname, user_id, staff_name, menu, reservation_date, reservation_time, status, editor)
+      VALUES (1, 'リマインドテスト太郎', 'Utest_customer_43', '花子', 'フェイシャル', ?, '10:00', '確定', 'テスト投入')
+    `);
+    const info = insertTomorrow.run(tomorrow43);
+    const reservationId = info.lastInsertRowid;
+
+    // ①前日リマインダー：対象1件を送信し、reminder_sentが1になる
+    const r1 = await ownerFresh.postJson('/api/admin/reports/day-before-reminders', {});
+    assert(r1.status === 200 && r1.body.success === true, '前日リマインダーAPIが成功する');
+    assert(r1.body.date === tomorrow43, '前日リマインダーの対象日が明日になっている');
+    const found1 = r1.body.results.find((x) => x.reservationId === reservationId);
+    assert(!!found1, '今回作成した明日の予約が前日リマインダーの送信対象に含まれる');
+    const afterFlag = db.prepare('SELECT reminder_sent FROM reservations WHERE id = ?').get(reservationId);
+    assert(afterFlag.reminder_sent === 1, '送信後、reminder_sentが1に更新される（GAS版COL_Y_REMINDER相当）');
+
+    // ★2026-09-23追加：予約台帳（reservations-view.html）の🔔マークが参照する
+    //   GET /api/admin/reservationsのレスポンスにも、更新後のreminder_sentが
+    //   正しく反映されていることを確認（値自体は52章以前から返っていたが、
+    //   画面側に表示ロジックが無かったため今回追加。データ経路の確認として残す）
+    const listAfter = await ownerFresh.get(`/api/admin/reservations?limit=200&offset=0&from=${tomorrow43}&to=${tomorrow43}`);
+    const listedRow = listAfter.body.reservations.find((x) => x.id === reservationId);
+    assert(!!listedRow && listedRow.reminder_sent === 1, '予約一覧APIのレスポンスにもreminder_sent=1が反映されている（予約台帳の🔔マーク表示に使うデータ経路）');
+
+    // 再実行すると、既に送付済みのため対象から外れる（重複送信防止）
+    const r1b = await ownerFresh.postJson('/api/admin/reports/day-before-reminders', {});
+    const found1b = r1b.body.results.find((x) => x.reservationId === reservationId);
+    assert(!found1b, '既に送付済みの予約は次回実行で対象から除外される（GAS版と同じ重複防止）');
+
+    // ②スタッフ翌日予約通知：花子（LINE連携済み）が通知対象に含まれ、美咲（未連携）は
+    //    そもそも明日の予約が無いので対象外
+    const r2 = await ownerFresh.postJson('/api/admin/reports/staff-tomorrow-schedule', {});
+    assert(r2.status === 200 && r2.body.success === true, 'スタッフ翌日予約通知APIが成功する');
+    const hanakoResult = r2.body.results.find((x) => x.staffName === '花子');
+    assert(!!hanakoResult && hanakoResult.simulated === true, '花子（LINE連携済み）宛に通知が送られる（トークン未設定のためシミュレーション扱い）');
+
+    // ③朝レポート：オーナー（寿子、LINE連携済み）に送信される
+    const r3 = await ownerFresh.postJson('/api/admin/reports/morning', {});
+    assert(r3.status === 200 && r3.body.success === true, '朝レポートAPIが成功する');
+    assert(r3.body.sentTo === 1 && r3.body.results[0].staffName === '寿子', '朝レポートはis_owner=1かつLINE連携済みのスタッフ（寿子）へ送信される');
+
+    // ④夕方レポート：①本日確定・要確認リクエスト②未確定の仮予約③スタッフ翌日予約通知（相乗り）の3部構成
+    const r4 = await ownerFresh.postJson('/api/admin/reports/evening', {});
+    assert(r4.status === 200 && r4.body.success === true, '夕方レポートAPIが成功する');
+    assert(r4.body.mainReport && r4.body.mainReport.success === true, '夕方レポート①本日確定・要確認リクエストの部が成功する');
+    assert(r4.body.pendingReport && r4.body.pendingReport.success === true, '夕方レポート②未確定の仮予約の部が成功する');
+    assert(r4.body.staffSchedule && r4.body.staffSchedule.success === true, '夕方レポート③スタッフ翌日予約通知（相乗り）の部が成功する（GAS版sendEveningReportToOwnerの構成を踏襲）');
+
+    // ⑤一般スタッフ（オーナー権限なし）はレポート配信APIを呼べない
+    const denied = await hanako.postJson('/api/admin/reports/morning', {});
+    assert(denied.status === 401 || denied.status === 403, '一般スタッフはLINEレポート配信APIを実行できない（オーナー限定）');
+
+    // 後片付け
+    db.prepare('DELETE FROM reservations WHERE id = ?').run(reservationId);
+    db.prepare("UPDATE staff SET line_user_id = NULL WHERE store_id = 1 AND name IN ('寿子', '花子')").run();
+  }
+  {
+    // ⑥予約データの月次表示（社長要望「過去の予約データを月次毎に表示する機能」）：
+    //   既存のGET /api/admin/reservationsのfrom/toパラメータを使い、当月の予約だけに
+    //   絞り込めることを確認する（public/admin/reservations-view.htmlの月選択プルダウンが
+    //   内部で呼ぶのと同じAPI呼び出し）。GAS版のような月次アーカイブ処理は行わない方針
+    //   （SQLiteは行数・パフォーマンス制約が薄いため全件reservationsテーブルに残す）。
+    const now = new Date();
+    const y = now.getFullYear(); const m = String(now.getMonth() + 1).padStart(2, '0');
+    const from = `${y}-${m}-01`;
+    const to = fmt43(new Date(now.getFullYear(), now.getMonth() + 1, 0));
+    const monthView = await ownerFresh.get(`/api/admin/reservations?limit=200&offset=0&from=${from}&to=${to}`);
+    assert(monthView.status === 200, '月範囲（from/to）を指定した予約データ取得ができる');
+    assert(monthView.body.reservations.every((r) => r.reservation_date >= from && r.reservation_date <= to), '月範囲で絞り込んだ結果は全件その月の日付に収まっている');
+  }
+
+  // --------------------------------------------------------------------------
+  // 44. 常設スケジューラ（lib/scheduler.js、2026-09-23追加）
+  //     社長指摘「オーナー管理画面からの手動送信ボタンとして実装ではこまります」を受けて
+  //     node-cronによる自動実行に置き換えた。cronの実発火自体は自動テストで検証しにくいため、
+  //     ①新規設定値（4種の時刻ルール）がstore_id=1・2両方に既定値で入っていること
+  //     ②スケジューラがエクスポートするgetRuleHour（時刻判定ロジック本体）が
+  //     rules値・既定値フォールバックの両方で正しく動くこと、を直接呼び出して確認する。
+  // --------------------------------------------------------------------------
+  console.log('--- 44. 常設スケジューラ（日次配信の自動実行時刻設定） ---');
+  {
+    const expectedDefaults = {
+      DAILY_MAINTENANCE_HOUR: 5,
+      MORNING_REPORT_HOUR: 8,
+      EVENING_REPORT_HOUR: 20,
+      REMINDER_HOUR: 18
+    };
+    [1, 2].forEach((storeId) => {
+      Object.entries(expectedDefaults).forEach(([ruleId, defaultHour]) => {
+        const row = db.prepare('SELECT value FROM rules WHERE store_id = ? AND rule_id = ?').get(storeId, ruleId);
+        assert(!!row, `store_id=${storeId}に${ruleId}のルール行が存在する（db/init.jsのシード or lib/migrate.jsの補完）`);
+        assert(Number(row.value) === defaultHour, `store_id=${storeId}の${ruleId}は既定値${defaultHour}になっている`);
+      });
+    });
+
+    // getRuleHour: rules値がある場合はその値を使う
+    assert(getRuleHour(engine, 1, 'REMINDER_HOUR', 99) === 18, 'getRuleHourはrules値（18時）を正しく返す');
+
+    // getRuleHour: 未知のrule_idの場合はデフォルト値にフォールバックする
+    assert(getRuleHour(engine, 1, 'NOT_A_REAL_RULE_ID', 12) === 12, 'getRuleHourは値が無いルールIDに対してデフォルト値へフォールバックする');
+
+    // ルール値を変更すると、getRuleHourの戻り値もすぐに反映される（店舗別に変更可能な設計の確認）
+    const putRes = await ownerFresh.putJson('/api/admin/settings/rules/REMINDER_HOUR', { value: '19' });
+    assert(putRes.status === 200, 'オーナーはREMINDER_HOURの値を設定画面から変更できる');
+    assert(getRuleHour(engine, 1, 'REMINDER_HOUR', 99) === 19, 'ルール値変更後、getRuleHourは新しい値（19時）を返す（常設スケジューラが次回チェック時に使う値と同じ経路）');
+    // 元に戻す（他のテスト・実運用のデフォルトに影響しないように）
+    db.prepare("UPDATE rules SET value = '18' WHERE store_id = 1 AND rule_id = 'REMINDER_HOUR'").run();
+
+    // 店舗をまたいだ設定は独立している（store_id=2のREMINDER_HOURはstore_id=1の変更の影響を受けない）
+    assert(getRuleHour(engine, 2, 'REMINDER_HOUR', 99) === 18, '店舗ごとの実行時刻設定は独立している（store_id=1の変更がstore_id=2に影響しない）');
+
+    // 一般スタッフはルール値を変更できない（オーナー限定、他の設定変更系エンドポイントと同じ方針）
+    const deniedPut = await hanako.putJson('/api/admin/settings/rules/REMINDER_HOUR', { value: '10' });
+    assert(deniedPut.status === 401 || deniedPut.status === 403, '一般スタッフはスケジューラの実行時刻設定を変更できない（オーナー限定）');
   }
 
   // --------------------------------------------------------------------------

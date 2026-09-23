@@ -81,12 +81,16 @@
   <div class="toolbar">
     <div class="search-box"><span>🔍</span><input type="text" id="searchInput" placeholder="本名・フリガナで検索"></div>
     <select class="field-select" id="staffFilter"><option value="">担当者：すべて</option></select>
+    <!-- ★2026-09-23追加：月次表示（社長要望「過去の予約データを月次毎に表示する機能」への
+         対応。GAS版のような月次アーカイブは行わずreservationsテーブルに全件残す設計の
+         ため、代わりにこの月選択で任意の月をサーバーへ問い合わせて表示できるようにした） -->
+    <select class="field-select" id="monthSelect"><option value="">月で表示：直近200件（新しい順）</option></select>
     <input type="date" class="field-date" id="dateFrom"> 〜
     <input type="date" class="field-date" id="dateTo">
     <button class="op-btn" type="button" id="clearBtn">✕ 検索・日付をクリア</button>
     <div class="chip" id="chipCancelled">キャンセルも表示</div>
   </div>
-  <div class="range-note">🔍 直近200件（新しい順）を読み込んでいます。それより前の予約を確認したい場合は日付で絞り込んでください。</div>
+  <div class="range-note" id="rangeNote">🔍 直近200件（新しい順）を読み込んでいます。それより前の予約を確認したい場合は上の「月で表示」または日付で絞り込んでください。</div>
 
   <div class="panel">
     <table>
@@ -140,6 +144,45 @@
     const data = await adminFetch('/api/admin/reservations?limit=200&offset=0');
     allReservations = data.reservations || [];
     populateStaffFilter();
+    populateMonthSelect();
+    renderTable();
+  }
+
+  // ★2026-09-23追加：月選択プルダウンを組み立てる（今月から過去24ヶ月分。
+  //   GAS版の月次アーカイブ相当の代わりに、reservationsテーブルへ直接
+  //   from/toで問い合わせて月単位に表示する）
+  function populateMonthSelect() {
+    const sel = document.getElementById('monthSelect');
+    const now = new Date();
+    const opts = ['<option value="">月で表示：直近200件（新しい順）</option>'];
+    for (let i = 0; i < 24; i++) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const val = `${y}-${m}`;
+      opts.push(`<option value="${val}">${y}年${Number(m)}月</option>`);
+    }
+    sel.innerHTML = opts.join('');
+  }
+
+  async function loadMonth(monthStr) {
+    const rangeNote = document.getElementById('rangeNote');
+    if (!monthStr) {
+      rangeNote.textContent = '🔍 直近200件（新しい順）を読み込んでいます。それより前の予約を確認したい場合は上の「月で表示」または日付で絞り込んでください。';
+      await loadReservations();
+      renderTable();
+      return;
+    }
+    const [y, m] = monthStr.split('-').map(Number);
+    const from = `${y}-${String(m).padStart(2, '0')}-01`;
+    const lastDay = new Date(y, m, 0).getDate();
+    const to = `${y}-${String(m).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+    const data = await adminFetch(`/api/admin/reservations?limit=200&offset=0&from=${from}&to=${to}`);
+    allReservations = data.reservations || [];
+    rangeNote.textContent = `🔍 ${y}年${m}月分：${data.total}件中${allReservations.length}件を表示しています（1ヶ月あたり200件を超える場合は日付でさらに絞り込んでください）`;
+    populateStaffFilter();
+    document.getElementById('dateFrom').value = '';
+    document.getElementById('dateTo').value = '';
     renderTable();
   }
 
@@ -167,11 +210,13 @@
   document.getElementById('staffFilter').addEventListener('change', renderTable);
   document.getElementById('dateFrom').addEventListener('change', renderTable);
   document.getElementById('dateTo').addEventListener('change', renderTable);
+  document.getElementById('monthSelect').addEventListener('change', (e) => { loadMonth(e.target.value); });
   document.getElementById('clearBtn').addEventListener('click', () => {
     document.getElementById('searchInput').value = '';
     document.getElementById('dateFrom').value = '';
     document.getElementById('dateTo').value = '';
-    renderTable();
+    document.getElementById('monthSelect').value = '';
+    loadMonth('');
   });
   document.getElementById('chipCancelled').addEventListener('click', (e) => {
     showCancelled = !showCancelled;
@@ -209,6 +254,11 @@
       const endTime = calcEndTime(r.reservation_time);
       const dateParts = String(r.reservation_date).split('-');
       const sentMark = r.line_sent ? '<span class="sent-mark" title="LINE通知送信済み">📨</span>' : '';
+      // ★2026-09-23追加：前日リマインダー送付済みマーク（GAS版reservation_view.htmlの🔔相当）。
+      //   reservations.reminder_sent列（54章で新設）はAPIレスポンスに既に含まれていたが、
+      //   この画面には表示していなかった。社長より「予約台帳の視野性をGAS版と比較したい」
+      //   との依頼で見つかった差異のため追加。
+      const reminderMark = r.reminder_sent ? '<span class="sent-mark" title="前日リマインダー送信済み">🔔</span>' : '';
       const noteMark = r.note ? `<span class="note-mark" title="${esc(r.note)}">備考有</span>` : '';
       const tr = document.createElement('tr');
       if (r.realname === 'キャンセル') tr.classList.add('cancelled-row');
@@ -220,7 +270,7 @@
         `<td><div class="two-line"><div class="l1">${esc(menuParts.main)}</div>${menuParts.option ? `<div class="l2 opt">＋ ${esc(menuParts.option)}</div>` : ''}</div></td>` +
         `<td>${esc(r.staff_name)}</td>` +
         `<td>${noteMark}</td>` +
-        `<td>${sentMark}</td>` +
+        `<td>${sentMark}${reminderMark}</td>` +
         `<td>${statusBadge(r)}</td>`;
       tbody.appendChild(tr);
     });

@@ -33,6 +33,9 @@ const { getPlan, listPlans, hasFeature } = require('./lib/plans');
 const { runMigrations } = require('./lib/migrate');
 const SqliteSessionStore = require('./lib/sqliteSessionStore');
 const { getMessageSettings, saveMessageSettings, getMessageTemplate, renderMessageBody } = require('./lib/messageTemplates');
+const dailyReports = require('./lib/dailyReports');
+const { runDailyMaintenance } = require('./lib/maintenance');
+const { startScheduler } = require('./lib/scheduler');
 
 // ----------------------------------------------------------------------------
 // ★2026-09-22追加：スタッフ・オーナーが手動で行う予約の新規登録／編集／キャンセルに
@@ -2028,10 +2031,16 @@ app.post('/api/staff/reservations/:id/confirm', requireStaffSession, confirmProv
 app.get('/api/admin/staff', requireOwnerSession, (req, res) => {
   try {
     const storeId = req.session.staff.storeId;
+    // ★2026-09-23修正：GAS版getAdminStaffList（admin_ui_functions.js）はスタッフマスタ
+    //   シートを上から順に読むだけでソートをかけておらず、一覧はマスタの行登録順
+    //   （＝スタッフを追加した順）のまま表示される仕様だった。Node版がis_active DESC,
+    //   name ASCで並べ替えていたため、GAS版で見慣れた並び順と一致しない「表示順」の
+    //   差異が生じていた。マスタの登録順に一致させるため、並び順の指定をid ASC
+    //   （＝登録順）に統一する（在籍中／退職済みでのグループ分けも行わない）。
     const rows = db.prepare(`
       SELECT id, name, nickname, role, opt_support, night_restrict, show_in_booking, is_active, is_owner, color,
              (pin_hash IS NOT NULL) AS has_pin
-      FROM staff WHERE store_id = ? ORDER BY is_active DESC, name ASC
+      FROM staff WHERE store_id = ? ORDER BY id ASC
     `).all(storeId);
     // ★2026-09-23追加：スタッフ管理画面の色選択（GAS版マスタC列の色名）用に、
     //   選べる色の一覧と、実際にカレンダーに表示される色（未設定なら仮の色）も返す
@@ -3266,134 +3275,68 @@ app.post('/api/admin/import-sample-data', requireOwnerSession, (req, res) => {
 //
 // POST /api/admin/maintenance/run-daily
 // ----------------------------------------------------------------------------
+// ★2026-09-23更新：処理本体はlib/maintenance.jsへ切り出した（常設スケジューラ
+//   lib/scheduler.jsからHTTPリクエスト無しで同じ処理を呼べるようにするため）。
 app.post('/api/admin/maintenance/run-daily', requireOwnerSession, (req, res) => {
   try {
     const storeId = req.session.staff.storeId;
-    const fmt = (d) => {
-      const y = d.getFullYear(); const m = String(d.getMonth() + 1).padStart(2, '0'); const day = String(d.getDate()).padStart(2, '0');
-      return `${y}-${m}-${day}`;
-    };
-    const todayStr = fmt(new Date());
+    const result = runDailyMaintenance(db, engine, storeId);
+    res.json(result);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
 
-    // ① 実行済み（施術完了）フラグの自動更新
-    const executedResult = db.prepare(`
-      UPDATE reservations SET done = 1, updated_at = CURRENT_TIMESTAMP
-      WHERE store_id = ? AND realname != 'キャンセル' AND done = 0 AND reservation_date < ?
-    `).run(storeId, todayStr);
-    const executedUpdated = executedResult.changes;
+// ----------------------------------------------------------------------------
+// ★2026-09-23追加：日次LINEレポート4種（GAS版triggers.jsの時間主導トリガー
+//   sendMorningReportToOwner / sendEveningReportToOwner / sendDayBeforeReminders /
+//   sendStaffTomorrowSchedule_ 相当）。日次メンテナンス（run-daily）と同じく、
+//   常駐スケジューラをまだ用意していないため、オーナー管理画面からの手動実行
+//   ボタンとして再現する（本番運用では別途スケジューラの整備が必要）。
+//   実装本体はlib/dailyReports.jsを参照。
+//
+// POST /api/admin/reports/morning                … 朝レポート（本日の予約状況）
+// POST /api/admin/reports/evening                … 夕方レポート（本日確定・要確認
+//                                                     リクエスト・未確定仮予約）＋
+//                                                     スタッフ翌日予約通知（相乗り）
+// POST /api/admin/reports/day-before-reminders   … 前日リマインダー（お客様向け）
+// POST /api/admin/reports/staff-tomorrow-schedule … スタッフ翌日予約通知（単独実行）
+// ----------------------------------------------------------------------------
+app.post('/api/admin/reports/morning', requireOwnerSession, async (req, res) => {
+  try {
+    const result = await dailyReports.sendMorningReportToOwner(db, req.session.staff.storeId);
+    res.json(result);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
 
-    // ② 来店回数の再集計（customer_idごとに完了予約件数を数え、現在値より大きい場合のみ更新）
-    const counts = db.prepare(`
-      SELECT customer_id, COUNT(*) AS c FROM reservations
-      WHERE store_id = ? AND realname != 'キャンセル' AND done = 1 AND customer_id IS NOT NULL AND customer_id != ''
-      GROUP BY customer_id
-    `).all(storeId);
-    let visitsUpdated = 0;
-    const updateVisit = db.prepare(`
-      UPDATE customers SET total_visits = ?, updated_at = CURRENT_TIMESTAMP
-      WHERE store_id = ? AND customer_id = ? AND total_visits < ?
-    `);
-    counts.forEach((row) => {
-      const result = updateVisit.run(row.c, storeId, row.customer_id, row.c);
-      if (result.changes > 0) visitsUpdated++;
-    });
+app.post('/api/admin/reports/evening', requireOwnerSession, async (req, res) => {
+  try {
+    const result = await dailyReports.sendEveningReportToOwner(db, req.session.staff.storeId);
+    res.json(result);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
 
-    // ③ 古いキャンセル予約の削除（CANCEL_DELETE_DAYSより前のキャンセル予約を物理削除）
-    const cancelDeleteDays = Number(engine.getRuleValue_(storeId, 'CANCEL_DELETE_DAYS')) || 60;
-    const cutoffDate = new Date();
-    cutoffDate.setDate(cutoffDate.getDate() - cancelDeleteDays);
-    const cutoffStr = fmt(cutoffDate);
-    const deletedResult = db.prepare(`
-      DELETE FROM reservations WHERE store_id = ? AND realname = 'キャンセル' AND reservation_date < ?
-    `).run(storeId, cutoffStr);
-    const cancelledDeleted = deletedResult.changes;
+app.post('/api/admin/reports/day-before-reminders', requireOwnerSession, async (req, res) => {
+  try {
+    const result = await dailyReports.sendDayBeforeReminders(db, req.session.staff.storeId);
+    res.json(result);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
 
-    // ④ シフトの自動展開（店舗設定「シフト初期値」の曜日パターンから、[今日, 今日+
-    //   SHIFT_EXPAND_DAYS] の期間全体をshift_masterへ一括展開する。GAS版
-    //   applyShiftInitialValues_相当。2026-09-22追加、2026-09-23に一括展開へ修正。
-    //   ★以前はSHIFT_EXPAND_DAYS日先の「1日分だけ」を毎回展開する実装だったため、
-    //   日次メンテナンスを手動実行する運用（自動cronが無い）だと2週間に1回程度しか
-    //   実行されず、結果としてシフトマスタに歯抜け（未展開の期間）ができ、その期間の
-    //   お客様予約フォームが「スタッフの空きが常に満」と誤って表示される不具合の
-    //   原因になっていた（README §50-2の①）。今回、範囲全体をスキャンして
-    //   「スタッフ×日付」の組み合わせが1件も無い日だけを補完する方式に変更し、
-    //   既存の手動追加・過去の展開済み行（GAS版の「アプリ」タグ付き行に相当する
-    //   個別編集も含む）はそのまま保持する（歯抜けのみ埋める＝上書きしない）。
-    const shiftExpandDays = Number(engine.getRuleValue_(storeId, 'SHIFT_EXPAND_DAYS')) || 49;
-    const rangeStart = new Date();
-    const rangeDates = [];
-    for (let i = 0; i <= shiftExpandDays; i++) {
-      const d = new Date(rangeStart);
-      d.setDate(d.getDate() + i);
-      rangeDates.push({ str: fmt(d), dow: d.getDay() });
-    }
-    const targetDateStr = rangeDates.length ? rangeDates[rangeDates.length - 1].str : todayStr;
-    const templatesByDow = db.prepare(`
-      SELECT staff_name, day_of_week, start_time, end_time FROM shift_templates
-      WHERE store_id = ? AND is_active = 1
-    `).all(storeId);
-    const templateMap = new Map(); // dow(0〜6) または 7(=祝) -> [{staff_name,start_time,end_time}]
-    templatesByDow.forEach((t) => {
-      if (!templateMap.has(t.day_of_week)) templateMap.set(t.day_of_week, []);
-      templateMap.get(t.day_of_week).push(t);
-    });
-    // ★2026-09-23追加：「祝」（休業日）パターン対応（README §51-7で見送っていたもの、
-    //   GAS版applyShiftInitialValues_のholidaySet相当）。events（イベント／休業日）
-    //   に「予約制限あり」で登録されている日付は、通常の曜日パターンではなく
-    //   day_of_week=7（祝）のシフト初期値があればそちらを優先して使う（無ければ
-    //   その日は出勤なし＝GAS版と同じく「祝」は上書き専用で曜日パターンへの
-    //   フォールバックはしない）。
-    const holidayRows = db.prepare(`
-      SELECT event_date FROM events WHERE store_id = ? AND is_active = 1 AND restrict_booking = 1
-    `).all(storeId);
-    const holidaySet = new Set(holidayRows.map((r) => r.event_date));
-    const insertShiftFromTemplate = db.prepare(`
-      INSERT INTO shift_master (store_id, staff_name, shift_date, start_time, end_time, is_active)
-      VALUES (?, ?, ?, ?, ?, 1)
-    `);
-    const staffHasAnyShiftOnDate = db.prepare(`
-      SELECT 1 FROM shift_master WHERE store_id = ? AND staff_name = ? AND shift_date = ?
-    `);
-    let shiftsExpanded = 0;
-    let daysBackfilled = 0;
-    rangeDates.forEach(({ str: dateStr, dow }) => {
-      const effectiveDow = holidaySet.has(dateStr) ? 7 : dow;
-      const tpls = templateMap.get(effectiveDow) || [];
-      let addedThisDay = 0;
-      tpls.forEach((t) => {
-        // その日にそのスタッフの行が1件も無い場合のみテンプレートから補完する
-        // （手動追加・個別編集済みの行がある場合はそちらを優先し、上書きしない）
-        if (staffHasAnyShiftOnDate.get(storeId, t.staff_name, dateStr)) return;
-        insertShiftFromTemplate.run(storeId, t.staff_name, dateStr, t.start_time, t.end_time);
-        shiftsExpanded++;
-        addedThisDay++;
-      });
-      if (addedThisDay > 0) daysBackfilled++;
-    });
-
-    // ⑤ 古いシフトの削除（7日より前のshift_master行を物理削除。GAS版deleteOldShifts_相当）
-    const shiftCutoff = new Date();
-    shiftCutoff.setDate(shiftCutoff.getDate() - 7);
-    const shiftCutoffStr = fmt(shiftCutoff);
-    const shiftDeletedResult = db.prepare(`
-      DELETE FROM shift_master WHERE store_id = ? AND shift_date < ?
-    `).run(storeId, shiftCutoffStr);
-    const oldShiftsDeleted = shiftDeletedResult.changes;
-
-    res.json({
-      success: true,
-      today: todayStr,
-      executedUpdated,
-      visitsUpdated,
-      customersChecked: counts.length,
-      cancelledDeleted,
-      cancelDeleteDays,
-      shiftsExpanded,
-      daysBackfilled,
-      shiftExpandDays,
-      shiftExpandTargetDate: targetDateStr,
-      oldShiftsDeleted
-    });
+app.post('/api/admin/reports/staff-tomorrow-schedule', requireOwnerSession, async (req, res) => {
+  try {
+    const result = await dailyReports.sendStaffTomorrowSchedule(db, req.session.staff.storeId);
+    res.json(result);
   } catch (e) {
     console.error(e);
     res.status(500).json({ success: false, error: e.message });
@@ -3671,3 +3614,9 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 予約管理プロトタイプ サーバー起動: http://localhost:${PORT}`);
 });
+
+// ★2026-09-23追加：常設スケジューラ起動（lib/scheduler.js）。DB初期化・マイグレーション
+//   （上のinitDatabase()/runMigrations(db)）が完了した後、サーバー起動と同時に開始する。
+//   ★SKIP_SEED=1のテスト環境でも常に起動する（node-cronのタイマー登録自体は
+//   軽量なのでテストの妨げにはならない想定。実際に発火するのは毎時0分のみ）。
+startScheduler(db, engine);

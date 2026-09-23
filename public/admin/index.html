@@ -123,18 +123,36 @@
       </div>
 
       <div class="panel">
-        <h2>日次メンテナンス（GAS版の自動実行処理・手動実行版）</h2>
+        <h2>日次メンテナンス（GAS版の自動実行処理・常設スケジューラ対応済み）</h2>
         <p style="margin:0 0 12px;color:#666;font-size:13px;">
-          GAS版は毎日決まった時刻に自動実行していましたが、このプロトタイプはまだ
-          その仕組み（スケジューラ）を用意していないため、ボタンで手動実行する形に
-          しています。①予約日が過ぎた予約を「施術完了」扱いに自動更新し、②完了済みの
+          ①予約日が過ぎた予約を「施術完了」扱いに自動更新し、②完了済みの
           予約数から顧客ごとの来店回数を再集計します（現在の値より多い場合のみ更新）。
           ③キャンセル済みの予約のうち、店舗設定「基本ルール」の日数より前のものを
           削除します（初期値60日）。④店舗設定「シフト初期値」の曜日パターンから
           決まった日数先のシフトを自動展開し、⑤7日より前の古いシフトを削除します。
+          毎日「設定」画面の「日次メンテナンスの自動実行時刻」で指定した時刻に自動実行されます
+          （初期値5時）。下のボタンはテスト・即時実行用です。
         </p>
         <button id="runMaintenanceBtn" class="btn-import">日次メンテナンスを今すぐ実行</button>
         <div id="maintenanceResult" style="margin-top:10px;font-size:13px;white-space:pre-wrap;"></div>
+      </div>
+
+      <div class="panel">
+        <h2>LINEレポート配信（GAS版の朝礼/夕礼レポート・前日リマインド・常設スケジューラ対応済み）</h2>
+        <p style="margin:0 0 12px;color:#666;font-size:13px;">
+          「設定」画面で指定した時刻（朝レポート・夕方レポート・前日リマインダーそれぞれ）に
+          毎日自動配信されます。下のボタンはテスト・即時配信用です。
+          送信先はスタッフ管理画面でLINE連携（PIN登録）済みのオーナー・スタッフです。
+          LINE公式アカウント（スタッフ向け）のチャネルアクセストークンが未設定の間は、実際には
+          送信されずコンソールログのみのシミュレーション動作になります。
+        </p>
+        <div style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px;">
+          <button id="runMorningReportBtn" class="btn-import">📤 朝レポートを送信（本日の予約状況）</button>
+          <button id="runEveningReportBtn" class="btn-import">📤 夕方レポートを送信（本日確定・要確認・未確定仮予約＋スタッフ翌日通知）</button>
+          <button id="runReminderBtn" class="btn-import">📤 前日リマインダーを送信（お客様向け）</button>
+          <button id="runStaffScheduleBtn" class="btn-import">📤 スタッフ翌日予約通知のみ送信</button>
+        </div>
+        <div id="reportResult" style="margin-top:4px;font-size:13px;white-space:pre-wrap;"></div>
       </div>
 
       <div class="panel">
@@ -269,6 +287,78 @@
     } finally {
       btn.disabled = false;
     }
+  });
+
+  // ★2026-09-23追加：LINEレポート配信ボタン4種の共通クリックハンドラ
+  function formatReportSendResult(prefix, sentTo, results) {
+    if (sentTo === 0) return `${prefix}：送信対象なし`;
+    const simulated = results.filter((r) => r.simulated).length;
+    const failed = results.filter((r) => r.simulated === false && r.ok === false).length;
+    let line = `${prefix}：${sentTo}件`;
+    if (simulated > 0) line += `（うちシミュレーション${simulated}件）`;
+    if (failed > 0) line += `（送信失敗${failed}件）`;
+    return line;
+  }
+
+  async function runReport(url, btnId, onSuccess) {
+    const btn = document.getElementById(btnId);
+    const out = document.getElementById('reportResult');
+    btn.disabled = true;
+    out.textContent = '送信中...';
+    try {
+      const res = await fetch(url, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok || data.success === false) throw new Error(data.error || 'サーバーエラー');
+      out.textContent = onSuccess(data);
+    } catch (e) {
+      out.textContent = '❌ 失敗: ' + e.message;
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  document.getElementById('runMorningReportBtn').addEventListener('click', () => {
+    runReport('/api/admin/reports/morning', 'runMorningReportBtn', (data) => {
+      if (data.sentTo === 0 && data.message) return `ℹ️ ${data.message}（本日の予約：${data.reservationCount}件）`;
+      return `✅ 朝レポート送信完了（${data.date}）\n本日の予約：${data.reservationCount}件\n` +
+        formatReportSendResult('送信先', data.sentTo, data.results);
+    });
+  });
+
+  document.getElementById('runEveningReportBtn').addEventListener('click', () => {
+    runReport('/api/admin/reports/evening', 'runEveningReportBtn', (data) => {
+      const lines = [`✅ 夕方レポート送信完了（${data.date}）`];
+      if (data.mainReport && data.mainReport.success) {
+        lines.push(`①本日確定：${data.mainReport.newConfirmedCount}件／要確認リクエスト：${data.mainReport.newRequestsCount}件　` +
+          formatReportSendResult('送信先', data.mainReport.sentTo, data.mainReport.results));
+      } else if (data.mainReport) {
+        lines.push('①失敗: ' + data.mainReport.error);
+      }
+      if (data.pendingReport && data.pendingReport.success) {
+        lines.push(`②未確定の仮予約：${data.pendingReport.pendingCount}件　` +
+          (data.pendingReport.pendingCount > 0 ? formatReportSendResult('送信先', data.pendingReport.sentTo, data.pendingReport.results) : '（0件のため送信なし）'));
+      } else if (data.pendingReport) {
+        lines.push('②失敗: ' + data.pendingReport.error);
+      }
+      if (data.staffSchedule && data.staffSchedule.success) {
+        lines.push(`③スタッフ翌日予約通知：対象${data.staffSchedule.staffCount}名中${data.staffSchedule.notifiedCount}名に送信`);
+      } else if (data.staffSchedule) {
+        lines.push('③失敗: ' + data.staffSchedule.error);
+      }
+      return lines.join('\n');
+    });
+  });
+
+  document.getElementById('runReminderBtn').addEventListener('click', () => {
+    runReport('/api/admin/reports/day-before-reminders', 'runReminderBtn', (data) => {
+      return `✅ 前日リマインダー送信完了（${data.date}）\n対象${data.targetCount}件中${data.sentCount}件に送信`;
+    });
+  });
+
+  document.getElementById('runStaffScheduleBtn').addEventListener('click', () => {
+    runReport('/api/admin/reports/staff-tomorrow-schedule', 'runStaffScheduleBtn', (data) => {
+      return `✅ スタッフ翌日予約通知　送信完了（${data.date}）\n対象${data.staffCount}名中${data.notifiedCount}名に送信`;
+    });
   });
 
   document.getElementById('importSampleBtn').addEventListener('click', async () => {

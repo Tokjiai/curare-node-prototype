@@ -339,7 +339,11 @@
     BOOKING_LIMIT_DAYS: { label: '予約受付可能日数', desc: '何日先まで予約を受け付けるか' },
     BED_LIMIT: { label: '同時施術可能数', desc: '同じ時間帯に同時対応できるベッド数' },
     MAX_RESERVATIONS_PER_CUSTOMER: { label: '顧客あたりの予約上限', desc: '1人のお客様が同時に確定予約できる件数' },
-    CANCEL_DELETE_DAYS: { label: 'キャンセル予約の自動削除日数', desc: 'キャンセル済みの予約を、何日経過したら自動削除するか（日次メンテナンスボタン実行時）' }
+    CANCEL_DELETE_DAYS: { label: 'キャンセル予約の自動削除日数', desc: 'キャンセル済みの予約を、何日経過したら自動削除するか（日次メンテナンス実行時）' },
+    DAILY_MAINTENANCE_HOUR: { label: '日次メンテナンスの自動実行時刻', desc: '毎日何時（0〜23）に日次メンテナンス処理を自動実行するか' },
+    MORNING_REPORT_HOUR: { label: '朝レポートの自動送信時刻', desc: '毎日何時（0〜23）にオーナーへ朝レポート（本日の予約状況）を自動送信するか' },
+    EVENING_REPORT_HOUR: { label: '夕方レポートの自動送信時刻', desc: '毎日何時（0〜23）にオーナーへ夕方レポート（本日確定・未確定予約）とスタッフ翌日予約通知を自動送信するか' },
+    REMINDER_HOUR: { label: '前日リマインダーの自動送信時刻', desc: '毎日何時（0〜23）にお客様へ前日リマインダーを自動送信するか' }
   };
   const ZONE_LABELS = { am: '午前', pm: '午後', ev: '夜' };
 

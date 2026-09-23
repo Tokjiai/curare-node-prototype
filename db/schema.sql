@@ -48,6 +48,9 @@ CREATE TABLE IF NOT EXISTS stores (
   plan          VARCHAR(20) NOT NULL DEFAULT 'trial', -- 'trial' / 'onecoin' / 'base' / 'line'（プレースホルダー、未使用）
   line_customer_channel_token  VARCHAR(255),    -- お客様向けLINE公式アカウントのチャネルアクセストークン（未設定＝プッシュ通知はシミュレーションのみ）
   line_staff_channel_secret    VARCHAR(255),    -- スタッフ／オーナー向けLINE公式アカウントのチャネルシークレット（Webhook署名検証・店舗判別に使用）
+  line_staff_channel_token     VARCHAR(255),    -- ★2026-09-23追加：スタッフ／オーナー向けLINE公式アカウントのチャネルアクセストークン
+                                                 --   （プッシュ送信用。line_staff_channel_secretはWebhook署名検証専用で送信はできないため別カラムが必要。
+                                                 --   未設定＝朝/夕方レポート等スタッフ向けプッシュ通知はシミュレーションのみ）
   phone                        VARCHAR(20),     -- ★2026-09-20追加：店舗の電話番号（お客様予約フォームに表示。rule2「基本情報」カード相当、この画面からは編集不可）
   booking_period_info_days     INTEGER NOT NULL DEFAULT 14, -- ★2026-09-20追加：予約受付期間の「お知らせ用」表示日数（rule1のBOOKING_LIMIT_DAYSとは別枠の、お客様への案内表示専用の値）
   created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -146,6 +149,7 @@ CREATE TABLE IF NOT EXISTS reservations (
   note          TEXT,
   editor        VARCHAR(50),            -- 登録・編集したスタッフ名
   line_sent     BOOLEAN NOT NULL DEFAULT 0,
+  reminder_sent BOOLEAN NOT NULL DEFAULT 0,  -- ★2026-09-23追加：前日リマインダー送付済みフラグ（GAS版COL_Y_REMINDER相当）
   done          BOOLEAN NOT NULL DEFAULT 0,
   customer_id   VARCHAR(50),            -- 顧客ID（参考列。GAS版 COL_Y_CID 相当）
   status        VARCHAR(20) NOT NULL DEFAULT '確定',  -- '確定' / '仮予約' など

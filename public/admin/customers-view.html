@@ -8,9 +8,9 @@
   /* ============================================================
      GAS版 customer_view.html（顧客マスタの閲覧専用画面。実際はisOwnerRole_
      チェック付きのオーナー専用画面だった。電話番号などの確認用で、編集・削除は
-     できず統合のみ可能）のNode移植版。他の管理画面と色を揃えるクリーム＋セージの
-     配色トークンを使うが、GAS版に合わせてサイドバー無しの単独ページ構成にしている。
-     GAS版との差異はREADME_PROTOTYPE.md章45参照。
+     できず統合とキープメンバーの1クリック切替のみ可能）のNode移植版。他の管理画面と
+     色を揃えるクリーム＋セージの配色トークンを使うが、GAS版に合わせてサイドバー無しの
+     単独ページ構成にしている。GAS版との差異はREADME_PROTOTYPE.md章45・56参照。
      ============================================================ */
   :root{
     --bg:#F5F4EF; --panel:#ffffff; --ink:#2B2B27; --ink-soft:#75746C; --ink-faint:#A9A79C;
@@ -54,6 +54,8 @@
   .manual-picker-selected{margin-top:6px; background:var(--accent-soft); color:var(--accent); border-radius:8px; padding:8px 10px; font-size:12.5px; display:none; align-items:center; justify-content:space-between; gap:8px;}
   .manual-picker-selected.show{display:flex;}
   .manual-picker-clear{cursor:pointer; font-weight:700; color:var(--accent);}
+  .manual-picker-chip{display:flex; align-items:center; gap:5px; font-size:11px; color:var(--ink-soft); margin-top:5px; cursor:pointer;}
+  .manual-suggest-more{padding:8px 11px; font-size:11.5px; color:var(--ink-soft); text-align:center; border-top:1px solid #F1ECE9;}
   .manual-suggest{position:absolute; top:100%; left:0; right:0; background:#fff; border:1px solid var(--line); border-radius:8px; margin-top:4px; max-height:220px; overflow-y:auto; z-index:20; box-shadow:0 4px 12px rgba(0,0,0,0.08); display:none;}
   .manual-suggest.show{display:block;}
   .manual-suggest-item{padding:9px 11px; font-size:12.5px; cursor:pointer; border-bottom:1px solid #F1ECE9;}
@@ -86,6 +88,17 @@
   .badge.unlinked{background:var(--admin-soft); color:var(--admin);}
   .badge.blocked{background:var(--warn-soft); color:var(--warn);}
   .empty{color:var(--ink-soft); font-size:13px; padding:14px; text-align:center;}
+  /* ★2026-09-23追加：キープメンバーの1クリックトグル（GAS版customer_view.htmlも
+     閲覧専用画面でありながらこの1項目だけは直接編集できた挙動を踏襲。48-10で
+     customers.htmlに実装済みのスイッチと同じ見た目・挙動をこの画面にも追加） */
+  .keep-toggle-wrap{display:flex; align-items:center; gap:6px;}
+  .keep-toggle{position:relative; display:inline-block; width:34px; height:19px; flex-shrink:0;}
+  .keep-toggle input{opacity:0; width:0; height:0;}
+  .keep-toggle .slider{position:absolute; cursor:pointer; inset:0; background-color:#ccc; border-radius:19px; transition:background-color .15s;}
+  .keep-toggle .slider::before{position:absolute; content:""; height:13px; width:13px; left:3px; bottom:3px; background-color:#fff; border-radius:50%; transition:transform .15s;}
+  .keep-toggle input:checked + .slider{background-color:var(--accent);}
+  .keep-toggle input:checked + .slider::before{transform:translateX(15px);}
+  .keep-toggle input:disabled + .slider{opacity:0.5; cursor:not-allowed;}
 </style>
 </head>
 <body>
@@ -115,14 +128,16 @@
     <div class="manual-pickers">
       <div class="manual-picker">
         <div class="manual-picker-label">① 残す方（統合後もこのCIDが残ります）</div>
-        <input type="text" id="manualKeepInput" placeholder="本名・フリガナ・電話番号・LINE名で検索">
+        <input type="text" id="manualKeepInput" placeholder="クリックで一覧表示／本名・フリガナ・電話番号・LINE名で検索">
+        <label class="manual-picker-chip"><input type="checkbox" id="manualKeepInactiveOnly"> 非アクティブのみ（本名未登録が多い）</label>
         <div class="manual-suggest" id="manualKeepSuggest"></div>
         <div class="manual-picker-selected" id="manualKeepSelected"><span id="manualKeepSelectedText"></span><span class="manual-picker-clear" data-side="keep">✕</span></div>
       </div>
       <div class="manual-vs">⇔</div>
       <div class="manual-picker">
         <div class="manual-picker-label">② 統合される方（このCIDは削除済みになります）</div>
-        <input type="text" id="manualMergeInput" placeholder="本名・フリガナ・電話番号・LINE名で検索">
+        <input type="text" id="manualMergeInput" placeholder="クリックで一覧表示／本名・フリガナ・電話番号・LINE名で検索">
+        <label class="manual-picker-chip"><input type="checkbox" id="manualMergeInactiveOnly"> 非アクティブのみ（本名未登録が多い）</label>
         <div class="manual-suggest" id="manualMergeSuggest"></div>
         <div class="manual-picker-selected" id="manualMergeSelected"><span id="manualMergeSelectedText"></span><span class="manual-picker-clear" data-side="merge">✕</span></div>
       </div>
@@ -223,10 +238,16 @@
       const div = document.createElement('div');
       div.className = 'merge-item';
       const idA = c.customerA.customer_id, idB = c.customerB.customer_id;
+      // ★2026-09-23追加：GAS版customer_view.htmlは統合候補カードに「一致理由」を
+      //   表示していたが、Node版はサーバーが既に算出済みのreason（現状は電話番号一致の
+      //   1種類のみ）・突合した電話番号を表示していなかった。あわせて、どちらの行を
+      //   残すべきか判断しやすいよう来店回数も添える（GAS版には無いNode独自の補足）。
+      const reasonLine = `一致理由：${esc(c.reason || '電話番号一致')}（${esc(c.phone || '')}）`;
       div.innerHTML = `
+        <div class="reason" style="font-size:11.5px;color:var(--ink-soft);margin-bottom:4px;">${reasonLine}</div>
         <div class="pair">
-          <div class="merge-card"><div class="cid">${esc(idA)}</div><div class="rn">${esc(c.customerA.realname)}</div><div class="sub">${esc(c.customerA.kana || '')} ／ ${esc(c.customerA.phone || '')}</div></div>
-          <div class="merge-card"><div class="cid">${esc(idB)}</div><div class="rn">${esc(c.customerB.realname)}</div><div class="sub">${esc(c.customerB.kana || '')} ／ ${esc(c.customerB.phone || '')}</div></div>
+          <div class="merge-card"><div class="cid">${esc(idA)}</div><div class="rn">${esc(c.customerA.realname)}</div><div class="sub">${esc(c.customerA.kana || '')} ／ ${esc(c.customerA.phone || '')}</div><div class="sub">来店${esc(c.customerA.total_visits ?? 0)}回</div></div>
+          <div class="merge-card"><div class="cid">${esc(idB)}</div><div class="rn">${esc(c.customerB.realname)}</div><div class="sub">${esc(c.customerB.kana || '')} ／ ${esc(c.customerB.phone || '')}</div><div class="sub">来店${esc(c.customerB.total_visits ?? 0)}回</div></div>
         </div>
         <div class="merge-actions">
           <span style="font-size:12px;color:var(--ink-soft);">どちらを残す？</span>
@@ -261,22 +282,38 @@
     const name = c.realname || (c.line_name ? `LINE名：${c.line_name}` : '（名称未登録）');
     return `${name}（${c.customer_id}）`;
   }
-  function setupManualPicker(side, inputId, suggestId, selectedId, selectedTextId) {
+  // ★2026-09-23追加：GAS版customer_view.htmlの手動統合ピッカーは①入力欄フォーカス
+  //   時点で一覧を表示（未入力でも全件から探せる）②最大80件表示＋「他にN件」の
+  //   案内③「非アクティブのみ」絞り込みチップ、を備えていたが、Node版は検索語を
+  //   打たないと何も出ず・上限12件・絞り込みチップも無かった（LINE友だちのみで
+  //   本名未登録の顧客が多い店舗では目的の顧客を探しにくいという実際のギャップ）。
+  //   フォーカス時表示・上限80件＋「他N件」表示・非アクティブのみチップの3点を追加。
+  const MANUAL_PICKER_LIMIT = 80;
+  function setupManualPicker(side, inputId, suggestId, selectedId, selectedTextId, inactiveOnlyId) {
     const input = document.getElementById(inputId);
     const suggest = document.getElementById(suggestId);
-    input.addEventListener('input', () => {
+    const inactiveOnly = document.getElementById(inactiveOnlyId);
+    function renderSuggest() {
       const q = toFullWidthKana(input.value.trim());
-      if (!q) { suggest.classList.remove('show'); suggest.innerHTML = ''; return; }
-      const matches = allCustomers.filter((c) => {
-        const hay = [c.realname, c.kana, c.phone, c.line_name].map((v) => toFullWidthKana(String(v || ''))).join(' ');
-        return hay.includes(q);
-      }).slice(0, 12);
+      let pool = allCustomers.filter((c) => !c.is_deleted);
+      if (inactiveOnly.checked) pool = pool.filter((c) => c.status === 'inactive');
+      if (q) {
+        pool = pool.filter((c) => {
+          const hay = [c.realname, c.kana, c.phone, c.line_name].map((v) => toFullWidthKana(String(v || ''))).join(' ');
+          return hay.includes(q);
+        });
+      } else {
+        // ★未入力時：フリガナ順（本名未登録はLINE名で代用してソート）で全件から表示
+        pool = pool.slice().sort((a, b) => String(a.kana || a.realname || a.line_name || '').localeCompare(String(b.kana || b.realname || b.line_name || ''), 'ja'));
+      }
+      const total = pool.length;
+      const matches = pool.slice(0, MANUAL_PICKER_LIMIT);
       if (matches.length === 0) { suggest.innerHTML = '<div class="manual-suggest-item">該当する顧客がいません</div>'; suggest.classList.add('show'); return; }
       suggest.innerHTML = matches.map((c) => `
         <div class="manual-suggest-item" data-cid="${esc(c.customer_id)}">
           <div class="s-name">${esc(c.realname || (c.line_name ? 'LINE名：' + c.line_name : '（名称未登録）'))}</div>
           <div class="s-sub">${esc(c.kana || '')} ／ ${esc(c.phone || '')} ／ ${esc(c.customer_id)}</div>
-        </div>`).join('');
+        </div>`).join('') + (total > MANUAL_PICKER_LIMIT ? `<div class="manual-suggest-more">他に${total - MANUAL_PICKER_LIMIT}件あります。検索語で絞り込んでください</div>` : '');
       suggest.classList.add('show');
       suggest.querySelectorAll('.manual-suggest-item[data-cid]').forEach((el) => {
         el.addEventListener('click', () => {
@@ -288,10 +325,18 @@
           updateManualMergeBtn();
         });
       });
+    }
+    input.addEventListener('input', renderSuggest);
+    input.addEventListener('focus', renderSuggest);
+    inactiveOnly.addEventListener('change', renderSuggest);
+    document.addEventListener('click', (e) => {
+      if (!input.contains(e.target) && !suggest.contains(e.target) && !inactiveOnly.contains(e.target)) {
+        suggest.classList.remove('show');
+      }
     });
   }
-  setupManualPicker('keep', 'manualKeepInput', 'manualKeepSuggest', 'manualKeepSelected', 'manualKeepSelectedText');
-  setupManualPicker('merge', 'manualMergeInput', 'manualMergeSuggest', 'manualMergeSelected', 'manualMergeSelectedText');
+  setupManualPicker('keep', 'manualKeepInput', 'manualKeepSuggest', 'manualKeepSelected', 'manualKeepSelectedText', 'manualKeepInactiveOnly');
+  setupManualPicker('merge', 'manualMergeInput', 'manualMergeSuggest', 'manualMergeSelected', 'manualMergeSelectedText', 'manualMergeInactiveOnly');
   document.querySelectorAll('.manual-picker-clear').forEach((el) => {
     el.addEventListener('click', () => {
       const side = el.dataset.side;
@@ -360,12 +405,37 @@
       tr.innerHTML = `
         <td>${nameCell}</td>
         <td>${telCell}</td>
-        <td>${c.is_keep_member ? '✓ キープ' : ''}</td>
+        <td>
+          <div class="keep-toggle-wrap">
+            <label class="keep-toggle">
+              <input type="checkbox" class="keep-toggle-input" ${c.is_keep_member ? 'checked' : ''}>
+              <span class="slider"></span>
+            </label>
+          </div>
+        </td>
         <td>${statusBadge}</td>
         <td>${lineBadge}</td>
         <td>${blockedBadge}</td>
         <td>${c.notify_enabled ? '通知ON' : '通知OFF'}</td>
         <td>${esc(c.staff_name || '')}</td>`;
+      // ★キープメンバーのON/OFFのみ、この閲覧専用画面からも1クリックで変更可能
+      //   （GAS版customer_view.htmlと同じ挙動。他の項目は引き続き編集不可）
+      const toggleInput = tr.querySelector('.keep-toggle-input');
+      toggleInput.addEventListener('change', async () => {
+        const desired = toggleInput.checked;
+        toggleInput.disabled = true;
+        try {
+          const result = await adminFetch(`/api/admin/customers/${encodeURIComponent(c.customer_id)}/toggle-keep-member`, { method: 'POST' });
+          if (!result || result.success === false) throw new Error((result && result.message) || '切り替えに失敗しました');
+          c.is_keep_member = result.isKeepMember ? 1 : 0;
+          toggleInput.checked = !!result.isKeepMember;
+        } catch (e) {
+          toggleInput.checked = !desired;
+          alert('キープメンバーの切り替えに失敗しました：' + (e.message || ''));
+        } finally {
+          toggleInput.disabled = false;
+        }
+      });
       tbody.appendChild(tr);
     });
   }
