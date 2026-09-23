@@ -82,6 +82,7 @@
         <a href="../staff/calendar.html" class="nav-item">🛏️ サロンダッシュボード</a>
         <a href="customers-view.html" class="nav-item">👁️ 顧客マスタ（閲覧）</a>
         <a href="reservations-view.html" class="nav-item">👁️ 予約データ（閲覧）</a>
+        <a href="db-viewer.html" class="nav-item">🗂️ DB一覧ビューア（全テーブル閲覧）</a>
         <a href="../index.html" class="nav-item">🔗 予約画面へ</a>
         <a href="#" id="logoutLink" class="nav-item warn">🚪 ログアウト</a>
       </div>
@@ -259,7 +260,7 @@
         `①施術完了に更新した予約：${data.executedUpdated}件\n` +
         `②来店回数を更新した顧客：${data.visitsUpdated}件（対象${data.customersChecked}名を確認）\n` +
         `③削除した古いキャンセル予約：${data.cancelledDeleted}件（${data.cancelDeleteDays}日より前が対象）\n` +
-        `④自動展開したシフト：${data.shiftsExpanded}件（${data.shiftExpandTargetDate}分、${data.shiftExpandDays}日先）\n` +
+        `④自動展開したシフト：${data.shiftsExpanded}件（${data.daysBackfilled}日分の歯抜けを補完、今日〜${data.shiftExpandTargetDate}の範囲）\n` +
         `⑤削除した古いシフト：${data.oldShiftsDeleted}件（7日より前が対象）`;
       const dash = await adminFetch('/api/admin/dashboard');
       renderDashboard(dash);

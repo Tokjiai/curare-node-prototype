@@ -1003,6 +1003,12 @@ app.post('/api/staff/shifts', requireStaffSession, (req, res) => {
     if (engine.toMin_(startTime) >= engine.toMin_(endTime)) {
       return res.status(400).json({ success: false, message: '開始時間は終了時間より前にしてください' });
     }
+    const dupe = db.prepare(`
+      SELECT id FROM shift_master WHERE store_id = ? AND staff_name = ? AND shift_date = ? AND start_time = ? AND end_time = ?
+    `).get(storeId, staffName, date, startTime, endTime);
+    if (dupe) {
+      return res.status(400).json({ success: false, message: '同じ内容のシフトが既に登録されています' });
+    }
     db.prepare(`
       INSERT INTO shift_master (store_id, staff_name, shift_date, start_time, end_time, is_active)
       VALUES (?, ?, ?, ?, ?, 1)
@@ -2121,7 +2127,22 @@ app.put('/api/admin/staff/:id', requireOwnerSession, (req, res) => {
       WHERE id = @id AND store_id = @store_id
     `).run(params);
 
-    res.json({ success: true });
+    // ★2026-09-23追加：氏名変更時、旧名義の「シフト初期値」（shift_templates）を
+    //   削除する（GAS版saveStaffMemberのdeleteShiftInitialRowsByName_相当）。
+    //   これをしないと、旧名義のテンプレートが残ったまま日次展開が続き、新しい
+    //   氏名の方にはシフトが一切展開されなくなる（過去のシフトマスタ／予約履歴は
+    //   GAS版と同様、あえて書き換えない＝旧名義のまま残す）。
+    let renamedTemplatesRemoved = 0;
+    const oldName = existing.name;
+    const newName = params.name;
+    if (oldName && newName && oldName !== newName) {
+      const delResult = db.prepare(`
+        DELETE FROM shift_templates WHERE store_id = ? AND staff_name = ?
+      `).run(storeId, oldName);
+      renamedTemplatesRemoved = delResult.changes;
+    }
+
+    res.json({ success: true, renamedTemplatesRemoved });
   } catch (e) {
     console.error(e);
     res.status(500).json({ success: false, error: e.message });
@@ -2404,6 +2425,14 @@ app.post('/api/admin/shifts', requireOwnerSession, (req, res) => {
     ).get(storeId, staffName);
     if (!staffExists) {
       return res.status(400).json({ success: false, message: '在籍中のスタッフとして見つかりません' });
+    }
+    // ★2026-09-23追加：完全に同一内容（スタッフ・日付・開始・終了）のシフトが
+    //   既に存在する場合は重複登録を拒否する（README §50-2の⑤で報告した不具合の修正）
+    const dupe = db.prepare(`
+      SELECT id FROM shift_master WHERE store_id = ? AND staff_name = ? AND shift_date = ? AND start_time = ? AND end_time = ?
+    `).get(storeId, staffName, date, startTime, endTime);
+    if (dupe) {
+      return res.status(400).json({ success: false, message: '同じ内容のシフトが既に登録されています' });
     }
 
     const info = db.prepare(`
@@ -3248,33 +3277,56 @@ app.post('/api/admin/maintenance/run-daily', requireOwnerSession, (req, res) => 
     `).run(storeId, cutoffStr);
     const cancelledDeleted = deletedResult.changes;
 
-    // ④ シフトの自動展開（店舗設定「シフト初期値」の曜日パターンから、SHIFT_EXPAND_DAYS
-    //   日先の1日分をshift_masterへ展開する。GAS版expandShiftByRule_相当。2026-09-22追加）
-    //   ★GAS版は実行のたびに末尾へ無条件で行を追記する設計だったが、Node版では同じ
-    //   （店舗・スタッフ・日付）の組み合わせが既にshift_masterに存在する場合は
-    //   スキップする（INSERT前にNOT EXISTSで確認）。同じ日に日次メンテナンスを
-    //   複数回実行しても重複登録されないようにするための安全策で、GAS版より堅牢にした。
+    // ④ シフトの自動展開（店舗設定「シフト初期値」の曜日パターンから、[今日, 今日+
+    //   SHIFT_EXPAND_DAYS] の期間全体をshift_masterへ一括展開する。GAS版
+    //   applyShiftInitialValues_相当。2026-09-22追加、2026-09-23に一括展開へ修正。
+    //   ★以前はSHIFT_EXPAND_DAYS日先の「1日分だけ」を毎回展開する実装だったため、
+    //   日次メンテナンスを手動実行する運用（自動cronが無い）だと2週間に1回程度しか
+    //   実行されず、結果としてシフトマスタに歯抜け（未展開の期間）ができ、その期間の
+    //   お客様予約フォームが「スタッフの空きが常に満」と誤って表示される不具合の
+    //   原因になっていた（README §50-2の①）。今回、範囲全体をスキャンして
+    //   「スタッフ×日付」の組み合わせが1件も無い日だけを補完する方式に変更し、
+    //   既存の手動追加・過去の展開済み行（GAS版の「アプリ」タグ付き行に相当する
+    //   個別編集も含む）はそのまま保持する（歯抜けのみ埋める＝上書きしない）。
     const shiftExpandDays = Number(engine.getRuleValue_(storeId, 'SHIFT_EXPAND_DAYS')) || 49;
-    const targetDate = new Date();
-    targetDate.setDate(targetDate.getDate() + shiftExpandDays);
-    const targetDateStr = fmt(targetDate);
-    const targetDayOfWeek = targetDate.getDay(); // 0=日〜6=土
-    const templates = db.prepare(`
-      SELECT staff_name, start_time, end_time FROM shift_templates
-      WHERE store_id = ? AND day_of_week = ? AND is_active = 1
-    `).all(storeId, targetDayOfWeek);
+    const rangeStart = new Date();
+    const rangeDates = [];
+    for (let i = 0; i <= shiftExpandDays; i++) {
+      const d = new Date(rangeStart);
+      d.setDate(d.getDate() + i);
+      rangeDates.push({ str: fmt(d), dow: d.getDay() });
+    }
+    const targetDateStr = rangeDates.length ? rangeDates[rangeDates.length - 1].str : todayStr;
+    const templatesByDow = db.prepare(`
+      SELECT staff_name, day_of_week, start_time, end_time FROM shift_templates
+      WHERE store_id = ? AND is_active = 1
+    `).all(storeId);
+    const templateMap = new Map(); // dow -> [{staff_name,start_time,end_time}]
+    templatesByDow.forEach((t) => {
+      if (!templateMap.has(t.day_of_week)) templateMap.set(t.day_of_week, []);
+      templateMap.get(t.day_of_week).push(t);
+    });
     const insertShiftFromTemplate = db.prepare(`
       INSERT INTO shift_master (store_id, staff_name, shift_date, start_time, end_time, is_active)
       VALUES (?, ?, ?, ?, ?, 1)
     `);
-    const existsShift = db.prepare(`
+    const staffHasAnyShiftOnDate = db.prepare(`
       SELECT 1 FROM shift_master WHERE store_id = ? AND staff_name = ? AND shift_date = ?
     `);
     let shiftsExpanded = 0;
-    templates.forEach((t) => {
-      if (existsShift.get(storeId, t.staff_name, targetDateStr)) return;
-      insertShiftFromTemplate.run(storeId, t.staff_name, targetDateStr, t.start_time, t.end_time);
-      shiftsExpanded++;
+    let daysBackfilled = 0;
+    rangeDates.forEach(({ str: dateStr, dow }) => {
+      const tpls = templateMap.get(dow) || [];
+      let addedThisDay = 0;
+      tpls.forEach((t) => {
+        // その日にそのスタッフの行が1件も無い場合のみテンプレートから補完する
+        // （手動追加・個別編集済みの行がある場合はそちらを優先し、上書きしない）
+        if (staffHasAnyShiftOnDate.get(storeId, t.staff_name, dateStr)) return;
+        insertShiftFromTemplate.run(storeId, t.staff_name, dateStr, t.start_time, t.end_time);
+        shiftsExpanded++;
+        addedThisDay++;
+      });
+      if (addedThisDay > 0) daysBackfilled++;
     });
 
     // ⑤ 古いシフトの削除（7日より前のshift_master行を物理削除。GAS版deleteOldShifts_相当）
@@ -3295,10 +3347,143 @@ app.post('/api/admin/maintenance/run-daily', requireOwnerSession, (req, res) => 
       cancelledDeleted,
       cancelDeleteDays,
       shiftsExpanded,
+      daysBackfilled,
       shiftExpandDays,
       shiftExpandTargetDate: targetDateStr,
       oldShiftsDeleted
     });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ============================================================================
+// ★2026-09-23追加：DB一覧ビューア（社長より「全体の予約や顧客データを見渡せる
+//   スプレットシートのような画面」「admin権限のみで入れるDBを直接視覚的にみれる
+//   ページ」の要望）。既存のcustomers-view.html／reservations-view.htmlは
+//   目的別に整形・絞り込み済みの一覧だが、こちらは店舗の全テーブルを横断的に
+//   スプレットシートのグリッドのような形で閲覧できる、より網羅的な一覧を狙った
+//   ページ。オーナーのみアクセス可（requireOwnerSession）。
+//
+//   【対象テーブルのホワイトリスト】DB_VIEWER_TABLES に無いテーブル名は拒否する
+//   （SQLインジェクション対策・想定外テーブルの露出防止）。各テーブルのカラムも
+//   ホワイトリスト化し、スタッフのpin_hash／pin_saltなど認証情報は最初から
+//   一覧に含めない（LINE連携情報を生のまま扱わない、という既存の方針を踏襲）。
+//   閲覧専用（編集・削除は今回のスコープ外。既存のCRUD用APIで対応する）。
+// ============================================================================
+const DB_VIEWER_TABLES = {
+  reservations: {
+    label: '予約 (reservations)',
+    columns: ['id', 'realname', 'kana', 'line_name', 'staff_name', 'menu', 'reservation_date', 'reservation_time', 'note', 'editor', 'line_sent', 'done', 'customer_id', 'status', 'created_at', 'updated_at'],
+    defaultSort: 'reservation_date', defaultDir: 'DESC',
+    searchColumns: ['realname', 'kana', 'staff_name', 'menu', 'note']
+  },
+  customers: {
+    label: '顧客 (customers)',
+    columns: ['id', 'customer_id', 'realname', 'kana', 'phone', 'address', 'line_name', 'birthday', 'first_visit_date', 'last_visit_date', 'total_visits', 'memo', 'status', 'staff_name', 'is_keep_member', 'opt_support', 'booking_blocked', 'notify_enabled', 'is_deleted', 'created_at', 'updated_at'],
+    defaultSort: 'last_visit_date', defaultDir: 'DESC',
+    searchColumns: ['realname', 'kana', 'phone', 'memo']
+  },
+  staff: {
+    label: 'スタッフ (staff)',
+    columns: ['id', 'name', 'nickname', 'role', 'color', 'opt_support', 'night_restrict', 'show_in_booking', 'is_active', 'is_owner', 'created_at'],
+    defaultSort: 'id', defaultDir: 'ASC',
+    searchColumns: ['name', 'nickname', 'role']
+  },
+  shift_master: {
+    label: 'シフトマスタ (shift_master)',
+    columns: ['id', 'staff_name', 'shift_date', 'start_time', 'end_time', 'is_active', 'created_at'],
+    defaultSort: 'shift_date', defaultDir: 'DESC',
+    searchColumns: ['staff_name']
+  },
+  shift_templates: {
+    label: 'シフト初期値 (shift_templates)',
+    columns: ['id', 'staff_name', 'day_of_week', 'start_time', 'end_time', 'is_active', 'created_at'],
+    defaultSort: 'staff_name', defaultDir: 'ASC',
+    searchColumns: ['staff_name']
+  },
+  events: {
+    label: 'イベント／休業日 (events)',
+    columns: ['id', 'title', 'event_date', 'start_time', 'end_time', 'restrict_booking', 'block_start_time', 'block_end_time', 'is_active', 'created_at'],
+    defaultSort: 'event_date', defaultDir: 'DESC',
+    searchColumns: ['title']
+  },
+  menu_items: {
+    label: 'メニュー (menu_items)',
+    columns: ['id', 'category', 'name', 'duration_min', 'price', 'target', 'is_active', 'display_order', 'created_at'],
+    defaultSort: 'display_order', defaultDir: 'ASC',
+    searchColumns: ['category', 'name']
+  },
+  rules: {
+    label: '店舗設定値 (rules)',
+    columns: ['id', 'rule_id', 'memo', 'value'],
+    defaultSort: 'rule_id', defaultDir: 'ASC',
+    searchColumns: ['rule_id', 'memo']
+  },
+  zones: {
+    label: 'ゾーン設定 (zones)',
+    columns: ['id', 'zone_key', 'label', 'start_time', 'end_time', 'fixed_target', 'fixed_start', 'fixed_interval_min', 'is_active'],
+    defaultSort: 'zone_key', defaultDir: 'ASC',
+    searchColumns: ['zone_key', 'label']
+  },
+  message_templates: {
+    label: 'メッセージテンプレート (message_templates)',
+    columns: ['id', 'msg_key', 'body', 'closing', 'updated_at'],
+    defaultSort: 'msg_key', defaultDir: 'ASC',
+    searchColumns: ['msg_key', 'body']
+  },
+  booking_notices: {
+    label: 'お知らせ (booking_notices)',
+    columns: ['id', 'target', 'text', 'is_active', 'created_at', 'updated_at'],
+    defaultSort: 'id', defaultDir: 'DESC',
+    searchColumns: ['text']
+  }
+};
+
+// GET /api/admin/db-viewer/tables : 閲覧可能なテーブルの一覧とカラム定義を返す
+app.get('/api/admin/db-viewer/tables', requireOwnerSession, (req, res) => {
+  const tables = Object.entries(DB_VIEWER_TABLES).map(([key, def]) => ({
+    key, label: def.label, columns: def.columns
+  }));
+  res.json({ tables });
+});
+
+// GET /api/admin/db-viewer/:table : 指定テーブルの行を返す（自店舗のみ・閲覧専用）
+//   ?q=検索語 ?sort=カラム名 ?dir=ASC|DESC ?limit= ?offset=
+app.get('/api/admin/db-viewer/:table', requireOwnerSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const tableKey = req.params.table;
+    const def = DB_VIEWER_TABLES[tableKey];
+    if (!def) {
+      return res.status(400).json({ success: false, message: '対象のテーブルではありません' });
+    }
+    const limit = Math.min(Number(req.query.limit) || 100, 500);
+    const offset = Math.max(Number(req.query.offset) || 0, 0);
+    let sortCol = def.defaultSort;
+    if (req.query.sort && def.columns.includes(String(req.query.sort))) {
+      sortCol = String(req.query.sort);
+    }
+    const sortDir = String(req.query.dir).toUpperCase() === 'ASC' ? 'ASC' : (String(req.query.dir).toUpperCase() === 'DESC' ? 'DESC' : def.defaultDir);
+
+    let where = 'store_id = ?';
+    const params = [storeId];
+    if (req.query.q && def.searchColumns.length) {
+      const like = `%${req.query.q}%`;
+      where += ' AND (' + def.searchColumns.map((c) => `${c} LIKE ?`).join(' OR ') + ')';
+      def.searchColumns.forEach(() => params.push(like));
+    }
+
+    const colList = def.columns.map((c) => `"${c}"`).join(', ');
+    const total = db.prepare(`SELECT COUNT(*) AS c FROM ${tableKey} WHERE ${where}`).get(...params).c;
+    const rows = db.prepare(`
+      SELECT ${colList} FROM ${tableKey} WHERE ${where}
+      ORDER BY "${sortCol}" ${sortDir}
+      LIMIT ? OFFSET ?
+    `).all(...params, limit, offset);
+
+    res.json({ table: tableKey, label: def.label, columns: def.columns, total, limit, offset, sort: sortCol, dir: sortDir, rows });
   } catch (e) {
     console.error(e);
     res.status(500).json({ success: false, error: e.message });

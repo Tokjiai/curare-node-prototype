@@ -2511,6 +2511,79 @@ async function main() {
   }
 
   // --------------------------------------------------------------------------
+  // 40. シフト連携の一括反映・氏名変更時のシフト初期値クリーンアップ・
+  //     シフト重複防止・DB一覧ビューア（2026-09-23追加）
+  // --------------------------------------------------------------------------
+  console.log('--- 40. シフト連携の修正とDB一覧ビューア ---');
+  {
+    // ①一括シフト反映：範囲内の歯抜けを日次メンテナンスで補完できる（README §50-2①の修正確認）
+    const gapFrom = '2026-10-15';
+    const gapTo = '2026-11-05';
+    db.prepare("DELETE FROM shift_master WHERE store_id = 1 AND shift_date BETWEEN ? AND ?").run(gapFrom, gapTo);
+    const before = db.prepare("SELECT COUNT(*) c FROM shift_master WHERE store_id = 1 AND shift_date BETWEEN ? AND ?").get(gapFrom, gapTo).c;
+    assert(before === 0, '（前提）意図的に作った歯抜け期間にはシフトマスタの行が無い');
+    const run = await ownerFresh.postJson('/api/admin/maintenance/run-daily', {});
+    assert(run.status === 200 && run.body.success === true && run.body.shiftsExpanded > 0 && run.body.daysBackfilled > 0,
+      '日次メンテナンスが範囲全体（今日〜SHIFT_EXPAND_DAYS日先）の歯抜けを一括で補完する（以前は1日分しか展開されなかった不具合の修正）');
+    const after = db.prepare("SELECT COUNT(*) c FROM shift_master WHERE store_id = 1 AND shift_date BETWEEN ? AND ?").get(gapFrom, gapTo).c;
+    assert(after > 0, '歯抜け期間にシフトマスタの行が復元されている');
+    const runAgain = await ownerFresh.postJson('/api/admin/maintenance/run-daily', {});
+    assert(runAgain.status === 200 && runAgain.body.shiftsExpanded === 0, '既に埋まっている期間へ再実行しても重複追加されない（歯抜けのみ補完する設計の確認）');
+  }
+  {
+    // ②氏名変更時、旧名義の「シフト初期値」（shift_templates）だけが削除される（履歴は残す）
+    const staffRow = db.prepare("SELECT id, name FROM staff WHERE store_id = 1 AND name = '美咲'").get();
+    const beforeTpl = db.prepare('SELECT COUNT(*) c FROM shift_templates WHERE store_id = 1 AND staff_name = ?').get(staffRow.name).c;
+    const beforeHistory = db.prepare('SELECT COUNT(*) c FROM shift_master WHERE store_id = 1 AND staff_name = ?').get(staffRow.name).c;
+    const rename = await ownerFresh.putJson(`/api/admin/staff/${staffRow.id}`, { name: '美咲改名テスト', nickname: '', role: 'スタッフ' });
+    assert(rename.status === 200 && rename.body.success === true, '氏名変更が成功する');
+    if (beforeTpl > 0) {
+      assert(rename.body.renamedTemplatesRemoved === beforeTpl, '旧名義のシフト初期値（shift_templates）が氏名変更時に削除される（README §50-2②の修正確認）');
+    }
+    const afterTplOld = db.prepare('SELECT COUNT(*) c FROM shift_templates WHERE store_id = 1 AND staff_name = ?').get(staffRow.name).c;
+    assert(afterTplOld === 0, '旧名義のシフト初期値はもう残っていない');
+    const afterHistoryOld = db.prepare('SELECT COUNT(*) c FROM shift_master WHERE store_id = 1 AND staff_name = ?').get(staffRow.name).c;
+    assert(afterHistoryOld === beforeHistory, '過去のシフトマスタ（履歴）は氏名変更で書き換えられない（GAS版と同じ、あえて残す設計）');
+    // 元に戻す（他のテストへの影響を避けるため）
+    await ownerFresh.putJson(`/api/admin/staff/${staffRow.id}`, { name: '美咲', nickname: '', role: 'スタッフ' });
+  }
+  {
+    // ③完全に同一内容のシフトの重複登録を拒否する（README §50-2⑤の修正確認）
+    const body = { staffName: '寿子', date: '2026-12-05', startTime: '10:00', endTime: '12:00' };
+    const r1 = await ownerFresh.postJson('/api/admin/shifts', body);
+    assert(r1.status === 200 && r1.body.success === true, '（前提）シフトを1件追加できる');
+    const r2 = await ownerFresh.postJson('/api/admin/shifts', body);
+    assert(r2.status === 400 && r2.body.success === false, '完全に同一内容（スタッフ・日付・開始・終了）のシフトは重複登録を拒否される');
+    const r3 = await ownerFresh.postJson('/api/staff/shifts', { date: '2026-12-06', startTime: '09:00', endTime: '11:00' });
+    assert(r3.status === 200, '（前提）スタッフ用エンドポイントでもシフトを1件追加できる');
+    const r4 = await ownerFresh.postJson('/api/staff/shifts', { date: '2026-12-06', startTime: '09:00', endTime: '11:00' });
+    assert(r4.status === 400, 'スタッフ用エンドポイント（/api/staff/shifts）でも同一内容の重複登録を拒否する');
+  }
+  {
+    // ④DB一覧ビューア：admin権限のみアクセス可能で、店舗スコープを外れたテーブルは拒否され、
+    //   認証情報（pin_hash等）は最初から返らない（社長ご要望「DBを直接視覚的にみれるページ」）
+    const tabs = await ownerFresh.get('/api/admin/db-viewer/tables');
+    assert(tabs.status === 200 && Array.isArray(tabs.body.tables) && tabs.body.tables.some((t) => t.key === 'reservations') && tabs.body.tables.some((t) => t.key === 'customers'),
+      'DB一覧ビューアが閲覧可能なテーブル一覧（予約・顧客含む）を返す');
+    const staffCols = tabs.body.tables.find((t) => t.key === 'staff').columns;
+    assert(!staffCols.includes('pin_hash') && !staffCols.includes('pin_salt'), 'DB一覧ビューアのスタッフテーブルにはPINのハッシュ・ソルトが含まれない（認証情報を生で扱わない方針の確認）');
+    const badTable = await ownerFresh.get('/api/admin/db-viewer/sqlite_master');
+    assert(badTable.status === 400, 'ホワイトリストに無いテーブル名は拒否される（SQLインジェクション・想定外テーブル露出の防止）');
+    const rows = await ownerFresh.get('/api/admin/db-viewer/reservations?limit=5&sort=reservation_date&dir=ASC');
+    assert(rows.status === 200 && rows.body.rows.length <= 5 && rows.body.sort === 'reservation_date' && rows.body.dir === 'ASC', 'DB一覧ビューアが並べ替え・件数制限付きで予約データを返す');
+    const searched = await ownerFresh.get('/api/admin/db-viewer/customers?q=' + encodeURIComponent('花子'));
+    assert(searched.status === 200 && (searched.body.rows || []).every((r) => JSON.stringify(r).includes('花子')), 'DB一覧ビューアの検索（あいまい一致）が機能する');
+    const owner2Session = makeSession();
+    await owner2Session.postJson('/api/auth/login', { store: '2', pin: '4321' });
+    const scoped = await owner2Session.get('/api/admin/db-viewer/staff');
+    assert(scoped.status === 200 && (scoped.body.rows || []).every((r) => !String(r.name || '').includes('寿子')), '他店舗のオーナーは自店舗のデータしかDB一覧ビューアで見られない（店舗スコープの確認）');
+    const staffSession = makeSession();
+    await staffSession.postJson('/api/auth/login', { store: '1', pin: '6789' }); // 花子（is_owner=0）
+    const denied = await staffSession.get('/api/admin/db-viewer/reservations');
+    assert(denied.status === 401 || denied.status === 403, '一般スタッフ（オーナー権限なし）はDB一覧ビューアにアクセスできない');
+  }
+
+  // --------------------------------------------------------------------------
   console.log(`\n=== 結果: PASS ${passCount} / FAIL ${failCount} ===`);
   if (failCount > 0) {
     console.log('\n失敗した項目:');
