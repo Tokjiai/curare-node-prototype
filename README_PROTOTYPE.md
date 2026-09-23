@@ -2445,3 +2445,142 @@ assets.html/functions.jsの移植）（2026-09-22追加）
 - Playwrightで実際にブラウザ上のアラート表示を確認済み（新規登録後に
   「✅ 予約を登録しました\n📱 LINE通知を実行しました（LINE連携未設定の
   ためシミュレーションです）」が表示されることを確認）
+
+## 48. お客様予約フォームのキープメンバー／初めての方／既存お客様の出し分け
+    （GAS版reservation_form_functions.gs `getCustomerFormData` /
+    `getCustomerMenuList_` / `getRule2Notices_` / `submitCustomerBooking_body_`
+    の移植）（2026-09-23追加）
+
+### 48-1. 経緯
+
+- 社長より「お客様予約フォームは予め決められたURLから直接予約する機能だが、
+  現在はログインパネルから入らないと予約できない構図になっていないか」との
+  確認、および「GAS版ではキープメンバーと初めての方・既存のお客様でもキープ
+  以外のお客様が、拡張子（URLの`?cid=`）によって振り分けられ、それぞれ表示
+  内容が違うはず」との指摘を受けた
+- 調査の結果：
+  - ログイン必須化の懸念は誤り。`server.js`の`app.use(express.static(...))`
+    や`/api/store`・`/api/reservations`等の公開エンドポイントには元々
+    `requireStaffSession`等の認証ミドルウェアは掛かっておらず、お客様予約
+    フォーム（`public/index.html`）は当初から未ログインで開ける仕様だった
+  - 一方、キープメンバー／初めての方／既存のお客様（キープ以外）による
+    出し分けは、ご指摘のとおり**未実装**だった。`getCustomerFormInfo_`は
+    `isKeepMember`・`visitCount`を返してはいたが、`target`（区分）・
+    `theme`（テーマ色）は計算しておらず、`GET /api/store`のメニュー・
+    注意書きも区分によるフィルタを一切行っていなかった。`POST /api/reservations`
+    も予約ステータスを常に`'確定'`で固定登録しており、GAS版
+    （`submitCustomerBooking_body_`）の「キープメンバー＋担当者指名あり
+    のみ即確定、それ以外は仮予約」という分岐も存在しなかった
+- 社長より全面実装（GAS版の区分ロジック・LINEテンプレート出し分け・
+  テーマ色・メニュー/注意書きの出し分けすべて）の承認を得た
+
+### 48-2. GAS版の参照仕様（`reservation_form_functions.js`）
+
+- `getCustomerFormData`（834-880行目）：`target`は
+  `visitCount === 0 ? 'new' : (isKeepMember ? 'keep' : 'visitor')`、
+  `theme`は`isKeepMember ? 'pink' : 'green'`。キープメンバーには前回担当
+  スタッフ名（`menuStaffName`）も返す
+- `getCustomerMenuList_`（1888-1917行目）：メニューの対象列（`tgt`）が
+  空/`'全員'`なら常時表示、`'初回'`は`target==='new'`のみ、
+  `'キープメンバー'`は`target==='keep'`のみ、`'ビジター'`は
+  `target==='visitor'`のみ表示。`isFeatured`（初回おすすめ）・
+  `isMemberOnly`（メンバー限定）の目印も算出
+- `getRule2Notices_`／`isTargetMatch_`（1640-1667行目）：注意書きの対象は
+  `'全員'`（常時）・`'初回'`（`target==='new'`のみ）・`'リピーター'`
+  （`target==='keep'または'visitor'`）
+- `submitCustomerBooking_body_`（900-959行目）：`isKeep && !staffUnassigned`
+  （担当者指名あり）の場合のみ即「確定」（LINEテンプレート`confirm_keep`）、
+  それ以外は「仮予約」（`confirm_provisional`）。担当者未定の場合は
+  キープメンバーでも仮予約扱いにする（GAS版2026-09-02修正の踏襲）
+
+### 48-3. バックエンド実装（`server.js`）
+
+- `getCustomerFormInfo_(storeId, cid)`を拡張。`cid`未指定・該当顧客なしの
+  場合もGAS版と同じく`{found:false, target:'new', theme:'green', ...}`の
+  デフォルト値を返すよう変更（以前は`cid`未指定時に`null`を返していた）
+- 新設ヘルパー`menuTargetMatches_(itemTarget, custTarget)`・
+  `noticeTargetMatches_(noticeTarget, custTarget)`：GAS版の対象語彙
+  （メニュー：`''`/`'全員'`/`'初回'`/`'キープメンバー'`/`'ビジター'`、
+  注意書き：`'全員'`/`'初回'`/`'リピーター'`）をそのまま移植
+- `GET /api/store`：`cid`から算出した顧客区分（`target`）で`menuItems`・
+  `notices`をフィルタし、`menuItems`には`isFeatured`・`isMemberOnly`も
+  付与するように変更
+- `POST /api/reservations`：`isKeep`（顧客マスタの`is_keep_member`）・
+  `staffUnassigned`（`staffName`が空または`'未定'`）を判定し、
+  `yoyakuStatus`（`'確定'`または`'仮予約'`）をINSERT時のstatus列に反映。
+  LINE通知は`confirm_keep`／`confirm_provisional`をメッセージキーとして
+  使用するよう変更（お客様向けレスポンスにはGAS版と同様、通知の成否は
+  含めない。通知診断はスタッフ・オーナー向け画面のみで表示する設計は
+  47-7と同じ）。レスポンスメッセージも確定／仮予約で文言を出し分けた
+  （メッセージテンプレート`confirm_keep`・`confirm_provisional`自体は
+  `lib/messageTemplates.js`に既存のGAS版デフォルト文言が既に用意されて
+  いたため、そのまま利用できた）
+
+### 48-4. フロントエンド実装（`public/index.html`・`public/app.js`）
+
+- お客様予約フォームのページ構成自体は、既存の単一ページ簡略版（GAS版
+  `customer_form.html`のp1-p5/g1-g5多ページ構成に対する簡略版、42章参照）
+  を維持し、配色トークンのみGAS版と同じ値に差し替える方式にした：
+  `body.theme-green`クラスでCSSカスタムプロパティ（`--pink-*`）を
+  GAS版`customer_form.html`の`--green-*`と同一の値へ上書きする
+- `app.js`の`loadStoreInfo()`で、`data.customer.theme`に応じて
+  `document.body.classList.toggle('theme-green', ...)`を実行
+- 本人特定できた顧客への挨拶文を、初めての方（`target==='new'`）とそれ
+  以外で出し分け（「この度はご予約ありがとうございます、初めてのご利用
+  ですね」／「いつもご利用ありがとうございます」）
+- メインメニューの`<select><option>`テキストに、`isFeatured`は
+  「★初回おすすめ　」、`isMemberOnly`は「💎メンバー限定　」の接頭辞を
+  付与（GAS版はカード型UIでバッジ表示だが、単一ページ簡略版のプルダウン
+  ではテキスト接頭辞で代替。`option.value`自体はメニュー名のみで変更なし
+  のため、送信データへの影響は無い）
+- キープメンバーの前回担当スタッフ（`menuStaffName`）が一致するスタッフ
+  が選択肢にいれば、担当スタッフの初期選択を「指名なし」からそのスタッフ
+  へ自動的に変更（GAS版の前回担当スタッフ事前選択の簡易版）
+
+### 48-5. テスト用データの追加（社長からの直接テスト依頼対応）
+
+- 社長より「実装後、直接ブラウザでテストできるテストデータとURL（拡張子
+  付き）を用意してほしい。テストデータも今後増やしていってほしい」との
+  依頼を受け、`db/init.js`に3区分それぞれのテスト顧客を追加した
+  （詳細URLは本セクション末尾およびチャット回答参照）：
+  - `C0006`：キープメンバー（来店15回・前回担当=花子）
+  - `C0007`：初めての方（来店0回）
+  - `C0008`：既存のお客様・キープ以外（来店3回）
+- あわせて、区分による出し分けが実際に目視できるよう、メニュー
+  （「初回限定フェイシャル体験(60分)」＝target:初回、「メンバーコース
+  (90分)」＝target:キープメンバー）と注意書き（target:リピーター）の
+  サンプルも追加した
+
+### 48-6. テスト
+
+- `scripts/integration_test.js`に35章「お客様予約フォームのキープ／初回／
+  既存客の出し分け」を22件追加。3区分それぞれの`target`/`theme`/
+  `menuStaffName`・メニュー/注意書きのフィルタ・`isFeatured`/`isMemberOnly`
+  フラグ、および予約作成時のステータス分岐（確定/仮予約の4パターン：
+  キープ+指名あり／キープ+指名なし／既存客キープ以外／未連携）を検証
+- 既存テストの一部を本仕様変更に合わせて更新：
+  - 19章：`cid`未指定時（`target:'new'`扱い）は「全員」に加えて「初回」
+    向けの注意書きも公開の`/api/store`に含まれるよう仕様変更したことを
+    反映（以前は「初回」向けは対象外という簡略化仕様だった）
+  - 4章：予約上限チェックのテストで使っていた架空の`customerId`
+    （顧客マスタ未登録）は、本機能追加後は常に「仮予約」扱いとなり
+    上限チェック（確定予約のみカウント）が機能しなくなるため、確実に
+    「確定」扱いになるキープメンバー（`C0006`・担当者指名あり）を使う
+    よう変更
+  - 28章：`cid`未指定時の`customer`が`null`ではなく
+    `{found:false, target:'new', theme:'green', ...}`を返すようになった
+    ことを反映
+- 全339件パス。Playwrightで3区分それぞれのURL（`?cid=C0006`/`C0007`/`C0008`）
+  を開き、テーマ色の切り替わり（pink⇔green）・挨拶文の出し分け・メニュー
+  選択肢の出し分け（★初回おすすめ／💎メンバー限定バッジ）・注意書きの
+  出し分け・担当スタッフの事前選択（キープメンバーのみ）を実機のスクリーン
+  ショットで確認済み
+
+### 48-7. 今回のスコープ外（今後の拡張候補）
+
+- GAS版`customer_form.html`本来の多ページ構成（p1-p5/g1-g5、ステップごとの
+  専用画面）への完全準拠は、既存の単一ページ簡略版という前提方針を維持し
+  見送った（42章で確立した方針の継続）
+- GAS版の「施術系オプションはラジオ形式・スタッフの対応可否で選択肢を絞り
+  込む」機能は、42章時点の簡略化方針のまま据え置き（チェックボックス形式・
+  絞り込みなし）

@@ -165,29 +165,67 @@ function resolveStoreId(storeSlugOrId) {
 // ----------------------------------------------------------------------------
 // GET /api/store : 店舗情報・スタッフ一覧・ゾーン設定をまとめて返す
 // ----------------------------------------------------------------------------
-// ★2026-09-22追加：GAS版reservation_form_functions.gsのgetCustomerFormDataの移植。
-//   お客様予約フォームにURLの?cid=顧客IDが付いている場合（LINEから個別リンクで
-//   開いた想定）、顧客マスタと照合して①本名・フリガナを事前に特定できるようにし
-//   ②「予約フォーム受付拒否」フラグが立っている顧客は、入力を始める前にブロックする。
-//   GAS版は新規/キープ/ビジターでテーマ色・メニュー・注意書きの出し分けまで行うが、
-//   Node版はそこまでは行わず「本人特定・受付拒否チェック」のみに絞った簡略版とする
-//   （README_PROTOTYPE.md参照）。
+// ★2026-09-22追加／2026-09-23拡張：GAS版reservation_form_functions.gsの
+//   getCustomerFormData（lines 834-880）の移植。お客様予約フォームにURLの
+//   ?cid=顧客IDが付いている場合（LINEから個別リンクで開いた想定）、顧客マスタと
+//   照合して①本名・フリガナを事前に特定できるようにし②「予約フォーム受付拒否」
+//   フラグが立っている顧客は、入力を始める前にブロックする。
+//   ★2026-09-23追加：GAS版と同じくキープメンバー／初めての方／既存お客様（キープ
+//   以外）の3区分（target: 'keep'|'new'|'visitor'）を判定し、テーマ色（pink/green）と、
+//   キープメンバーの場合は前回担当スタッフ名（menuStaffName＝メニュー選択の初期値用）も
+//   返すようにした。cid未指定・該当顧客なしの場合はGAS版同様 target:'new', theme:'green'
+//   がデフォルト（＝初めての方向けの表示）となる。
 function getCustomerFormInfo_(storeId, cid) {
-  if (!cid) return null;
+  if (!cid) return { found: false, customerId: '', bookingBlocked: false, target: 'new', theme: 'green', menuStaffName: '' };
   const row = db.prepare(
     'SELECT * FROM customers WHERE store_id = ? AND customer_id = ? AND is_deleted = 0'
   ).get(storeId, String(cid));
-  if (!row) return { found: false, customerId: String(cid), bookingBlocked: false };
+  if (!row) return { found: false, customerId: String(cid), bookingBlocked: false, target: 'new', theme: 'green', menuStaffName: '' };
+  const isKeepMember = !!row.is_keep_member;
+  const visitCount = row.total_visits || 0;
+  const target = visitCount === 0 ? 'new' : (isKeepMember ? 'keep' : 'visitor');
+  const theme = isKeepMember ? 'pink' : 'green';
   return {
     found: true,
     customerId: row.customer_id,
     realname: row.realname || '',
     kana: row.kana || '',
     lineName: row.line_name || '',
-    visitCount: row.total_visits || 0,
-    isKeepMember: !!row.is_keep_member,
-    bookingBlocked: !!row.booking_blocked
+    visitCount,
+    isKeepMember,
+    bookingBlocked: !!row.booking_blocked,
+    target,
+    theme,
+    menuStaffName: (isKeepMember && row.staff_name) ? row.staff_name : ''
   };
+}
+
+// ----------------------------------------------------------------------------
+// ★2026-09-23追加：GAS版 getCustomerMenuList_（reservation_form_functions.js
+//   lines 1888-1917）のtgt列マッチング判定の移植。
+//   menu_items.target の値は '' / '全員'（＝常に表示）, '初回'（targetが'new'の時のみ）,
+//   'キープメンバー'（'keep'の時のみ）, 'ビジター'（'visitor'の時のみ）。
+// ----------------------------------------------------------------------------
+function menuTargetMatches_(itemTarget, custTarget) {
+  const t = itemTarget || '';
+  if (t === '' || t === '全員') return true;
+  if (t === '初回') return custTarget === 'new';
+  if (t === 'キープメンバー') return custTarget === 'keep';
+  if (t === 'ビジター') return custTarget === 'visitor';
+  return true;
+}
+
+// ----------------------------------------------------------------------------
+// ★2026-09-23追加：GAS版 getRule2Notices_ / isTargetMatch_（同ファイル
+//   lines 1640-1667）の移植。注意書き（booking_notices）のtarget列は
+//   '全員'（常に表示）, '初回'（'new'のみ）, 'リピーター'（'keep'または'visitor'）。
+// ----------------------------------------------------------------------------
+function noticeTargetMatches_(noticeTarget, custTarget) {
+  const t = noticeTarget || '全員';
+  if (t === '全員') return true;
+  if (t === '初回') return custTarget === 'new';
+  if (t === 'リピーター') return custTarget === 'keep' || custTarget === 'visitor';
+  return true;
 }
 
 app.get('/api/store', (req, res) => {
@@ -195,20 +233,31 @@ app.get('/api/store', (req, res) => {
   const store = db.prepare('SELECT * FROM stores WHERE id = ?').get(storeId);
   const staffList = engine.getCustomerStaffList_(storeId);
   const zones = engine.getZonesConfig_(storeId);
-  // ★2026-09-19追加：メニューマスタで管理している有効なメニューを、お客様予約フォーム用に返す。
-  //   以前はpublic/index.htmlに固定4件がハードコードされていたが、店舗設定画面から
-  //   追加・編集した内容がここに反映されるようになった。
-  const menuItems = db.prepare(`
+  const customer = getCustomerFormInfo_(storeId, req.query.cid);
+  const custTarget = customer.target || 'new';
+  // ★2026-09-19追加／2026-09-23拡張：メニューマスタで管理している有効なメニューを、
+  //   お客様予約フォーム用に返す。★2026-09-23：GAS版 getCustomerMenuList_ と同じく、
+  //   顧客区分（target）に応じてtarget列でフィルタし、初回おすすめの目印
+  //   （isFeatured）・メンバー限定の目印（isMemberOnly）も付与するようにした。
+  const menuItemsRaw = db.prepare(`
     SELECT id, category, name, duration_min, price, target FROM menu_items
     WHERE store_id = ? AND is_active = 1 ORDER BY display_order ASC, id ASC
   `).all(storeId);
-  // ★2026-09-20追加：受付ルール・注意書き（rule2）。お客様予約フォームはまだ
-  //   新規/リピーター判定を持たないため、対象「全員」の有効な注意書きのみを返す
-  //   （初回・リピーター向けの出し分けは今後の拡張候補。README_PROTOTYPE.md参照）。
+  const menuItems = menuItemsRaw
+    .filter((item) => menuTargetMatches_(item.target, custTarget))
+    .map((item) => ({
+      ...item,
+      isFeatured: custTarget === 'new' && item.target === '初回',
+      isMemberOnly: item.target === 'キープメンバー' || (item.name || '').indexOf('メンバーコース') >= 0
+    }));
+  // ★2026-09-20追加／2026-09-23拡張：受付ルール・注意書き（rule2）。
+  //   ★2026-09-23：GAS版 getRule2Notices_ と同じく、顧客区分（target）に応じて
+  //   '全員'／'初回'／'リピーター'の出し分けを行うようにした。
   const notices = db.prepare(`
-    SELECT text FROM booking_notices WHERE store_id = ? AND target = '全員' AND is_active = 1 ORDER BY id ASC
-  `).all(storeId).map((r) => r.text);
-  const customer = getCustomerFormInfo_(storeId, req.query.cid);
+    SELECT text, target FROM booking_notices WHERE store_id = ? AND is_active = 1 ORDER BY id ASC
+  `).all(storeId)
+    .filter((n) => noticeTargetMatches_(n.target, custTarget))
+    .map((r) => r.text);
   res.json({ store, staffList, zones, menuItems, notices, customer });
 });
 
@@ -299,6 +348,7 @@ app.post('/api/reservations', (req, res) => {
     //   入力ではなく顧客マスタの本名・フリガナ・LINE表示名を正として使う。また、画面表示だけ
     //   でなくサーバー側でも「予約フォーム受付拒否」フラグを再チェックする（クライアント側の
     //   チェックだけに頼らない、GAS版と同じ二重防御）。
+    let bookingCustomer = null;
     if (data.customerId) {
       const cust = db.prepare(
         'SELECT * FROM customers WHERE store_id = ? AND customer_id = ? AND is_deleted = 0'
@@ -307,12 +357,22 @@ app.post('/api/reservations', (req, res) => {
         if (cust.booking_blocked) {
           return res.status(200).json({ success: false, message: 'この内容では予約できません。お電話でお問い合わせください。' });
         }
+        bookingCustomer = cust;
         data.realname = cust.realname || data.realname;
         data.kana = cust.kana || data.kana;
         data.lineName = cust.line_name || data.lineName;
         data.userId = cust.user_id || data.userId;
       }
     }
+
+    // ★2026-09-23追加：GAS版 submitCustomerBooking_body_（reservation_form_functions.js
+    //   lines 900-959）の移植。キープメンバーかつ担当者指名ありの場合のみ即「確定」、
+    //   それ以外（初めての方／既存お客様でもキープ以外／指名なしの場合はキープメンバーでも）は
+    //   「仮予約」として登録する（担当者未定の場合はキープメンバーでも仮予約扱いにする、という
+    //   GAS版の2026-09-02修正をそのまま踏襲）。
+    const isKeep = !!(bookingCustomer && bookingCustomer.is_keep_member);
+    const staffUnassigned = !data.staffName || data.staffName === '未定';
+    const yoyakuStatus = (isKeep && !staffUnassigned) ? '確定' : '仮予約';
 
     // ★GAS版 addReservationUnified_body_ を踏襲：確定予約の上限チェック
     const limitCheck = engine.checkCustomerReservationLimit(storeId, data.realname, null);
@@ -330,7 +390,7 @@ app.post('/api/reservations', (req, res) => {
       INSERT INTO reservations
         (store_id, realname, kana, line_name, user_id, staff_name, menu, reservation_date, reservation_time, note, editor, line_sent, done, customer_id, status)
       VALUES
-        (@store_id, @realname, @kana, @line_name, @user_id, @staff_name, @menu, @reservation_date, @reservation_time, @note, @editor, 0, 0, @customer_id, '確定')
+        (@store_id, @realname, @kana, @line_name, @user_id, @staff_name, @menu, @reservation_date, @reservation_time, @note, @editor, 0, 0, @customer_id, @status)
     `);
 
     // ★2026-09-18追加：二重予約防止の実地テストで発覚した穴を修正。
@@ -350,7 +410,8 @@ app.post('/api/reservations', (req, res) => {
         reservation_time: data.time,
         note: data.note || '',
         editor: data.editor || 'お客様フォーム',
-        customer_id: data.customerId || ''
+        customer_id: data.customerId || '',
+        status: yoyakuStatus
       });
     } catch (constraintErr) {
       if (String(constraintErr.message).includes('UNIQUE constraint failed')) {
@@ -363,21 +424,25 @@ app.post('/api/reservations', (req, res) => {
       throw constraintErr;
     }
 
-    // ★LINE通知はあくまで付加機能。ここでの失敗（未設定・API障害等）が
-    //   予約登録の成功レスポンスを妨げてはならないため、awaitせずfire-and-forgetし、
-    //   例外は.catchで握りつぶしてログにのみ残す（詳細は lib/reservationNotify.js 参照）。
+    // ★2026-09-23更新：GAS版 submitCustomerBooking_body_ の移植。確定（キープメンバー＋
+    //   担当者指名あり）の場合は'confirm_keep'、仮予約の場合は'confirm_provisional'の
+    //   テンプレートで通知する。GAS版はお客様向けレスポンスにLINE通知の成否を含めない
+    //   （通知診断はスタッフ・オーナーの手動操作画面のみで表示する設計・README_PROTOTYPE.md参照）
+    //   ため、ここでもLINE通知はawaitせずfire-and-forgetのまま、messageKeyのみ状態に応じて
+    //   出し分ける。
     try {
       if (data.customerId) {
         const customer = db.prepare(
           'SELECT * FROM customers WHERE store_id = ? AND customer_id = ?'
         ).get(storeId, data.customerId);
         const store = db.prepare('SELECT * FROM stores WHERE id = ?').get(storeId);
+        const notifyMessageKey = (isKeep && !staffUnassigned) ? 'confirm_keep' : 'confirm_provisional';
         notifyReservationConfirmed(store, customer, {
           staffName: data.staffName,
           menu: data.menu,
           date: data.date,
           time: data.time
-        }).catch((notifyErr) => {
+        }, notifyMessageKey).catch((notifyErr) => {
           console.error('LINE通知処理でエラー（予約自体は成功しているため無視）:', notifyErr);
         });
       }
@@ -385,7 +450,10 @@ app.post('/api/reservations', (req, res) => {
       console.error('LINE通知の呼び出し準備でエラー（予約自体は成功しているため無視）:', notifySyncErr);
     }
 
-    res.json({ success: true, message: '✅ 予約を登録しました', reservationId: info.lastInsertRowid });
+    const baseMessage = yoyakuStatus === '確定'
+      ? '✅ 予約を確定しました'
+      : '✅ 仮予約として受け付けました。店舗より確定のご連絡をいたします';
+    res.json({ success: true, message: baseMessage, status: yoyakuStatus, reservationId: info.lastInsertRowid });
   } catch (e) {
     console.error(e);
     res.status(500).json({ success: false, error: e.message });

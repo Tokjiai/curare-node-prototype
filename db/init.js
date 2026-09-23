@@ -55,6 +55,9 @@ function seedData() {
   `);
   insertNotice.run(storeId, '全員', '当日キャンセルの場合はお早めにお電話にてご連絡ください。');
   insertNotice.run(storeId, '初回', '初めてご来店の方は、ご予約時間の10分前を目安にお越しください。');
+  // ★2026-09-23追加：GAS版getRule2Notices_のリピーター向け出し分けを、お客様予約フォーム
+  //   で実際にテストできるようにするための注意書きサンプル
+  insertNotice.run(storeId, 'リピーター', 'いつもご利用ありがとうございます。メンバー特典メニューもぜひご覧ください。');
 
   // --- スタッフ3名（GASの「マスタ」シート相当） -----------------------------
   // ★2026-09-18追加：ログイン用PIN（電話番号下4桁を想定したダミー値）を付与。
@@ -114,6 +117,10 @@ function seedData() {
   //   デモができるようにするため
   insertMenu.run(storeId, '施術系オプション', 'かっさオプション', 15, 1650, '全員', 5);
   insertMenu.run(storeId, 'オプション', 'ハンドパック', 10, 1000, '全員', 6);
+  // ★2026-09-23追加：GAS版getCustomerMenuList_のtgt列（'初回'／'キープメンバー'）による
+  //   出し分けを、お客様予約フォームで実際にテストできるようにするためのサンプルメニュー
+  insertMenu.run(storeId, 'メインメニュー', '初回限定フェイシャル体験(60分)', 60, 3900, '初回', 7);
+  insertMenu.run(storeId, 'メインメニュー', 'メンバーコース(90分)', 90, 7000, 'キープメンバー', 8);
 
   // --- 日付ヘルパー -----------------------------------------------------------
   const fmt = (d) => {
@@ -204,6 +211,25 @@ function seedData() {
   insertCustomer.run({ store_id: storeId, customer_id: 'C0003', realname: '鈴木 花', kana: 'スズキ ハナ', phone: '090-3333-4444', line_name: 'はな', user_id: 'U0003', birthday: '1993-07-20', first_visit_date: fmt(addDays(-90)), last_visit_date: fmt(addDays(-5)), total_visits: 4, memo: '夜間の予約が多い' });
   insertCustomer.run({ store_id: storeId, customer_id: 'C0004', realname: '高橋 恵子', kana: 'タカハシ ケイコ', phone: '090-4444-5555', line_name: '', user_id: '', birthday: '1978-01-30', first_visit_date: fmt(addDays(-400)), last_visit_date: fmt(addDays(-60)), total_visits: 20, memo: '常連。予約は電話が多い。' });
   insertCustomer.run({ store_id: storeId, customer_id: 'C0005', realname: '山本 かな', kana: 'ヤマモト カナ', phone: '090-5555-6666', line_name: 'かなぴ', user_id: 'U0005', birthday: '2000-09-08', first_visit_date: fmt(addDays(-20)), last_visit_date: fmt(addDays(-20)), total_visits: 1, memo: '新規のお客様' });
+
+  // ★2026-09-23追加：お客様予約フォームのキープメンバー／初めての方／既存お客様（キープ以外）
+  //   3区分の出し分け機能を、社長が実際にブラウザで直接テストできるようにするための専用データ。
+  //   通常の顧客マスタ更新（キープ判定・最終来店スタッフの自動更新等）はまだ別機能側の対応
+  //   予定のため、is_keep_member／staff_name（前回担当）はここで直接シードする。
+  const insertCustomerFull = db.prepare(`
+    INSERT INTO customers
+      (store_id, customer_id, realname, kana, phone, line_name, user_id, birthday, first_visit_date, last_visit_date, total_visits, memo, is_keep_member, staff_name, booking_blocked)
+    VALUES
+      (@store_id, @customer_id, @realname, @kana, @phone, @line_name, @user_id, @birthday, @first_visit_date, @last_visit_date, @total_visits, @memo, @is_keep_member, @staff_name, @booking_blocked)
+  `);
+  // C0006：キープメンバー（来店実績あり・前回担当＝花子）→ お客様フォームで花子を指名すると
+  //   即「確定」・pinkテーマ・メンバー限定メニューが見える想定
+  insertCustomerFull.run({ store_id: storeId, customer_id: 'C0006', realname: '中村 さゆり', kana: 'ナカムラ サユリ', phone: '090-6666-7777', line_name: 'さゆり', user_id: 'U0006', birthday: '1988-03-15', first_visit_date: fmt(addDays(-300)), last_visit_date: fmt(addDays(-15)), total_visits: 15, memo: 'キープメンバー（テスト用）', is_keep_member: 1, staff_name: '花子', booking_blocked: 0 });
+  // C0007：初めての方（来店実績0）→ greenテーマ・初回おすすめメニューにバッジが付く想定
+  insertCustomerFull.run({ store_id: storeId, customer_id: 'C0007', realname: '小林 あやか', kana: 'コバヤシ アヤカ', phone: '090-7777-8888', line_name: 'あやか', user_id: 'U0007', birthday: '1999-12-01', first_visit_date: '', last_visit_date: '', total_visits: 0, memo: '初めての方（テスト用）', is_keep_member: 0, staff_name: '', booking_blocked: 0 });
+  // C0008：既存のお客様（来店実績あり）だがキープメンバーではない → greenテーマ・
+  //   担当者を指名しても「仮予約」扱いになる想定
+  insertCustomerFull.run({ store_id: storeId, customer_id: 'C0008', realname: '渡辺 みゆき', kana: 'ワタナベ ミユキ', phone: '090-8888-9999', line_name: 'みゆき', user_id: 'U0008', birthday: '1995-06-25', first_visit_date: fmt(addDays(-60)), last_visit_date: fmt(addDays(-25)), total_visits: 3, memo: '既存のお客様・キープ以外（テスト用）', is_keep_member: 0, staff_name: '', booking_blocked: 0 });
 
   console.log('✅ シードデータ投入完了');
   console.log('   店舗: クラーレ寿 (storeId=1)');

@@ -159,8 +159,15 @@ async function main() {
   // --------------------------------------------------------------------------
   console.log('--- 4. 予約上限チェック ---');
   {
+    // ★2026-09-23更新：予約上限チェックはstatus='確定'の予約のみを数える仕様（GAS版と同じ、
+    //   lib/reservationEngine.jsのcheckCustomerReservationLimit参照）。以前はcustomerId
+    //   'ITEST02'（顧客マスタ未登録＝架空ID）で送っており、お客様フォームからの予約は常に
+    //   status='確定'でINSERTされていたため上限判定が機能していたが、★お客様予約フォームの
+    //   キープメンバー／初めての方／既存お客様の出し分け機能追加により、customerIdが顧客
+    //   マスタに存在しない場合は常に「仮予約」扱いになった（GAS版submitCustomerBooking_body_
+    //   の仕様どおり）。そのため、確実に「確定」扱いになるキープメンバー（担当者指名あり）
+    //   のC0006（seedデータ）を使うよう変更した。
     const base = new Date(); base.setDate(base.getDate() + 20);
-    const custName = '統合テスト花子';
     let warningSeen = false;
     for (let i = 0; i < 4; i++) {
       const d = new Date(base); d.setDate(d.getDate() + i);
@@ -168,12 +175,12 @@ async function main() {
       const r = await fetch(BASE + '/api/reservations', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          store: '1', realname: custName, staffName: '美咲', menu: 'テストメニュー',
-          date: dateStr, time: '15:00', customerId: 'ITEST02'
+          store: '1', realname: '統合テスト花子', staffName: '花子', menu: 'テストメニュー',
+          date: dateStr, time: '15:00', customerId: 'C0006'
         })
       }).then((res) => res.json());
       if (i < 3) {
-        assert(r.success === true, `${i + 1}件目の予約は正常に登録できる`);
+        assert(r.success === true && r.status === '確定', `${i + 1}件目の予約は正常に登録できる（キープメンバー＋担当指名のため確定扱い）`);
       } else {
         warningSeen = r.isLimitWarning === true;
       }
@@ -917,10 +924,14 @@ async function main() {
     assert(r.status === 404, '他店舗オーナーは他店の注意書きを編集できない（店舗スコープ確認）');
   }
   {
-    // 公開の/api/storeには「全員」向けの有効な注意書きのみが反映される（初回/リピーター向けは対象外）
+    // ★2026-09-23更新：GAS版getRule2Notices_の移植により、公開の/api/storeは顧客区分
+    //   （target）に応じた出し分けを行うようになった。cid未指定時はGAS版と同じくtarget:'new'
+    //   がデフォルトのため、「全員」に加えて「初回」向けの注意書きも含まれる（「リピーター」
+    //   向けは含まれない）。
     const r = await fetch(BASE + '/api/store?store=1').then((res) => res.json());
     assert(Array.isArray(r.notices) && r.notices.some((t) => t.includes('当日キャンセル')), '公開の/api/storeには「全員」向けの有効な注意書きが反映される');
-    assert(!r.notices.some((t) => t.includes('初めてご来店')), '「初回」向けの注意書きは公開の/api/storeには含まれない（このプロトタイプの簡略化仕様）');
+    assert(r.notices.some((t) => t.includes('初めてご来店')), 'cid未指定時（target:new扱い）は「初回」向けの注意書きも公開の/api/storeに含まれる');
+    assert(!r.notices.some((t) => t.includes('メンバー特典')), 'cid未指定時（target:new扱い）は「リピーター」向けの注意書きは公開の/api/storeに含まれない');
     assert(r.store.phone === '097-000-0000', '公開の/api/storeに店舗の電話番号が含まれる');
   }
 
@@ -1504,8 +1515,14 @@ async function main() {
     VALUES (1, 'CT951', '受付拒否太郎', 'ウケツケキョヒタロウ', '', '', 5, 1, 'active', 1)
   `).run();
   {
+    // ★2026-09-23更新：キープメンバー／初めての方／既存お客様の出し分け機能追加に伴い、
+    //   cid未指定時もGAS版と同じくtarget:'new', theme:'green'のデフォルトオブジェクトを
+    //   返すよう変更した（以前はnullを返していた）。
     const r = await fetch(BASE + '/api/store?store=1').then((res) => res.json());
-    assert(r.customer === null, 'cidパラメータ無しでは/api/storeのcustomerはnullになる');
+    assert(
+      r.customer && r.customer.found === false && r.customer.target === 'new' && r.customer.theme === 'green',
+      'cidパラメータ無しでは/api/storeのcustomerはfound:false・target:new・theme:greenのデフォルト値になる'
+    );
   }
   {
     const r = await fetch(BASE + '/api/store?store=1&cid=CT950').then((res) => res.json());
@@ -1514,10 +1531,14 @@ async function main() {
       r.customer.kana === 'フォームレンケイハナコ' && r.customer.isKeepMember === true && r.customer.visitCount === 3,
       '?cid=既存顧客IDを指定すると、本名・フリガナ・キープメンバー・来店回数が返る'
     );
+    // ★2026-09-23追加：キープメンバー・来店実績ありなのでtarget:'keep'・theme:'pink'になる
+    assert(r.customer.target === 'keep' && r.customer.theme === 'pink', 'キープメンバーはtarget:keep・theme:pinkになる');
   }
   {
     const r = await fetch(BASE + '/api/store?store=1&cid=CT-not-exist').then((res) => res.json());
     assert(r.customer && r.customer.found === false && r.customer.bookingBlocked === false, '存在しない顧客IDではfound:falseが返る（エラーにはならない）');
+    // ★2026-09-23追加：存在しない顧客IDはGAS版同様、初めての方扱い（target:'new'・theme:'green'）になる
+    assert(r.customer.target === 'new' && r.customer.theme === 'green', '存在しない顧客IDはtarget:new・theme:greenのデフォルト扱いになる');
   }
   {
     const r = await fetch(BASE + '/api/store?store=1&cid=CT951').then((res) => res.json());
@@ -1998,6 +2019,93 @@ async function main() {
 
     const rCancel = await ownerFresh.del('/api/admin/reservations/' + adminResvId);
     assert(rCancel.status === 200 && rCancel.body.success && /📱/.test(rCancel.body.message), 'オーナー管理画面からのキャンセルでもLINE通知の案内がメッセージに含まれる');
+  }
+
+  // --------------------------------------------------------------------------
+  // 35. お客様予約フォームのキープメンバー／初めての方／既存お客様（キープ以外）の出し分け
+  //     （GAS版reservation_form_functions.gsのgetCustomerFormData / getCustomerMenuList_ /
+  //     getRule2Notices_ / submitCustomerBooking_body_ の移植。2026-09-23追加）
+  //     seed済みテストデータ：C0006=キープメンバー（前回担当:花子・来店15回）、
+  //     C0007=初めての方（来店0回）、C0008=既存客・キープ以外（来店3回）
+  // --------------------------------------------------------------------------
+  console.log('--- 35. お客様予約フォームのキープ／初回／既存客の出し分け ---');
+  {
+    const r = await fetch(BASE + '/api/store?store=1&cid=C0006').then((res) => res.json());
+    assert(r.customer.target === 'keep' && r.customer.theme === 'pink', 'C0006（キープメンバー）はtarget:keep・theme:pinkになる');
+    assert(r.customer.menuStaffName === '花子', 'キープメンバーの前回担当スタッフ名（menuStaffName）が返る');
+    assert(r.menuItems.some((m) => m.name === 'メンバーコース(90分)'), 'キープメンバーにはメンバー限定メニューが表示される');
+    assert(!r.menuItems.some((m) => m.name === '初回限定フェイシャル体験(60分)'), 'キープメンバーには初回限定メニューは表示されない');
+    const memberItem = r.menuItems.find((m) => m.name === 'メンバーコース(90分)');
+    assert(memberItem && memberItem.isMemberOnly === true, 'メンバー限定メニューにはisMemberOnly:trueが付与される');
+    assert(r.notices.some((t) => t.includes('メンバー特典')), 'キープメンバーには「リピーター」向けの注意書きが表示される');
+    assert(!r.notices.some((t) => t.includes('初めてご来店')), 'キープメンバーには「初回」向けの注意書きは表示されない');
+  }
+  {
+    const r = await fetch(BASE + '/api/store?store=1&cid=C0007').then((res) => res.json());
+    assert(r.customer.target === 'new' && r.customer.theme === 'green', 'C0007（初めての方）はtarget:new・theme:greenになる');
+    assert(r.customer.menuStaffName === '', '初めての方にはmenuStaffNameが空で返る');
+    assert(r.menuItems.some((m) => m.name === '初回限定フェイシャル体験(60分)'), '初めての方には初回限定メニューが表示される');
+    assert(!r.menuItems.some((m) => m.name === 'メンバーコース(90分)'), '初めての方にはメンバー限定メニューは表示されない');
+    const featuredItem = r.menuItems.find((m) => m.name === '初回限定フェイシャル体験(60分)');
+    assert(featuredItem && featuredItem.isFeatured === true, '初回限定メニューにはisFeatured:trueが付与される');
+    assert(r.notices.some((t) => t.includes('初めてご来店')), '初めての方には「初回」向けの注意書きが表示される');
+    assert(!r.notices.some((t) => t.includes('メンバー特典')), '初めての方には「リピーター」向けの注意書きは表示されない');
+  }
+  {
+    const r = await fetch(BASE + '/api/store?store=1&cid=C0008').then((res) => res.json());
+    assert(r.customer.target === 'visitor' && r.customer.theme === 'green', 'C0008（既存客・キープ以外）はtarget:visitor・theme:greenになる');
+    assert(!r.menuItems.some((m) => m.name === 'メンバーコース(90分)') && !r.menuItems.some((m) => m.name === '初回限定フェイシャル体験(60分)'),
+      '既存客・キープ以外には初回限定／メンバー限定どちらのメニューも表示されない');
+    assert(r.notices.some((t) => t.includes('メンバー特典')), '既存客・キープ以外にも「リピーター」向けの注意書きが表示される');
+  }
+  {
+    // キープメンバー＋担当者指名あり → 即「確定」・confirm_keepテンプレートで通知
+    // ★4章の予約上限チェックのテストで既にC0006（中村さゆり）の確定予約が上限（3件）に
+    //   達しているため、ownerOverride:trueで上限チェックを無視して登録する（上限チェック
+    //   自体の動作確認は4章で完了済みのため、ここではstatus分岐の確認に専念する）。
+    const r = await fetch(BASE + '/api/reservations', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        store: '1', realname: 'x', staffName: '花子', menu: 'メンバーコース(90分)',
+        date: '2026-12-24', time: '14:00', customerId: 'C0006', ownerOverride: true
+      })
+    }).then((res) => res.json());
+    assert(r.success === true && r.status === '確定', 'キープメンバー＋担当者指名ありの予約は即「確定」になる');
+    assert(/確定/.test(r.message), '確定時のメッセージには「確定」の文言が含まれる');
+  }
+  {
+    // キープメンバーでも担当者未定（指名なし）なら「仮予約」扱い（GAS版2026-09-02修正の踏襲）
+    const r = await fetch(BASE + '/api/reservations', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        store: '1', realname: 'x', staffName: '未定', menu: 'メンバーコース(90分)',
+        date: '2026-12-24', time: '15:00', customerId: 'C0006', ownerOverride: true
+      })
+    }).then((res) => res.json());
+    assert(r.success === true && r.status === '仮予約', 'キープメンバーでも担当者未定（指名なし）の予約は「仮予約」になる');
+    assert(/仮予約/.test(r.message), '仮予約時のメッセージには「仮予約」の文言が含まれる');
+  }
+  {
+    // 既存客・キープ以外は担当者を指名しても「仮予約」扱い
+    const r = await fetch(BASE + '/api/reservations', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        store: '1', realname: 'x', staffName: '美咲', menu: 'フェイシャル(60分)',
+        date: '2026-12-24', time: '16:00', customerId: 'C0008'
+      })
+    }).then((res) => res.json());
+    assert(r.success === true && r.status === '仮予約', '既存客・キープ以外は担当者を指名しても「仮予約」になる');
+  }
+  {
+    // 顧客ID未連携（一般の来店未経験者の直接入力）も「仮予約」扱い
+    const r = await fetch(BASE + '/api/reservations', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        store: '1', realname: '統合テスト初回太郎', staffName: '花子', menu: '初回限定フェイシャル体験(60分)',
+        date: '2026-12-24', time: '17:00'
+      })
+    }).then((res) => res.json());
+    assert(r.success === true && r.status === '仮予約', '顧客ID未連携（cid無し）の予約は「仮予約」になる');
   }
 
   // --------------------------------------------------------------------------

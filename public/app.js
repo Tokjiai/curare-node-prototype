@@ -31,11 +31,13 @@ async function loadStoreInfo() {
   const res = await fetch(url);
   const data = await res.json();
 
-  // ★2026-09-22追加：GAS版getCustomerFormDataの移植（簡略版）。①予約フォーム受付拒否の
-  //   顧客は、入力を始める前にブロック画面を出して以降の表示を止める②本人特定できた
-  //   顧客は、お名前欄を編集不可で顧客マスタの本名を表示し、以後の送信にcustomerIdを
-  //   含める（GAS版のような新規/キープ/ビジターでのテーマ色・メニュー出し分けまでは
-  //   行っていない簡略版。README_PROTOTYPE.md参照）
+  // ★2026-09-22追加／2026-09-23拡張：GAS版getCustomerFormData（reservation_form_functions.js
+  //   lines 834-880）の移植。①予約フォーム受付拒否の顧客は、入力を始める前にブロック画面を
+  //   出して以降の表示を止める②本人特定できた顧客は、お名前欄を編集不可で顧客マスタの本名を
+  //   表示し、以後の送信にcustomerIdを含める③★2026-09-23追加：GAS版と同じくキープメンバー
+  //   （pink）／それ以外（green）のテーマ色を切り替え、メニュー・注意書きはサーバー側
+  //   （/api/store）で顧客区分（target）によりフィルタ済みのものをそのまま表示する
+  //   （ページ構成自体は既存の単一ページ簡略版のまま。README_PROTOTYPE.md参照）
   if (data.customer && data.customer.bookingBlocked) {
     document.getElementById('blockedCard').style.display = 'block';
     document.querySelectorAll('.container > .card').forEach((el) => {
@@ -43,11 +45,18 @@ async function loadStoreInfo() {
     });
     return;
   }
+  // ★2026-09-23追加：テーマ色の切り替え（GAS版のpink=キープメンバー／green=それ以外）
+  document.body.classList.toggle('theme-green', data.customer && data.customer.theme === 'green');
+
   if (data.customer && data.customer.found) {
     state.customerId = data.customer.customerId;
     state.customerRecognized = true;
     const badge = document.getElementById('customerBadge');
     document.getElementById('customerBadgeName').textContent = data.customer.realname;
+    // ★2026-09-23追加：初めての方（visitCount===0）には「いつもご利用〜」ではなく
+    //   初回向けの文言を出す（GAS版のtarget別出し分けの趣旨を踏襲）
+    document.getElementById('customerBadgeGreeting').textContent =
+      data.customer.target === 'new' ? 'この度はご予約ありがとうございます、初めてのご利用ですね' : 'いつもご利用ありがとうございます';
     badge.style.display = 'block';
     // ★本人特定できている場合は、お名前欄を編集不可にして顧客マスタの本名を表示する
     //   （GAS版同様、送信時もクライアントの入力値ではなくサーバー側で顧客マスタの
@@ -70,6 +79,13 @@ async function loadStoreInfo() {
     opt.textContent = s.name + (s.role === 'オーナー' ? '（オーナー）' : '');
     sel.appendChild(opt);
   });
+  // ★2026-09-23追加：GAS版の「前回担当スタッフの利便的な事前選択」相当（キープメンバーの
+  //   場合のみサーバー側から menuStaffName が届く。updateLastStaff_ 相当の値）。
+  //   一致するスタッフが選択肢にいれば、指名なしの代わりにそれを初期選択にする。
+  if (data.customer && data.customer.menuStaffName) {
+    const match = data.staffList.find((s) => s.realName === data.customer.menuStaffName);
+    if (match) sel.value = match.id;
+  }
 
   // ★2026-09-19追加：メニューマスタで管理している有効なメニューを反映する
   //   （以前はここに直接4件をハードコードしていた。店舗設定画面から追加・編集した内容が届く）
@@ -88,7 +104,15 @@ async function loadStoreInfo() {
       const opt = document.createElement('option');
       opt.value = m.name;
       const priceLabel = m.price ? `　¥${Number(m.price).toLocaleString('ja-JP')}` : '';
-      opt.textContent = m.name + priceLabel;
+      // ★2026-09-23追加：GAS版getCustomerMenuList_のisFeatured（初めての方におすすめ）／
+      //   isMemberOnly（メンバー限定）の目印を、<select><option>のテキストに反映する
+      //   （GAS版はカード型UIでバッジ表示だが、単一ページ簡略版のプルダウンではテキスト
+      //   接頭辞で代替。対象外のisMemberOnly商品はサーバー側で既に除外済みのため、ここに
+      //   来るisMemberOnly項目＝キープメンバー本人が見ている状態）
+      let prefix = '';
+      if (m.isFeatured) prefix = '★初回おすすめ　';
+      else if (m.isMemberOnly) prefix = '💎メンバー限定　';
+      opt.textContent = prefix + m.name + priceLabel;
       menuSel.appendChild(opt);
     });
     menuSel.addEventListener('change', updateTotalPrice);

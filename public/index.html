@@ -13,6 +13,15 @@
     --pink-header:#C8A0B4; --pink-step-bg:#FAF0F5; --pink-accent:#6B3050;
     --pink-done:#E8C8D8; --pink-border:#E8C8D8; --pink-light:#FAF0F5;
   }
+  /* ★2026-09-23追加：GAS版customer_form.htmlのpink/greenテーマ切り替えの移植。
+     GAS版はキープメンバー＝pink、それ以外（初めての方／既存お客様でもキープ以外）＝green。
+     本プロトタイプはページ構成そのものは既存の単一ページ簡略版を維持し（README_PROTOTYPE.md
+     参照）、配色トークンのみ実機と同じ値（customer_form.htmlの--green-*定義と同一）に
+     差し替える方式にした。app.js側で顧客区分に応じてbodyへtheme-greenクラスを付与する。 */
+  body.theme-green{
+    --pink-header:#1D9E75; --pink-step-bg:#E1F5EE; --pink-accent:#085041;
+    --pink-done:#9FE1CB; --pink-border:#9FE1CB; --pink-light:#E1F5EE;
+  }
   *{box-sizing:border-box; margin:0; padding:0;}
   body{
     font-family:'Helvetica Neue',Arial,'Hiragino Sans','Yu Gothic',sans-serif;
@@ -125,7 +134,7 @@
     </div>
 
     <div class="card" id="customerBadge" style="display:none; background:var(--pink-light);">
-      <p style="font-size:14px; color:var(--pink-accent);"><span id="customerBadgeName"></span>様、いつもご利用ありがとうございます。</p>
+      <p style="font-size:14px; color:var(--pink-accent);"><span id="customerBadgeName"></span>様、<span id="customerBadgeGreeting">いつもご利用ありがとうございます</span>。</p>
     </div>
 
     <div class="card" id="formCard" style="display:none;">
