@@ -248,7 +248,17 @@
         <div id="rmMenuOptions" class="menu-options"></div>
       </div>
       <div class="modal-field"><label>日付</label><input type="date" id="rmDate"></div>
-      <div class="modal-field"><label>時刻</label><input type="time" id="rmTime"></div>
+      <!-- ★2026-09-23追加：GAS版reservation_form_markup.html「🔍空き時間を確認する」
+           （README §51-7で見送っていたもの）。押すと#rmTimeが空き時間だけの選択肢に
+           切り替わる。一般スタッフは空いている時間しか選べず、オーナーは全時間帯を
+           ⚠️警告付きで選べる（GAS版getAvailableSlots相当） -->
+      <div class="modal-field">
+        <label>時刻</label>
+        <button type="button" id="rmCheckSlotsBtn" class="cust-pick-btn" style="margin-bottom:6px;">🔍 空き時間を確認する</button>
+        <input type="time" id="rmTime">
+        <select id="rmTimeSelect" style="display:none; width:100%; margin-top:6px; padding:9px 10px; border:1px solid var(--line); border-radius:8px; font-family:inherit; font-size:13.5px;"></select>
+        <div id="rmSlotsHint" style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">日付を選んでから「空き時間を確認する」を押してください</div>
+      </div>
       <div class="modal-field"><label>備考（任意）</label><input type="text" id="rmNote"></div>
       <!-- ★2026-09-23追加：GAS版reservation_form_markup.html 128行・assets.html 1006-1060行の
            「仮予約中（チェックを外すと確定になります）」。仮予約を編集画面から確定できる -->
@@ -917,6 +927,12 @@
     document.querySelectorAll('#rmMenuOptions input').forEach((el) => { el.checked = optSet.has(el.value); });
   }
 
+  function resetSlotsChecker_() {
+    document.getElementById('rmTimeSelect').style.display = 'none';
+    document.getElementById('rmTimeSelect').innerHTML = '';
+    document.getElementById('rmSlotsHint').textContent = '日付を選んでから「空き時間を確認する」を押してください';
+  }
+
   function openAddReservation(date, time) {
     editingResvId = null;
     document.getElementById('rmTitle').textContent = '＋ 予約を追加';
@@ -930,6 +946,7 @@
     document.getElementById('rmNote').value = '';
     document.getElementById('rmErr').style.display = 'none';
     document.getElementById('rmProvGroup').style.display = 'none';
+    resetSlotsChecker_();
     document.getElementById('rmSaveBtn').disabled = false;
     document.getElementById('rmSaveBtn').style.opacity = '1';
     document.getElementById('resModal').classList.add('show');
@@ -952,6 +969,7 @@
     document.getElementById('rmTime').value = r.startTime;
     document.getElementById('rmNote').value = '';
     document.getElementById('rmErr').style.display = 'none';
+    resetSlotsChecker_();
     // ★仮予約なら「仮予約中」チェックを表示（GAS版と同じく、編集できる人＝オーナー・
     //   自分の担当・担当未定の予約のときだけ操作可能）
     const canEdit = ME.isOwner || r.staffName === ME.name || r.staffName === '未定';
@@ -964,6 +982,74 @@
     document.getElementById('rmSaveBtn').style.opacity = '1';
     document.getElementById('resModal').classList.add('show');
   }
+
+  // ★2026-09-23追加：「🔍空き時間を確認する」（GAS版checkAvailableSlots相当、
+  //   README §51-7で見送っていたもの）。一般スタッフには実際に空いている時間だけを、
+  //   オーナーには全時間帯を⚠️警告ラベル付きで表示する。選ぶと#rmTimeへ反映される
+  //   （保存処理自体は既存の#rmTimeをそのまま使うため変更不要）
+  async function checkAvailableSlots() {
+    const date = document.getElementById('rmDate').value;
+    const hint = document.getElementById('rmSlotsHint');
+    if (!date) { hint.textContent = '予約日を選択してください'; return; }
+    const staffName = document.getElementById('rmStaff').value;
+    const btn = document.getElementById('rmCheckSlotsBtn');
+    const sel = document.getElementById('rmTimeSelect');
+    btn.disabled = true; btn.textContent = '⏳ 確認中...';
+    try {
+      const qs = new URLSearchParams({ staffName, date });
+      if (editingResvId) qs.set('excludeId', String(editingResvId));
+      const r = await staffFetch('/api/staff/available-slots?' + qs.toString());
+      if (!r.success) throw new Error(r.message || '取得に失敗しました');
+      const slots = r.slots || [];
+      sel.innerHTML = '';
+      if (slots.length === 1 && slots[0].disabled && !slots[0].time) {
+        sel.style.display = 'none';
+        hint.textContent = (slots[0].reason || 'この日は空き時間がありません') + '（時間外の登録はオーナーにご相談ください）';
+        return;
+      }
+      const placeholder = document.createElement('option');
+      placeholder.value = '';
+      placeholder.textContent = '選択してください';
+      sel.appendChild(placeholder);
+      let availableCount = 0;
+      const currentTime = document.getElementById('rmTime').value;
+      slots.forEach((slot) => {
+        const opt = document.createElement('option');
+        if (slot.warn) {
+          opt.value = slot.time;
+          opt.textContent = `${slot.time} ⚠️（${slot.warnLabel}）`;
+        } else if (slot.disabled) {
+          opt.value = '';
+          opt.textContent = `${slot.time} ×（${slot.reason}）`;
+          opt.disabled = true;
+        } else {
+          opt.value = slot.time;
+          opt.textContent = `${slot.time} ○`;
+          availableCount++;
+        }
+        sel.appendChild(opt);
+      });
+      if (currentTime && Array.from(sel.options).some((o) => o.value === currentTime)) {
+        sel.value = currentTime;
+      }
+      sel.style.display = 'block';
+      if (r.isOwner) {
+        hint.textContent = availableCount > 0
+          ? `○=${availableCount}枠空いています（⚠️は重複あり、確認のうえ選べます）`
+          : '⚠️ すべての時間帯に重複があります。確認のうえ選んでください';
+      } else {
+        hint.textContent = availableCount > 0 ? `○=${availableCount}枠空いています` : 'この日は空き時間がありません';
+      }
+    } catch (e) {
+      hint.textContent = '取得に失敗しました: ' + e.message;
+    } finally {
+      btn.disabled = false; btn.textContent = '🔍 空き時間を確認する';
+    }
+  }
+  document.getElementById('rmCheckSlotsBtn').addEventListener('click', checkAvailableSlots);
+  document.getElementById('rmTimeSelect').addEventListener('change', (ev) => {
+    if (ev.target.value) document.getElementById('rmTime').value = ev.target.value;
+  });
 
   // ★2026-09-23追加：「仮予約中」のチェックを外す＝確定（GAS版onProvisionalCheckboxChange相当）。
   //   GAS版と同じく、画面上で担当スタッフを選び直していれば、その担当で確定する。

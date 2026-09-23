@@ -938,6 +938,34 @@ app.get('/api/staff/shifts/booking-check', requireStaffSession, (req, res) => {
   }
 });
 
+// ----------------------------------------------------------------------------
+// ★2026-09-23追加：GET /api/staff/available-slots
+//   ?staffName=&date=&excludeId= : スタッフ／オーナー向けの予約登録・編集画面の
+//   「🔍空き時間を確認する」ボタン用（GAS版reservation_form_functions.gs
+//   getAvailableSlots相当、README §51-7で見送っていたもの）。一般スタッフには
+//   実際に空いている枠のみ（埋まっている理由付き）、オーナーには全時間帯を
+//   warn付きで返す（シフト外・満床・イベント・予約済みでも警告のうえ選べる）。
+//   staffNameを空／'未定'で呼ぶと「誰でも良い」扱いになり、一般スタッフの場合は
+//   在籍中の全スタッフの予約状況を合算してブロック判定する（GAS版と同じ）。
+// ----------------------------------------------------------------------------
+app.get('/api/staff/available-slots', requireStaffSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const isOwner = !!req.session.staff.isOwner;
+    const staffName = String(req.query.staffName || '未定');
+    const date = String(req.query.date || '');
+    const excludeId = req.query.excludeId ? Number(req.query.excludeId) : null;
+    if (!date) {
+      return res.status(400).json({ success: false, message: 'dateは必須です' });
+    }
+    const slots = engine.getAvailableSlots_(storeId, staffName, date, excludeId, isOwner);
+    res.json({ success: true, isOwner, slots });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 function addMinutesToTime_(t, add) {
   const m = engine.toMin_(t) + add;
   return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
@@ -2497,8 +2525,11 @@ app.post('/api/admin/settings/shift-templates', requireOwnerSession, (req, res) 
     const storeId = req.session.staff.storeId;
     const { staffName, dayOfWeek, startTime, endTime } = req.body || {};
     const dow = Number(dayOfWeek);
-    if (!staffName || Number.isNaN(dow) || dow < 0 || dow > 6 || !startTime || !endTime) {
-      return res.status(400).json({ success: false, message: 'staffName / dayOfWeek(0〜6) / startTime / endTime は必須です' });
+    // ★2026-09-23追加：7は「祝」（休業日）パターンを表す特別値（GAS版SHIFT_DAY_ORDERの
+    //   '祝'相当）。通常の曜日（0〜6）より優先され、events側で休業日に指定された日に
+    //   このパターンが割り当てられていればそちらが使われる（無ければその日は出勤なし）
+    if (!staffName || Number.isNaN(dow) || dow < 0 || dow > 7 || !startTime || !endTime) {
+      return res.status(400).json({ success: false, message: 'staffName / dayOfWeek(0〜6、7=祝) / startTime / endTime は必須です' });
     }
     if (startTime >= endTime) {
       return res.status(400).json({ success: false, message: '終了時間は開始時間より後にしてください' });
@@ -3301,11 +3332,21 @@ app.post('/api/admin/maintenance/run-daily', requireOwnerSession, (req, res) => 
       SELECT staff_name, day_of_week, start_time, end_time FROM shift_templates
       WHERE store_id = ? AND is_active = 1
     `).all(storeId);
-    const templateMap = new Map(); // dow -> [{staff_name,start_time,end_time}]
+    const templateMap = new Map(); // dow(0〜6) または 7(=祝) -> [{staff_name,start_time,end_time}]
     templatesByDow.forEach((t) => {
       if (!templateMap.has(t.day_of_week)) templateMap.set(t.day_of_week, []);
       templateMap.get(t.day_of_week).push(t);
     });
+    // ★2026-09-23追加：「祝」（休業日）パターン対応（README §51-7で見送っていたもの、
+    //   GAS版applyShiftInitialValues_のholidaySet相当）。events（イベント／休業日）
+    //   に「予約制限あり」で登録されている日付は、通常の曜日パターンではなく
+    //   day_of_week=7（祝）のシフト初期値があればそちらを優先して使う（無ければ
+    //   その日は出勤なし＝GAS版と同じく「祝」は上書き専用で曜日パターンへの
+    //   フォールバックはしない）。
+    const holidayRows = db.prepare(`
+      SELECT event_date FROM events WHERE store_id = ? AND is_active = 1 AND restrict_booking = 1
+    `).all(storeId);
+    const holidaySet = new Set(holidayRows.map((r) => r.event_date));
     const insertShiftFromTemplate = db.prepare(`
       INSERT INTO shift_master (store_id, staff_name, shift_date, start_time, end_time, is_active)
       VALUES (?, ?, ?, ?, ?, 1)
@@ -3316,7 +3357,8 @@ app.post('/api/admin/maintenance/run-daily', requireOwnerSession, (req, res) => 
     let shiftsExpanded = 0;
     let daysBackfilled = 0;
     rangeDates.forEach(({ str: dateStr, dow }) => {
-      const tpls = templateMap.get(dow) || [];
+      const effectiveDow = holidaySet.has(dateStr) ? 7 : dow;
+      const tpls = templateMap.get(effectiveDow) || [];
       let addedThisDay = 0;
       tpls.forEach((t) => {
         // その日にそのスタッフの行が1件も無い場合のみテンプレートから補完する

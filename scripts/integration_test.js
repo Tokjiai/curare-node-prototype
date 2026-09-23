@@ -2584,6 +2584,49 @@ async function main() {
   }
 
   // --------------------------------------------------------------------------
+  // 41. シフト初期値の「祝」パターン対応・予約登録の空き時間確認ボタン
+  //     （README §51-7で見送っていた残り2点、2026-09-23追加）
+  // --------------------------------------------------------------------------
+  console.log('--- 41. シフト初期値の「祝」パターンと空き時間確認 ---');
+  {
+    // ①シフト初期値のday_of_week=7（祝）：休業日（restrict_booking=1のevents）に一致する
+    //   日は、通常の曜日パターンより優先して「祝」パターンが使われる
+    const holiday = db.prepare("SELECT event_date FROM events WHERE store_id = 1 AND restrict_booking = 1 LIMIT 1").get();
+    const holidayDate = holiday.event_date;
+    const holidayDow = new Date(holidayDate + 'T00:00:00').getDay();
+    const badDow = await ownerFresh.postJson('/api/admin/settings/shift-templates', { staffName: '寿子', dayOfWeek: 8, startTime: '09:00', endTime: '10:00' });
+    assert(badDow.status === 400, 'dayOfWeekは0〜7の範囲外だと拒否される（7=祝が上限）');
+    const normalTpl = await ownerFresh.postJson('/api/admin/settings/shift-templates', { staffName: '寿子', dayOfWeek: holidayDow, startTime: '09:00', endTime: '12:00' });
+    assert(normalTpl.status === 200, '（前提）休業日と同じ曜日の通常パターンを登録できる');
+    const holidayTpl = await ownerFresh.postJson('/api/admin/settings/shift-templates', { staffName: '寿子', dayOfWeek: 7, startTime: '13:00', endTime: '15:00' });
+    assert(holidayTpl.status === 200, '（前提）「祝」（dayOfWeek=7）パターンを登録できる');
+    db.prepare("DELETE FROM shift_master WHERE store_id = 1 AND staff_name = '寿子' AND shift_date = ?").run(holidayDate);
+    const run = await ownerFresh.postJson('/api/admin/maintenance/run-daily', {});
+    assert(run.status === 200 && run.body.success === true, '（前提）日次メンテナンスが成功する');
+    const row = db.prepare("SELECT start_time, end_time FROM shift_master WHERE store_id = 1 AND staff_name = '寿子' AND shift_date = ?").get(holidayDate);
+    assert(row && row.start_time === '13:00' && row.end_time === '15:00', '休業日には通常の曜日パターンではなく「祝」パターンが優先して展開される（GAS版applyShiftInitialValues_のholidaySet相当）');
+    // 後片付け（他のテストへの影響を避ける）
+    db.prepare("DELETE FROM shift_templates WHERE store_id = 1 AND staff_name = '寿子' AND day_of_week IN (?, 7)").run(holidayDow);
+    db.prepare("DELETE FROM shift_master WHERE store_id = 1 AND staff_name = '寿子' AND shift_date = ?").run(holidayDate);
+  }
+  {
+    // ②GET /api/staff/available-slots：一般スタッフには空いている枠のみ（理由付き）、
+    //   オーナーには全時間帯を警告ラベル付きで返す（GAS版getAvailableSlots相当）
+    const d = plus39(4); // 花子に2件予約あり（4日後の午前）
+    const staffView = await hanako.get(`/api/staff/available-slots?staffName=${encodeURIComponent('花子')}&date=${d}`);
+    assert(staffView.status === 200 && staffView.body.success === true && Array.isArray(staffView.body.slots) && staffView.body.isOwner === false,
+      '一般スタッフが空き時間を確認できる');
+    assert(staffView.body.slots.some((s) => s.disabled === true && s.reason), '一般スタッフの表示には予約済み等の理由付きで選択できない枠が含まれる');
+    assert(!staffView.body.slots.some((s) => s.warn), '一般スタッフの表示には警告付きの選択可能枠（オーナー専用機能）は含まれない');
+    const ownerView = await ownerFresh.get(`/api/staff/available-slots?staffName=${encodeURIComponent('花子')}&date=${d}`);
+    assert(ownerView.status === 200 && ownerView.body.isOwner === true, 'オーナーが空き時間を確認できる');
+    assert(ownerView.body.slots.length > staffView.body.slots.length, 'オーナーには全時間帯（シフト外・満床等も含む）が返る（一般スタッフより選択肢が多い）');
+    assert(ownerView.body.slots.some((s) => s.warn === true && s.warnLabel), 'オーナーの表示には警告ラベル付きで選択可能な枠が含まれる');
+    const noDate = await ownerFresh.get('/api/staff/available-slots?staffName=花子');
+    assert(noDate.status === 400, 'dateを省略すると400エラーになる');
+  }
+
+  // --------------------------------------------------------------------------
   console.log(`\n=== 結果: PASS ${passCount} / FAIL ${failCount} ===`);
   if (failCount > 0) {
     console.log('\n失敗した項目:');
