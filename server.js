@@ -48,28 +48,49 @@ const { getMessageSettings, saveMessageSettings, getMessageTemplate, renderMessa
 //   通知するため、二重通知を避けるためここでは送らない（呼び出し側でstatusを見て判断）。
 //   ※社長の要望により、担当スタッフへの社内通知（GAS版notifyStaff_相当）は対象外とした。
 // ----------------------------------------------------------------------------
-async function notifyAndBuildResultText(storeId, customerId, reservation, messageKey) {
+// ★2026-09-23追加：notifyAndBuildResultText()の中身を、テキストだけでなく
+//   「実際に届いた（または届いたとみなせる＝シミュレーション）扱いにしてよいか」
+//   を示すsentフラグも一緒に返すよう拡張したもの。reservations.line_sent列
+//   （オーナーの閲覧専用画面で📨アイコン表示に使う、45章）を実態に合わせて
+//   更新するために追加した。notifyAndBuildResultTextは後方互換のため
+//   このtextだけを返す薄いラッパーとして残す。
+async function notifyAndGetResult(storeId, customerId, reservation, messageKey) {
   if (!customerId) {
-    return '\nℹ️ お客様マスタに未連携のため、LINE通知はスキップされました';
+    return { text: '\nℹ️ お客様マスタに未連携のため、LINE通知はスキップされました', sent: false };
   }
   try {
     const customer = db.prepare('SELECT * FROM customers WHERE store_id = ? AND customer_id = ?').get(storeId, customerId);
     const store = db.prepare('SELECT * FROM stores WHERE id = ?').get(storeId);
     const result = await notifyReservationConfirmed(store, customer, reservation, messageKey);
     if (result && result.skipped) {
-      return '\nℹ️ LINE IDが未登録のため通知できませんでした';
+      return { text: '\nℹ️ LINE IDが未登録のため通知できませんでした', sent: false };
     }
     if (result && result.simulated) {
-      return '\n📱 LINE通知を実行しました（LINE連携未設定のためシミュレーションです）';
+      return { text: '\n📱 LINE通知を実行しました（LINE連携未設定のためシミュレーションです）', sent: true };
     }
     if (result && result.ok) {
-      return '\n📱 LINEに通知しました';
+      return { text: '\n📱 LINEに通知しました', sent: true };
     }
-    return '\n⚠️ LINE通知に失敗しました';
+    return { text: '\n⚠️ LINE通知に失敗しました', sent: false };
   } catch (notifyErr) {
     console.error('LINE通知処理でエラー（予約操作自体は成功しているため無視）:', notifyErr);
-    return '\n⚠️ LINE通知に失敗しました';
+    return { text: '\n⚠️ LINE通知に失敗しました', sent: false };
   }
+}
+
+async function notifyAndBuildResultText(storeId, customerId, reservation, messageKey) {
+  return (await notifyAndGetResult(storeId, customerId, reservation, messageKey)).text;
+}
+
+// ★2026-09-23追加：予約行のline_sent（LINE通知送信済みフラグ、reservations-view.htmlの
+//   📨アイコン表示元）を、実際の通知結果に合わせて書き込む共通ヘルパー。
+//   これまでこの列はINSERT時に常に0固定で、以後どの経路でも更新されておらず、
+//   「仮予約→確定」時に初めて送られる顧客通知（confirm_finalize）の結果が
+//   一切反映されない不具合があった（社長のご指摘「お客様にも通知が送ったことが
+//   分かるように」を受けて発見・修正）。
+function markReservationLineSent(reservationId, sent) {
+  if (!reservationId) return;
+  db.prepare('UPDATE reservations SET line_sent = ? WHERE id = ?').run(sent ? 1 : 0, reservationId);
 }
 
 // Render無料プランのディスクは再起動で消える（エフェメラル）ため、
@@ -358,7 +379,7 @@ app.get('/api/reservations', requireStaffSession, (req, res) => {
 //   予約作成。GAS版 addReservationUnified_body_ の主要ロジック
 //   （同一顧客の予約上限チェック→登録）を移植。LINE通知・カレンダー同期は対象外。
 // ----------------------------------------------------------------------------
-app.post('/api/reservations', (req, res) => {
+app.post('/api/reservations', async (req, res) => {
   try {
     const data = req.body || {};
     const storeId = resolveStoreId(data.store);
@@ -450,33 +471,38 @@ app.post('/api/reservations', (req, res) => {
 
     // ★2026-09-23更新：GAS版 submitCustomerBooking_body_ の移植。確定（キープメンバー＋
     //   担当者指名あり）の場合は'confirm_keep'、仮予約の場合は'confirm_provisional'の
-    //   テンプレートで通知する。GAS版はお客様向けレスポンスにLINE通知の成否を含めない
-    //   （通知診断はスタッフ・オーナーの手動操作画面のみで表示する設計・README_PROTOTYPE.md参照）
-    //   ため、ここでもLINE通知はawaitせずfire-and-forgetのまま、messageKeyのみ状態に応じて
-    //   出し分ける。
-    try {
-      if (data.customerId) {
-        const customer = db.prepare(
-          'SELECT * FROM customers WHERE store_id = ? AND customer_id = ?'
-        ).get(storeId, data.customerId);
-        const store = db.prepare('SELECT * FROM stores WHERE id = ?').get(storeId);
+    //   テンプレートで通知する。
+    //   ★2026-09-23同日再修正：以前はGAS版に倣い「お客様向けレスポンスにLINE通知の成否を
+    //   含めない」設計にしていたが、社長より「LINE IDと紐づけされているお客様には
+    //   メッセージが送信されるはず。お客様にも通知が送られたことが分かるように」との
+    //   ご指摘を受け、方針変更。LINE連携済み（user_idあり）のお客様に限り、予約完了画面に
+    //   通知結果（📱送信済み／⚠️失敗）を表示する（スタッフ・オーナー向け操作画面で既に
+    //   使っている notifyAndGetResult と同じ文言パターンに合わせる）。LINE未連携の
+    //   お客様には、そもそもLINEを使っていない可能性もあるため、この文言自体を表示しない。
+    //   これに伴い、通知完了を待ってからレスポンスを返す（fire-and-forgetをやめる）。
+    let lineNotifySuffix = '';
+    if (data.customerId) {
+      const customerForNotify = db.prepare(
+        'SELECT * FROM customers WHERE store_id = ? AND customer_id = ?'
+      ).get(storeId, data.customerId);
+      if (customerForNotify && customerForNotify.user_id) {
         const notifyMessageKey = (isKeep && !staffUnassigned) ? 'confirm_keep' : 'confirm_provisional';
-        notifyReservationConfirmed(store, customer, {
+        const notifyResult = await notifyAndGetResult(storeId, data.customerId, {
           staffName: data.staffName,
           menu: data.menu,
           date: data.date,
           time: data.time
-        }, notifyMessageKey).catch((notifyErr) => {
-          console.error('LINE通知処理でエラー（予約自体は成功しているため無視）:', notifyErr);
-        });
+        }, notifyMessageKey);
+        markReservationLineSent(info.lastInsertRowid, notifyResult.sent);
+        lineNotifySuffix = notifyResult.sent
+          ? '\n📱 ご登録のLINEに予約確認をお送りしました'
+          : '\n⚠️ LINEへの通知の送信に失敗しました（恐れ入りますが内容のご確認をお願いいたします）';
       }
-    } catch (notifySyncErr) {
-      console.error('LINE通知の呼び出し準備でエラー（予約自体は成功しているため無視）:', notifySyncErr);
     }
 
-    const baseMessage = yoyakuStatus === '確定'
+    const baseMessage = (yoyakuStatus === '確定'
       ? '✅ 予約を確定しました'
-      : '✅ 仮予約として受け付けました。店舗より確定のご連絡をいたします';
+      : '✅ 仮予約として受け付けました。店舗より確定のご連絡をいたします') + lineNotifySuffix;
     res.json({ success: true, message: baseMessage, status: yoyakuStatus, reservationId: info.lastInsertRowid });
   } catch (e) {
     console.error(e);
@@ -644,20 +670,50 @@ function defaultTwoWeekRange(req) {
   return { from, to };
 }
 
-// GET /api/staff/shifts?from=&to= : 自分自身のシフトのみ返す
+// ★2026-09-23追加：スタッフダッシュボードでの予約の見え方（GAS版dashboard_functions.jsの
+//   `if (!isOwner && staffName !== myName && staffName !== '未定') return;` と同じ条件）。
+//   オーナー：全員分／一般スタッフ：自分の担当＋担当が「未定」の予約
+function staffReservationVisibility_(sessStaff) {
+  if (sessStaff.isOwner) return { sql: '1 = 1', params: [] };
+  return { sql: "(staff_name = ? OR staff_name = '未定')", params: [sessStaff.name] };
+}
+// ★2026-09-23追加：シフト表の対象スタッフ（GAS版getAllActiveStaff_相当：在籍中で見習い以外）
+//   と、その表示色（サロンダッシュボードと同じくスタッフ管理画面で選んだ色）
+function shiftTargetStaff_(storeId) {
+  const colors = assignStaffColors_(storeId);
+  return db.prepare(`
+    SELECT name FROM staff WHERE store_id = ? AND is_active = 1 AND role != '見習い' ORDER BY id ASC
+  `).all(storeId).map((r) => ({
+    name: r.name,
+    colorKey: colors[r.name] || '',
+    color: CALENDAR_COLOR_MAP[colors[r.name]] || '#9E9E9E'
+  }));
+}
+
+// GET /api/staff/shifts?from=&to= : 一般スタッフは自分のシフトのみ、オーナーは全員分を返す
 app.get('/api/staff/shifts', requireStaffSession, (req, res) => {
   try {
     const storeId = req.session.staff.storeId;
     const staffName = req.session.staff.name;
     const { from, to } = defaultTwoWeekRange(req);
 
-    const rows = db.prepare(`
-      SELECT * FROM shift_master
-      WHERE store_id = ? AND staff_name = ? AND shift_date >= ? AND shift_date <= ? AND is_active = 1
-      ORDER BY shift_date ASC, start_time ASC
-    `).all(storeId, staffName, from, to);
+    // ★2026-09-23変更：GAS版getWeeklyShifts（dashboard_functions.js 56-125行）と同じく、
+    //   オーナーは全スタッフのシフトを見られるようにした（一般スタッフは従来どおり本人分のみ）。
+    //   オーナーはスタッフダッシュボードの週表示から、各スタッフのシフトを代理で追加・変更できる。
+    const isOwner = !!req.session.staff.isOwner;
+    const rows = isOwner
+      ? db.prepare(`
+          SELECT * FROM shift_master
+          WHERE store_id = ? AND shift_date >= ? AND shift_date <= ? AND is_active = 1
+          ORDER BY shift_date ASC, staff_name ASC, start_time ASC
+        `).all(storeId, from, to)
+      : db.prepare(`
+          SELECT * FROM shift_master
+          WHERE store_id = ? AND staff_name = ? AND shift_date >= ? AND shift_date <= ? AND is_active = 1
+          ORDER BY shift_date ASC, start_time ASC
+        `).all(storeId, staffName, from, to);
 
-    res.json({ from, to, staffName, shifts: rows });
+    res.json({ from, to, staffName, isOwner, shifts: rows, staffList: isOwner ? shiftTargetStaff_(storeId) : [] });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: e.message });
@@ -672,11 +728,17 @@ app.get('/api/staff/reservations', requireStaffSession, (req, res) => {
     const staffName = req.session.staff.name;
     const { from, to } = defaultTwoWeekRange(req);
 
+    // ★2026-09-23変更：GAS版getWeeklyReservations（dashboard_functions.js 6-53行）と同じ見え方に
+    //   揃えた。一般スタッフは「自分の担当＋担当が未定の予約」、オーナーは全員分を見られる。
+    //   以前は本人担当分だけだったため、誰かが引き受けるべき「未定」の予約が一般スタッフに
+    //   見えていなかった。キャンセル済みは従来どおり本人担当分だけ（取り消し線表示用）。
+    const vis = staffReservationVisibility_(req.session.staff);
     const rows = db.prepare(`
       SELECT * FROM reservations
-      WHERE store_id = ? AND staff_name = ? AND reservation_date >= ? AND reservation_date <= ?
+      WHERE store_id = ? AND reservation_date >= ? AND reservation_date <= ?
+        AND (staff_name = ? OR (realname != 'キャンセル' AND ${vis.sql}))
       ORDER BY reservation_date ASC, reservation_time ASC
-    `).all(storeId, staffName, from, to);
+    `).all(storeId, from, to, staffName, ...vis.params);
 
     res.json({ from, to, staffName, reservations: rows });
   } catch (e) {
@@ -717,11 +779,16 @@ app.get('/api/staff/reservations/monthly', requireStaffSession, (req, res) => {
     const lastDay = new Date(year, month, 0).getDate(); // month is 1-based here → day 0 of next month
     const to = `${monthStr}-${pad2(lastDay)}`;
 
+    // ★2026-09-23追加：オーナーは ?staff=名前 で他のスタッフの件数も見られる
+    //   （GAS版getMonthlyReservationCountsのtargetStaffName引数＝月間シフト表で
+    //   凡例からスタッフを選んだ「○○さんの1ヶ月」表示用）。一般スタッフは常に本人分。
+    const isOwner = !!req.session.staff.isOwner;
+    const targetStaff = (isOwner && req.query.staff) ? String(req.query.staff) : staffName;
     const rows = db.prepare(`
       SELECT reservation_date, status FROM reservations
       WHERE store_id = ? AND staff_name = ? AND realname != 'キャンセル'
         AND reservation_date >= ? AND reservation_date <= ?
-    `).all(storeId, staffName, from, to);
+    `).all(storeId, targetStaff, from, to);
 
     const counts = {};
     rows.forEach((r) => {
@@ -730,7 +797,18 @@ app.get('/api/staff/reservations/monthly', requireStaffSession, (req, res) => {
       if (r.status === '仮予約') counts[r.reservation_date].pending = true;
     });
 
-    res.json({ month: monthStr, from, to, staffName, counts });
+    // ★2026-09-23追加：オーナーには店舗全体で仮予約がある日も返す（GAS版
+    //   getMonthlyPendingStatus相当。月間シフト表の全員表示で「⚠️仮予約」を出す）
+    let pendingDates = {};
+    if (isOwner) {
+      db.prepare(`
+        SELECT DISTINCT reservation_date FROM reservations
+        WHERE store_id = ? AND realname != 'キャンセル' AND status = '仮予約'
+          AND reservation_date >= ? AND reservation_date <= ?
+      `).all(storeId, from, to).forEach((r) => { pendingDates[r.reservation_date] = true; });
+    }
+
+    res.json({ month: monthStr, from, to, staffName: targetStaff, counts, pendingDates });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: e.message });
@@ -759,19 +837,111 @@ app.get('/api/staff/reservations/upcoming', requireStaffSession, (req, res) => {
     const from = fmt(today);
     const to = fmt(endDate);
 
+    // ★2026-09-23変更：GAS版getUpcomingReservationsと同じく、オーナーは全員分、
+    //   一般スタッフは自分の担当＋担当未定の予約を表示する
+    const vis = staffReservationVisibility_(req.session.staff);
     const rows = db.prepare(`
       SELECT * FROM reservations
-      WHERE store_id = ? AND staff_name = ? AND realname != 'キャンセル'
+      WHERE store_id = ? AND realname != 'キャンセル' AND ${vis.sql}
         AND reservation_date >= ? AND reservation_date <= ?
       ORDER BY reservation_date ASC, reservation_time ASC
-    `).all(storeId, staffName, from, to);
+    `).all(storeId, ...vis.params, from, to);
 
-    res.json({ from, to, rangeDays, staffName, reservations: rows });
+    res.json({ from, to, rangeDays, staffName, isOwner: !!req.session.staff.isOwner, reservations: rows });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: e.message });
   }
 });
+
+// ----------------------------------------------------------------------------
+// ★2026-09-23追加：スタッフダッシュボードの「月間シフト表」（GAS版staff_dashboard.html
+//   1045-1314行・dashboard_functions.js getMonthlyShifts / getDayReservations の移植）
+//
+// GET /api/staff/shifts/monthly?month=YYYY-MM
+//   → { month, isOwner, myName, shifts:[{id,staffName,date,startTime,endTime}], staffList:[{name,color}] }
+//   GAS版は全員分のシフトを返し、一般スタッフの場合は画面側で本人分だけ表示していたが、
+//   Node版は他のスタッフのシフトを一般スタッフへ送らないよう、サーバー側で本人分に絞る。
+// ----------------------------------------------------------------------------
+app.get('/api/staff/shifts/monthly', requireStaffSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const myName = req.session.staff.name;
+    const isOwner = !!req.session.staff.isOwner;
+    const m = /^(\d{4})-(\d{2})$/.exec(String(req.query.month || ''));
+    const now = new Date();
+    const year = m ? Number(m[1]) : now.getFullYear();
+    const month = m ? Number(m[2]) : now.getMonth() + 1;
+    const pad2 = (n) => String(n).padStart(2, '0');
+    const monthStr = `${year}-${pad2(month)}`;
+    const from = `${monthStr}-01`;
+    const to = `${monthStr}-${pad2(new Date(year, month, 0).getDate())}`;
+    const rows = isOwner
+      ? db.prepare(`SELECT id, staff_name, shift_date, start_time, end_time FROM shift_master
+                    WHERE store_id = ? AND is_active = 1 AND shift_date >= ? AND shift_date <= ?
+                    ORDER BY shift_date, staff_name, start_time`).all(storeId, from, to)
+      : db.prepare(`SELECT id, staff_name, shift_date, start_time, end_time FROM shift_master
+                    WHERE store_id = ? AND is_active = 1 AND staff_name = ? AND shift_date >= ? AND shift_date <= ?
+                    ORDER BY shift_date, start_time`).all(storeId, myName, from, to);
+    res.json({
+      month: monthStr, from, to, isOwner, myName,
+      shifts: rows.map((r) => ({ id: r.id, staffName: r.staff_name, date: r.shift_date, startTime: r.start_time, endTime: r.end_time })),
+      staffList: shiftTargetStaff_(storeId)
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/staff/reservations/day?date=YYYY-MM-DD
+//   その日の予約（キャンセル除く・開始時刻順）。見え方は週表示と同じ（オーナー：全員／
+//   一般スタッフ：自分＋未定）。GAS版getDayReservations相当。
+app.get('/api/staff/reservations/day', requireStaffSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const date = String(req.query.date || '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'date（YYYY-MM-DD）は必須です' });
+    const vis = staffReservationVisibility_(req.session.staff);
+    const rows = db.prepare(`
+      SELECT id, realname, staff_name, menu, reservation_date, reservation_time, note, status, customer_id
+      FROM reservations
+      WHERE store_id = ? AND reservation_date = ? AND realname != 'キャンセル' AND ${vis.sql}
+      ORDER BY reservation_time ASC
+    `).all(storeId, date, ...vis.params);
+    res.json({ date, reservations: rows.map((r) => ({ ...r, end_time: addMinutesToTime_(r.reservation_time, 90) })) });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/staff/shifts/booking-check?staffName=&date=
+//   シフト削除の前に、その日にそのスタッフの予約が入っていないか確認する
+//   （GAS版checkShiftBooking相当。画面で「⚠️予約が入っています」と警告してから削除させる）。
+//   一般スタッフは本人分しか確認できない。
+app.get('/api/staff/shifts/booking-check', requireStaffSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const isOwner = !!req.session.staff.isOwner;
+    const staffName = isOwner && req.query.staffName ? String(req.query.staffName) : req.session.staff.name;
+    const date = String(req.query.date || '');
+    const rows = db.prepare(`
+      SELECT realname, reservation_time FROM reservations
+      WHERE store_id = ? AND staff_name = ? AND reservation_date = ? AND realname != 'キャンセル'
+      ORDER BY reservation_time
+    `).all(storeId, staffName, date);
+    res.json({ hasBooking: rows.length > 0, bookingInfo: rows.map((r) => `${r.reservation_time} ${r.realname}さん`).join('、') });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+function addMinutesToTime_(t, add) {
+  const m = engine.toMin_(t) + add;
+  return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+}
 
 // ----------------------------------------------------------------------------
 // ★2026-09-22追加：GAS版dashboard_functions.gs addShiftRow_body_ /
@@ -814,9 +984,16 @@ function staffHasBookingConflict_(storeId, staffName, dateStr, startTime, endTim
 app.post('/api/staff/shifts', requireStaffSession, (req, res) => {
   try {
     const storeId = req.session.staff.storeId;
-    const staffName = req.session.staff.name;
     const isOwner = !!req.session.staff.isOwner;
     const { date, startTime, endTime } = req.body || {};
+    // ★2026-09-23追加：GAS版addShiftRow_body_と同じく、オーナーは担当スタッフを指定して
+    //   代理でシフトを追加できる（一般スタッフは常に本人分のみ）
+    let staffName = req.session.staff.name;
+    if (isOwner && req.body && req.body.staffName && req.body.staffName !== staffName) {
+      const target = db.prepare('SELECT name FROM staff WHERE store_id = ? AND name = ? AND is_active = 1').get(storeId, String(req.body.staffName));
+      if (!target) return res.status(400).json({ success: false, message: '在籍中のスタッフとして見つかりません' });
+      staffName = target.name;
+    }
     if (!date || !startTime || !endTime) {
       return res.status(400).json({ success: false, message: '日付・開始時間・終了時間は必須です' });
     }
@@ -848,9 +1025,10 @@ app.put('/api/staff/shifts/:id', requireStaffSession, (req, res) => {
     if (!startTime || !endTime) {
       return res.status(400).json({ success: false, message: '開始時間・終了時間は必須です' });
     }
-    const row = db.prepare(
-      'SELECT * FROM shift_master WHERE id = ? AND store_id = ? AND staff_name = ?'
-    ).get(id, storeId, staffName);
+    // ★2026-09-23変更：オーナーは他のスタッフのシフトも変更できる（GAS版saveWeeklyShifts_body_と同じ）
+    const row = isOwner
+      ? db.prepare('SELECT * FROM shift_master WHERE id = ? AND store_id = ?').get(id, storeId)
+      : db.prepare('SELECT * FROM shift_master WHERE id = ? AND store_id = ? AND staff_name = ?').get(id, storeId, staffName);
     if (!row) return res.status(404).json({ success: false, message: '対象のシフトが見つかりません（自分自身のシフトのみ変更できます）' });
     if (!staffShiftEditDateOk_(isOwner, row.shift_date)) {
       return res.status(400).json({ success: false, message: `${STAFF_SHIFT_EDIT_LOCK_DAYS}日以内のシフトは変更できません` });
@@ -862,7 +1040,7 @@ app.put('/api/staff/shifts/:id', requireStaffSession, (req, res) => {
     const conflictRows = db.prepare(`
       SELECT reservation_time FROM reservations
       WHERE store_id = ? AND staff_name = ? AND reservation_date = ? AND realname != 'キャンセル'
-    `).all(storeId, staffName, row.shift_date);
+    `).all(storeId, row.staff_name, row.shift_date);
     const newStart = engine.toMin_(startTime);
     const newEnd = engine.toMin_(endTime);
     const outOfRange = conflictRows.some((r) => {
@@ -888,14 +1066,17 @@ app.delete('/api/staff/shifts/:id', requireStaffSession, (req, res) => {
     const staffName = req.session.staff.name;
     const isOwner = !!req.session.staff.isOwner;
     const { id } = req.params;
-    const row = db.prepare(
-      'SELECT * FROM shift_master WHERE id = ? AND store_id = ? AND staff_name = ?'
-    ).get(id, storeId, staffName);
+    // ★2026-09-23変更：オーナーは他のスタッフのシフトも削除できる。GAS版deleteShiftRow_body_と
+    //   同じく、予約の重なりによる削除拒否は一般スタッフのみ（オーナーは画面側で「⚠️予約が
+    //   入っています」の警告を確認したうえで削除できる）
+    const row = isOwner
+      ? db.prepare('SELECT * FROM shift_master WHERE id = ? AND store_id = ?').get(id, storeId)
+      : db.prepare('SELECT * FROM shift_master WHERE id = ? AND store_id = ? AND staff_name = ?').get(id, storeId, staffName);
     if (!row) return res.status(404).json({ success: false, message: '対象のシフトが見つかりません（自分自身のシフトのみ削除できます）' });
     if (!staffShiftEditDateOk_(isOwner, row.shift_date)) {
       return res.status(400).json({ success: false, message: `${STAFF_SHIFT_EDIT_LOCK_DAYS}日以内のシフトは削除できません` });
     }
-    if (staffHasBookingConflict_(storeId, staffName, row.shift_date, row.start_time, row.end_time)) {
+    if (!isOwner && staffHasBookingConflict_(storeId, staffName, row.shift_date, row.start_time, row.end_time)) {
       return res.status(400).json({ success: false, message: 'この時間帯に予約が入っているため削除できません' });
     }
     db.prepare('DELETE FROM shift_master WHERE id = ?').run(id);
@@ -998,9 +1179,14 @@ app.post('/api/staff/reservations', requireStaffSession, async (req, res) => {
     let message = status === '仮予約' ? '✅ 仮予約として登録しました（確定操作が必要です）' : '✅ 予約を登録しました';
     // ★仮予約は確定操作時にconfirm_finalizeで通知するため、二重通知を避けここでは送らない
     if (status === '確定') {
-      message += await notifyAndBuildResultText(storeId, data.customerId, {
+      // ★2026-09-23追加修正：以前はINSERT時にline_sentを0固定のまま放置しており、
+      //   通知が実際に成功していてもreservations-view.htmlの📨アイコンに反映されない
+      //   不具合があった。notifyAndGetResult()のsentフラグで実態を書き込む。
+      const notifyResult = await notifyAndGetResult(storeId, data.customerId, {
         staffName: data.staffName, menu: data.menu, date: data.date, time: data.time
       }, 'confirm_add');
+      message += notifyResult.text;
+      markReservationLineSent(info.lastInsertRowid, notifyResult.sent);
     }
 
     res.json({
@@ -1211,24 +1397,62 @@ const CALENDAR_COLOR_MAP = {
   BLUE: '#1565C0', RED: '#C62828', BASIL: '#33691E', GRAPHITE: '#616161',
   PALE_BLUE: '#64B5F6', PALE_GREEN: '#81C784', MAUVE: '#BA68C8', PALE_RED: '#E57373'
 };
+// ★2026-09-23：背景色・文字色をGAS版calendar_page.html 324-325行のBG_MAP/TX_MAPと
+//   完全に同じ値に揃えた（以前は一部の色で値が少し異なっていた）
 const CALENDAR_BG_MAP = {
   YELLOW: '#FFF8E1', CYAN: '#E0F7FA', ORANGE: '#FBE9E7', GRAPE: '#F3E5F5', GREEN: '#E8F5E9',
   BLUE: '#E3F2FD', RED: '#FFEBEE', BASIL: '#F1F8E9', GRAPHITE: '#F5F5F5',
-  PALE_BLUE: '#E3F2FD', PALE_GREEN: '#E8F5E9', MAUVE: '#F3E5F5', PALE_RED: '#FFEBEE'
+  PALE_BLUE: '#EEF5FF', PALE_GREEN: '#F1F8E9', MAUVE: '#F8F0FF', PALE_RED: '#FFF0F0'
 };
 const CALENDAR_TX_MAP = {
-  YELLOW: '#8A6100', CYAN: '#00596B', ORANGE: '#9A3400', GRAPE: '#4A1362', GREEN: '#1B5E20',
-  BLUE: '#0D3780', RED: '#7F0000', BASIL: '#1B3409', GRAPHITE: '#333333',
-  PALE_BLUE: '#0D3780', PALE_GREEN: '#1B5E20', MAUVE: '#4A1362', PALE_RED: '#7F0000'
+  YELLOW: '#795B00', CYAN: '#005662', ORANGE: '#7B2800', GRAPE: '#4A0072', GREEN: '#1B5E20',
+  BLUE: '#0D3780', RED: '#7F0000', BASIL: '#1B5E20', GRAPHITE: '#212121',
+  PALE_BLUE: '#0D3780', PALE_GREEN: '#1B5E20', MAUVE: '#4A148C', PALE_RED: '#B71C1C'
+};
+// スタッフ管理画面の色選択肢に出す日本語名
+const CALENDAR_COLOR_LABELS = {
+  BLUE: '青', RED: '赤', GREEN: '緑', ORANGE: 'オレンジ', GRAPE: 'ぶどう', CYAN: '水色', YELLOW: '黄',
+  BASIL: 'バジル', MAUVE: '藤色', PALE_BLUE: '薄い青', PALE_RED: '薄い赤', PALE_GREEN: '薄い緑', GRAPHITE: 'グレー'
 };
 
-function assignStaffColors_(storeId) {
-  const rows = db.prepare(`
-    SELECT name FROM staff WHERE store_id = ? AND is_active = 1 ORDER BY id ASC
+// ★2026-09-23変更：GAS版（calendar_dashboard_functions.js 88-97行、マスタシートC列に
+//   スタッフ毎の色名を保存しておき、それを読む方式）に合わせ、staff.color列に保存
+//   された色を使うようにした。以前はstaff.id順に自動で割り当てていたため、スタッフの
+//   追加・退職のたびに全員の色がずれてしまう問題があった。
+//   ・在籍中スタッフの色（凡例に出す）…戻り値 colors
+//   ・退職済みスタッフの色も含める（過去の予約が灰色にならないように）…GAS版も
+//     マスタの全行を読んでいたのと同じ
+//   ・色が空のスタッフ（マイグレーション前に作られた行など）には、まだ誰も使っていない
+//     色を表示上だけ割り当てる（保存はしない。オーナーがスタッフ管理画面で選び直せる）
+function getStaffColorRows_(storeId) {
+  return db.prepare(`
+    SELECT name, color, is_active FROM staff WHERE store_id = ? ORDER BY is_active DESC, id ASC
   `).all(storeId);
+}
+function assignStaffColors_(storeId, { includeInactive = true } = {}) {
+  const rows = getStaffColorRows_(storeId);
+  const used = new Set(rows.map((r) => r.color).filter(Boolean));
+  const spare = CALENDAR_COLOR_KEYS.filter((k) => !used.has(k));
+  let spareIdx = 0;
   const colors = {};
-  rows.forEach((row, i) => { colors[row.name] = CALENDAR_COLOR_KEYS[i % CALENDAR_COLOR_KEYS.length]; });
+  rows.forEach((row) => {
+    if (!includeInactive && !row.is_active) return;
+    let key = CALENDAR_COLOR_MAP[row.color] ? row.color : '';
+    if (!key) key = spare.length ? spare[spareIdx++ % spare.length] : 'GRAPHITE';
+    colors[row.name] = key;
+  });
   return colors;
+}
+// 凡例用：在籍中スタッフの名前だけ（表示順＝staff.id順）
+function activeStaffNamesForLegend_(storeId) {
+  return db.prepare(`
+    SELECT name FROM staff WHERE store_id = ? AND is_active = 1 AND role != '見習い' ORDER BY id ASC
+  `).all(storeId).map((r) => r.name);
+}
+// 新規スタッフ登録時の既定色：同じ店舗でまだ使われていない最初の色
+function nextUnusedStaffColor_(storeId) {
+  const used = new Set(db.prepare('SELECT color FROM staff WHERE store_id = ? AND is_active = 1').all(storeId).map((r) => r.color));
+  return CALENDAR_COLOR_KEYS.find((k) => !used.has(k)) || CALENDAR_COLOR_KEYS[0];
 }
 
 // ★GAS版getCalendarData_相当：指定期間の予約＋イベントをまとめて返す
@@ -1278,14 +1502,22 @@ function getCalendarData_(storeId, fromDate, toDate) {
         blockEnd = `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
       }
     }
+    // ★2026-09-23追加：終日の行事かどうか（行事管理モーダルの「終日」チェックは
+    //   00:00〜23:59として保存される。GAS版は開始・終了が空欄＝終日だった）
+    const allDay = !e.start_time || !e.end_time || (e.start_time === '00:00' && e.end_time === '23:59');
     return {
       id: e.id, date: e.event_date, label: e.title,
-      startTime: e.start_time, endTime: e.end_time,
-      blockReservation: restrict, blockStart, blockEnd
+      startTime: e.start_time, endTime: e.end_time, allDay,
+      blockReservation: restrict, blockStart: allDay ? '' : blockStart, blockEnd: allDay ? '' : blockEnd
     };
   });
 
-  return { reservations, staffColors: assignStaffColors_(storeId), events, colorMap: CALENDAR_COLOR_MAP, bgMap: CALENDAR_BG_MAP, txMap: CALENDAR_TX_MAP };
+  return {
+    reservations, events,
+    staffColors: assignStaffColors_(storeId),
+    legendStaff: activeStaffNamesForLegend_(storeId),
+    colorMap: CALENDAR_COLOR_MAP, bgMap: CALENDAR_BG_MAP, txMap: CALENDAR_TX_MAP
+  };
 }
 
 // GET /api/staff/calendar/week?start=YYYY-MM-DD : 指定週（月曜始まり、開始日から7日分）
@@ -1645,9 +1877,13 @@ app.post('/api/admin/reservations', requireOwnerSession, async (req, res) => {
 
     let adminNewMessage = status === '仮予約' ? '✅ 仮予約として登録しました（確定操作が必要です）' : '✅ 予約を登録しました';
     if (status === '確定') {
-      adminNewMessage += await notifyAndBuildResultText(storeId, data.customerId, {
+      // ★2026-09-23追加修正：line_sentが常に0固定のまま更新されていなかった不具合を修正
+      //   （INSERT時の共通の穴。public予約・スタッフ予約と同じ修正）
+      const notifyResult = await notifyAndGetResult(storeId, data.customerId, {
         staffName: data.staffName, menu: data.menu, date: data.date, time: data.time
       }, 'confirm_add');
+      adminNewMessage += notifyResult.text;
+      markReservationLineSent(info.lastInsertRowid, notifyResult.sent);
     }
 
     res.json({
@@ -1666,17 +1902,51 @@ app.post('/api/admin/reservations', requireOwnerSession, async (req, res) => {
 //   相当）。担当スタッフが「未定」のままでは確定できない（GAS版と同じ安全策）。
 //   確定に伴い、顧客がLINE連携済みであればconfirm_finalizeテンプレートで通知を送る
 //   （LINE通知はあくまで付加機能。失敗しても確定操作自体は成功として扱う）。
+//
+//   ★2026-09-23追加修正：GAS版confirmReservationStatus_body_（reservation_form_functions.js
+//   325-401行）は、確定操作の結果メッセージに「📱 お客様にLINE通知しました／
+//   ⚠️ お客様へのLINE通知に失敗しました／ℹ️ LINE IDが未登録のため通知できませんでした」
+//   という通知結果を必ず含めて返す（'✅ 予約を確定しました\n' + customerResult）。
+//   Node版はこれまで確定操作自体をawaitせずfire-and-forgetにしていたため、確定した
+//   スタッフ・オーナーには通知が実際に届いたかどうかが一切分からない状態だった（社長の
+//   ご指摘「スタッフやオーナーにも仮予約や本予約の通知システムがあるはず、テストして
+//   完成させて」で発覚した未移植箇所）。既存の他5経路（新規登録・編集・キャンセル）で
+//   確立済みのnotifyAndGetResultパターンに合わせ、通知完了を待ってから結果を返す形に
+//   修正し、あわせてreservations.line_sent（オーナーの閲覧専用画面の📨アイコン用）も
+//   実際の送信結果で更新する。「仮予約」のまま作られた予約は作成時点ではLINE通知を
+//   送っていない（二重通知を避けるため）ため、line_sentが初めて意味を持つのはこの
+//   確定操作のタイミングになる。
 // ----------------------------------------------------------------------------
-app.post('/api/admin/reservations/:id/confirm', requireOwnerSession, (req, res) => {
+// ★2026-09-23追加：確定処理の本体をオーナー版・スタッフ版で共通化した。
+//   GAS版confirmReservationStatus_body_（reservation_form_functions.js 333-358行）と同じく、
+//   画面上で選び直した担当スタッフ（selectedStaffName）がまだ保存されていなければ、
+//   確定と同時にその担当へ変更する（サロンダッシュボードの編集画面で「担当を選んで
+//   → 仮予約中のチェックを外す」操作を、保存ボタンを押さずに1回で済ませられる）。
+async function confirmProvisionalReservation_(req, res) {
   try {
     const storeId = req.session.staff.storeId;
     const id = Number(req.params.id);
-    const row = db.prepare('SELECT * FROM reservations WHERE id = ? AND store_id = ?').get(id, storeId);
+    let row = db.prepare('SELECT * FROM reservations WHERE id = ? AND store_id = ?').get(id, storeId);
     if (!row) {
       return res.status(404).json({ success: false, message: '対象の予約が見つかりません' });
     }
+    if (row.realname === 'キャンセル') {
+      return res.status(400).json({ success: false, message: 'この予約はキャンセル済みです' });
+    }
     if (row.status !== '仮予約') {
       return res.status(400).json({ success: false, message: 'この予約はすでに確定済みです' });
+    }
+    const selectedStaff = String((req.body && req.body.staffName) || '').trim();
+    if (selectedStaff && selectedStaff !== '未定' && selectedStaff !== row.staff_name) {
+      try {
+        db.prepare('UPDATE reservations SET staff_name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(selectedStaff, id);
+      } catch (constraintErr) {
+        if (String(constraintErr.message).includes('UNIQUE constraint failed')) {
+          return res.status(409).json({ success: false, isDoubleBooking: true, message: `${selectedStaff}さんはその日時に別の予約が入っているため、担当にできません` });
+        }
+        throw constraintErr;
+      }
+      row = db.prepare('SELECT * FROM reservations WHERE id = ?').get(id);
     }
     if (!row.staff_name || row.staff_name === '未定') {
       return res.status(400).json({ success: false, message: '❌ 担当スタッフが未定のため確定できません。先に担当を設定してください' });
@@ -1684,28 +1954,23 @@ app.post('/api/admin/reservations/:id/confirm', requireOwnerSession, (req, res) 
 
     db.prepare(`UPDATE reservations SET status = '確定', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(id);
 
-    // ★LINE通知はあくまで付加機能。ここでの失敗が確定操作自体を妨げてはならないため、
-    //   awaitせずfire-and-forgetし、例外は.catchで握りつぶしてログにのみ残す。
-    try {
-      if (row.customer_id) {
-        const customer = db.prepare('SELECT * FROM customers WHERE store_id = ? AND customer_id = ?').get(storeId, row.customer_id);
-        const store = db.prepare('SELECT * FROM stores WHERE id = ?').get(storeId);
-        notifyReservationConfirmed(store, customer, {
-          staffName: row.staff_name, menu: row.menu, date: row.reservation_date, time: row.reservation_time
-        }, 'confirm_finalize').catch((notifyErr) => {
-          console.error('LINE通知処理でエラー（確定操作自体は成功しているため無視）:', notifyErr);
-        });
-      }
-    } catch (notifySyncErr) {
-      console.error('LINE通知の呼び出し準備でエラー（確定操作自体は成功しているため無視）:', notifySyncErr);
+    let confirmMessage = '✅ 予約を確定しました';
+    if (row.customer_id) {
+      const notifyResult = await notifyAndGetResult(storeId, row.customer_id, {
+        staffName: row.staff_name, menu: row.menu, date: row.reservation_date, time: row.reservation_time
+      }, 'confirm_finalize');
+      confirmMessage += notifyResult.text;
+      markReservationLineSent(id, notifyResult.sent);
     }
 
-    res.json({ success: true, message: '予約を確定しました' });
+    res.json({ success: true, message: confirmMessage, staffName: row.staff_name });
   } catch (e) {
     console.error(e);
     res.status(500).json({ success: false, error: e.message });
   }
-});
+}
+
+app.post('/api/admin/reservations/:id/confirm', requireOwnerSession, confirmProvisionalReservation_);
 
 // ----------------------------------------------------------------------------
 // ★2026-09-22追加：スタッフダッシュボードからの仮予約確定（GAS版staff_dashboard.html
@@ -1715,43 +1980,7 @@ app.post('/api/admin/reservations/:id/confirm', requireOwnerSession, (req, res) 
 //   新設した（requireStaffSessionのみ、isOwnerチェック無し）。バリデーション内容は
 //   オーナー版と完全に同一（仮予約以外は400、担当が未定のままなら400）。
 // ----------------------------------------------------------------------------
-app.post('/api/staff/reservations/:id/confirm', requireStaffSession, (req, res) => {
-  try {
-    const storeId = req.session.staff.storeId;
-    const id = Number(req.params.id);
-    const row = db.prepare('SELECT * FROM reservations WHERE id = ? AND store_id = ?').get(id, storeId);
-    if (!row) {
-      return res.status(404).json({ success: false, message: '対象の予約が見つかりません' });
-    }
-    if (row.status !== '仮予約') {
-      return res.status(400).json({ success: false, message: 'この予約はすでに確定済みです' });
-    }
-    if (!row.staff_name || row.staff_name === '未定') {
-      return res.status(400).json({ success: false, message: '❌ 担当スタッフが未定のため確定できません。先に担当を設定してください' });
-    }
-
-    db.prepare(`UPDATE reservations SET status = '確定', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(id);
-
-    try {
-      if (row.customer_id) {
-        const customer = db.prepare('SELECT * FROM customers WHERE store_id = ? AND customer_id = ?').get(storeId, row.customer_id);
-        const store = db.prepare('SELECT * FROM stores WHERE id = ?').get(storeId);
-        notifyReservationConfirmed(store, customer, {
-          staffName: row.staff_name, menu: row.menu, date: row.reservation_date, time: row.reservation_time
-        }, 'confirm_finalize').catch((notifyErr) => {
-          console.error('LINE通知処理でエラー（確定操作自体は成功しているため無視）:', notifyErr);
-        });
-      }
-    } catch (notifySyncErr) {
-      console.error('LINE通知の呼び出し準備でエラー（確定操作自体は成功しているため無視）:', notifySyncErr);
-    }
-
-    res.json({ success: true, message: '予約を確定しました' });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
+app.post('/api/staff/reservations/:id/confirm', requireStaffSession, confirmProvisionalReservation_);
 
 // ----------------------------------------------------------------------------
 // ★2026-09-19追加：スタッフのシフト管理（オーナー管理画面から操作する用）
@@ -1766,11 +1995,20 @@ app.get('/api/admin/staff', requireOwnerSession, (req, res) => {
   try {
     const storeId = req.session.staff.storeId;
     const rows = db.prepare(`
-      SELECT id, name, nickname, role, opt_support, night_restrict, show_in_booking, is_active, is_owner,
+      SELECT id, name, nickname, role, opt_support, night_restrict, show_in_booking, is_active, is_owner, color,
              (pin_hash IS NOT NULL) AS has_pin
       FROM staff WHERE store_id = ? ORDER BY is_active DESC, name ASC
     `).all(storeId);
-    res.json({ staff: rows });
+    // ★2026-09-23追加：スタッフ管理画面の色選択（GAS版マスタC列の色名）用に、
+    //   選べる色の一覧と、実際にカレンダーに表示される色（未設定なら仮の色）も返す
+    const effective = assignStaffColors_(storeId);
+    rows.forEach((r) => { r.effective_color = effective[r.name] || ''; });
+    res.json({
+      staff: rows,
+      colorOptions: CALENDAR_COLOR_KEYS.map((key) => ({
+        key, label: CALENDAR_COLOR_LABELS[key], border: CALENDAR_COLOR_MAP[key], bg: CALENDAR_BG_MAP[key], tx: CALENDAR_TX_MAP[key]
+      }))
+    });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: e.message });
@@ -1801,16 +2039,22 @@ app.post('/api/admin/staff', requireOwnerSession, (req, res) => {
       return res.status(400).json({ success: false, message: '同じ氏名の在籍スタッフが既に存在します' });
     }
 
+    if (data.color && !CALENDAR_COLOR_MAP[data.color]) {
+      return res.status(400).json({ success: false, message: '表示色の指定が正しくありません' });
+    }
+    // ★色の指定が無ければ、同じ店舗でまだ誰も使っていない色を既定で割り当てる
+    const color = data.color || nextUnusedStaffColor_(storeId);
+
     const { hash, salt } = createPinHash(data.pin);
     const info = db.prepare(`
-      INSERT INTO staff (store_id, name, nickname, role, opt_support, night_restrict, show_in_booking, is_active, pin_hash, pin_salt, is_owner)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+      INSERT INTO staff (store_id, name, nickname, role, opt_support, night_restrict, show_in_booking, is_active, pin_hash, pin_salt, is_owner, color)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
     `).run(
       storeId, data.name.trim(), data.nickname || '', data.role || 'スタッフ',
       data.optSupport ? 1 : 0, data.nightRestrict ? 1 : 0, data.showInBooking === false ? 0 : 1,
-      hash, salt, data.isOwner ? 1 : 0
+      hash, salt, data.isOwner ? 1 : 0, color
     );
-    res.json({ success: true, staffId: info.lastInsertRowid });
+    res.json({ success: true, staffId: info.lastInsertRowid, color });
   } catch (e) {
     console.error(e);
     res.status(500).json({ success: false, error: e.message });
@@ -1857,13 +2101,23 @@ app.put('/api/admin/staff/:id', requireOwnerSession, (req, res) => {
       params.pin_hash = hash;
       params.pin_salt = salt;
     }
+    // ★2026-09-23追加：表示色（GAS版マスタC列相当）。指定が無い場合は現在の色を保持する
+    //   （既存の呼び出し元＝色の項目を送らない画面・テストを壊さないため）
+    let colorClause = '';
+    if (Object.prototype.hasOwnProperty.call(data, 'color')) {
+      if (data.color && !CALENDAR_COLOR_MAP[data.color]) {
+        return res.status(400).json({ success: false, message: '表示色の指定が正しくありません' });
+      }
+      colorClause = ', color = @color';
+      params.color = data.color || null;
+    }
 
     db.prepare(`
       UPDATE staff
       SET name = @name, nickname = @nickname, role = @role,
           opt_support = @opt_support, night_restrict = @night_restrict, show_in_booking = @show_in_booking,
           is_active = @is_active, is_owner = @is_owner
-          ${pinClause}
+          ${pinClause}${colorClause}
       WHERE id = @id AND store_id = @store_id
     `).run(params);
 

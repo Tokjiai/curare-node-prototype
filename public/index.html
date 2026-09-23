@@ -79,7 +79,7 @@
   button.primary{width:100%; padding:18px; border:none; border-radius:10px; font-size:18px; font-weight:600; color:#fff; cursor:pointer; background:var(--pink-header);}
   button.primary:disabled{background:#ddd; color:#aaa; cursor:default;}
 
-  .msg{margin-top:12px; font-size:14px; padding:12px 14px; border-radius:8px; line-height:1.6;}
+  .msg{margin-top:12px; font-size:14px; padding:12px 14px; border-radius:8px; line-height:1.6; white-space:pre-line;}
   .msg.ok{background:var(--pink-light); color:var(--pink-accent); border:1px solid var(--pink-border);}
   .msg.ng{background:#fff0f0; color:#c0392b; border:1px solid #ffb3b3;}
 
@@ -146,28 +146,28 @@
       <p class="note">ご予約の前に、お客様情報のご登録をお願いいたします。</p>
       <div style="display:flex; gap:8px;">
         <div style="flex:1;">
-          <label>姓</label>
-          <input type="text" id="regLastName" placeholder="例：山田">
+          <label>姓 <span style="color:#b3502e;">必須</span></label>
+          <input type="text" id="regLastName" placeholder="例：山田" required>
         </div>
         <div style="flex:1;">
-          <label>名</label>
-          <input type="text" id="regFirstName" placeholder="例：花子">
+          <label>名 <span style="color:#b3502e;">必須</span></label>
+          <input type="text" id="regFirstName" placeholder="例：花子" required>
         </div>
       </div>
       <div style="display:flex; gap:8px;">
         <div style="flex:1;">
-          <label>フリガナ姓</label>
-          <input type="text" id="regLastKana" placeholder="例：ヤマダ">
+          <label>フリガナ姓 <span style="color:#b3502e;">必須</span></label>
+          <input type="text" id="regLastKana" placeholder="例：ヤマダ" required>
         </div>
         <div style="flex:1;">
-          <label>フリガナ名</label>
-          <input type="text" id="regFirstKana" placeholder="例：ハナコ">
+          <label>フリガナ名 <span style="color:#b3502e;">必須</span></label>
+          <input type="text" id="regFirstKana" placeholder="例：ハナコ" required>
         </div>
       </div>
-      <label>電話番号</label>
-      <input type="text" id="regPhone" placeholder="例：09012345678">
-      <label>ご住所</label>
-      <input type="text" id="regAddress" placeholder="例：大分県大分市〇〇町1-2-3">
+      <label>電話番号 <span style="color:#b3502e;">必須</span></label>
+      <input type="text" id="regPhone" placeholder="例：09012345678" required>
+      <label>ご住所 <span style="color:#b3502e;">必須</span></label>
+      <input type="text" id="regAddress" placeholder="例：大分県大分市〇〇町1-2-3" required>
       <div id="regMsg"></div>
     </div>
 

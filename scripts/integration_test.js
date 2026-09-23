@@ -813,13 +813,14 @@ async function main() {
     assert(r.status === 200 && rows.length > 0 && allHanako, '/api/staff/shiftsは自分（花子）のシフトだけを返す（他スタッフのシフトは含まない）');
   }
   {
-    // オーナー（寿子）自身も同じ/api/staff/*で自分の予約・シフトを見られる
-    // （寿子はday5に1件のみ予約を持つ、花子の2件とは別）
+    // ★2026-09-23仕様変更：GAS版getWeeklyReservationsと同じく、オーナーは/api/staff/reservationsで
+    //   全員分の予約を見られる（以前は本人分だけ）。寿子自身の1件と花子の2件の両方が含まれる
     const r = await ownerFresh.get('/api/staff/reservations');
     const rows = r.body.reservations || [];
+    const names = rows.map((x) => x.realname);
     assert(
-      r.status === 200 && rows.length === 1 && rows[0].realname === '鈴木 花' && rows[0].staff_name === '寿子',
-      'オーナー自身も/api/staff/reservationsで自分の予約（1件・花子分とは別）だけを見られる'
+      r.status === 200 && names.includes('鈴木 花') && names.includes('田中 美穂') && names.includes('佐藤 由紀'),
+      'オーナーは/api/staff/reservationsで全員分の予約（自分の担当＋花子の担当）を見られる（GAS版と同じ）'
     );
   }
   {
@@ -2256,6 +2257,257 @@ async function main() {
     const after = await ownerFresh.get('/api/admin/customers?q=渡辺');
     const afterVal = !!after.body.customers.find((x) => x.customer_id === 'C0008').is_keep_member;
     assert(afterVal === true, '編集モーダル経由のキープメンバー変更も正しく保存される（既存の2経路が両方使える確認）');
+  }
+
+  // --------------------------------------------------------------------------
+  // 38. 社長の本番実機テスト（2026-09-23）で発覚した3点への追加対応の確認
+  //     ①電話番号・住所が空欄のままでも予約完走できてしまう不具合の修正
+  //     ④（追加要望）LINE連携済みのお客様への通知結果を、お客様本人にも・
+  //       確定操作を行うスタッフ/オーナーにも、分かるように表示する
+  // --------------------------------------------------------------------------
+  console.log('--- 38. 予約フォームの必須項目チェック強化・LINE通知結果の可視化 ---');
+  {
+    // ★社長ご指摘①：LINE友だち追加のみ・本登録が済んでいない顧客（C0007相当）が、
+    //   姓名・フリガナは入力したが電話番号を空欄のまま送信すると、以前（修正前）は
+    //   更新モードの検証が緩く、そのまま登録が成立してしまっていた。
+    const r = await anon.postJson('/api/customer-registration', {
+      store: '1', customerId: 'C0007', lastName: '岡目', firstName: '彩花', lastKana: 'オカメ', firstKana: 'アヤカ'
+      // phone・address は未入力のまま
+    });
+    assert(r.status === 400 && /電話番号/.test(r.body.message || ''),
+      '本登録が済んでいない顧客が電話番号を空欄のまま送信すると400エラーになる（社長ご指摘①の修正確認）');
+  }
+  {
+    const r = await anon.postJson('/api/customer-registration', {
+      store: '1', customerId: 'C0007', lastName: '岡目', firstName: '彩花', lastKana: 'オカメ', firstKana: 'アヤカ',
+      phone: '090-1234-5678'
+      // address は未入力のまま
+    });
+    assert(r.status === 400 && /住所/.test(r.body.message || ''),
+      '電話番号はあっても住所が空欄のままだと400エラーになる（社長ご指摘①の修正確認）');
+  }
+  {
+    const before = await anon.get('/api/store?store=1&cid=C0007');
+    assert(before.body.customer.infoConfirmed === false, '（前提確認）C0007はこの時点でまだinfo_confirmedがfalse');
+  }
+  {
+    const r = await anon.postJson('/api/customer-registration', {
+      store: '1', customerId: 'C0007', lastName: '岡目', firstName: '彩花', lastKana: 'オカメ', firstKana: 'アヤカ',
+      phone: '090-1234-5678', address: '大分県大分市希望が丘1-1-1'
+    });
+    assert(r.status === 200 && r.body.success === true,
+      '姓名・フリガナ・電話番号・住所をすべて入力すれば本登録が成功する（空欄チェックが厳しすぎて正常系を壊していないことの確認）');
+  }
+  {
+    const after = await anon.get('/api/store?store=1&cid=C0007');
+    assert(after.body.customer.infoConfirmed === true, '必須項目がすべて揃った登録では、登録完了後にinfo_confirmedがtrueになる');
+  }
+  let notifiedReservationId = null;
+  {
+    // ★社長ご指摘④（追加要望）：LINE ID連携済みのお客様（C0006・user_id:'U0006'）が
+    //   即「確定」となる予約を送信した場合、以前はお客様向けレスポンスに通知結果を
+    //   一切含めていなかった（GAS版に倣った設計だったが、社長より「お客様にも通知が
+    //   送られたことが分かるように」とのご指摘を受けて表示するよう変更）。
+    const r = await anon.postJson('/api/reservations', {
+      store: '1', realname: 'x', staffName: '花子', menu: 'メンバーコース(90分)',
+      date: '2026-12-24', time: '18:00', customerId: 'C0006', ownerOverride: true
+    });
+    assert(r.status === 200 && r.body.success === true && r.body.status === '確定', '（前提）キープメンバー＋担当指名ありの予約は確定になる');
+    assert(/📱|⚠️/.test(r.body.message),
+      'LINE連携済みのお客様への確定予約では、予約完了メッセージにLINE通知結果（📱送信済み／⚠️失敗）が含まれる（社長ご指摘④の対応確認）');
+    notifiedReservationId = r.body.reservationId;
+  }
+  {
+    const row = db.prepare('SELECT line_sent FROM reservations WHERE id = ?').get(notifiedReservationId);
+    assert(row.line_sent === 1,
+      '確定予約の作成時、実際の通知結果に応じてreservations.line_sent列が更新される（以前は常に0固定だった不具合の修正確認）');
+  }
+  {
+    // 顧客ID未連携（cid無し）の予約では、そもそもLINE通知自体が発生しないため、
+    // お客様向けメッセージにLINE関連の文言が含まれない（未使用の人に紛らわしい文言を出さない）
+    const r = await anon.postJson('/api/reservations', {
+      store: '1', realname: '通知確認太郎', staffName: '花子', menu: 'x',
+      date: '2026-12-24', time: '19:00'
+    });
+    assert(r.status === 200 && r.body.success === true && !/📱|⚠️|LINE/.test(r.body.message),
+      '顧客ID未連携の予約では、お客様向けメッセージにLINE通知関連の文言が含まれない'
+    );
+  }
+  // ★注記：お客様予約フォーム経由（POST /api/reservations、上のテストで使用）は
+  //   GAS版submitCustomerBooking_body_と同じく、仮予約であってもconfirm_provisional
+  //   テンプレートで即座に通知する（＝作成時点でline_sentが立つ）。「仮予約→確定操作の
+  //   タイミングで初めて通知する」のはスタッフ・オーナーが手動登録する場合のみ
+  //   （二重通知を避けるための設計、47-7参照）。そのため、以下の確認は
+  //   POST /api/staff/reservations・POST /api/admin/reservations（provisional:true）を使う。
+  let notify38ProvisionalIdA = null;
+  {
+    // ★社長ご指摘④の後半：「仮予約→確定」操作（GAS版confirmReservationStatus_body_相当）
+    //   でも、以前は確定操作を行ったスタッフ/オーナーに通知結果が一切表示されていなかった
+    //  （fire-and-forgetで結果を待たずに「予約を確定しました」の固定文言のみ返していた）。
+    // ★C0007を使う（C0008は37章末の1クリックトグルのテストでkeep_memberに変更済みのため、
+    //   ここでは確実に非キープメンバーのままであるC0007を使う）
+    const r = await ownerFresh.postJson('/api/admin/reservations', {
+      realname: 'x', staffName: '未定', menu: 'フェイシャル(60分)',
+      date: '2026-12-25', time: '10:00', customerId: 'C0007', provisional: true
+    });
+    assert(r.status === 200 && r.body.success === true, '（前提）オーナー管理画面から「仮予約として登録」できる');
+    notify38ProvisionalIdA = r.body.reservationId;
+    const row = db.prepare('SELECT status, line_sent FROM reservations WHERE id = ?').get(notify38ProvisionalIdA);
+    assert(row.status === '仮予約' && row.line_sent === 0,
+      '仮予約として登録した時点ではまだ顧客への通知を送っていないため、line_sentは0のまま（二重通知防止の確認）');
+  }
+  {
+    // 仮予約の担当スタッフを設定してから確定操作を行う（未定のままでは確定できない仕様のため）
+    const r0 = await ownerFresh.putJson(`/api/admin/reservations/${notify38ProvisionalIdA}`, {
+      staffName: '花子', menu: 'フェイシャル(60分)', date: '2026-12-25', time: '10:00'
+    });
+    assert(r0.status === 200 && r0.body.success === true, '（準備）確定操作の前に担当スタッフを設定する');
+
+    const r = await ownerFresh.postJson(`/api/admin/reservations/${notify38ProvisionalIdA}/confirm`, {});
+    assert(r.status === 200 && r.body.success === true, 'オーナー管理画面からの仮予約確定操作が成功する');
+    assert(/📱|⚠️|ℹ️/.test(r.body.message),
+      'オーナー管理画面での確定操作の結果メッセージに、お客様へのLINE通知結果が含まれる（GAS版confirmReservationStatus_body_相当・社長ご指摘④の対応確認）');
+
+    const row = db.prepare('SELECT line_sent FROM reservations WHERE id = ?').get(notify38ProvisionalIdA);
+    assert(row.line_sent === 1,
+      '仮予約→確定操作の時点で、この予約について初めて顧客へ通知が送られるため、line_sentがここで1に更新される');
+  }
+  let notify38ProvisionalIdB = null;
+  {
+    // スタッフダッシュボード経由（一般スタッフ、オーナー限定ではない）の確定操作でも
+    // 同様に通知結果が返ることを確認する
+    const r = await ownerFresh.postJson('/api/admin/reservations', {
+      realname: 'x', staffName: '花子', menu: 'フェイシャル(60分)',
+      date: '2026-12-25', time: '11:00', customerId: 'C0007', provisional: true
+    });
+    assert(r.status === 200 && r.body.success === true, '（前提）オーナー管理画面から「仮予約として登録」できる（2件目）');
+    notify38ProvisionalIdB = r.body.reservationId;
+  }
+  {
+    const r = await ownerFresh.postJson(`/api/staff/reservations/${notify38ProvisionalIdB}/confirm`, {});
+    assert(r.status === 200 && r.body.success === true, 'スタッフ用の仮予約確定エンドポイントも成功する');
+    assert(/📱|⚠️|ℹ️/.test(r.body.message),
+      'スタッフ用の確定操作エンドポイントでも、結果メッセージにLINE通知結果が含まれる');
+    const row = db.prepare('SELECT line_sent FROM reservations WHERE id = ?').get(notify38ProvisionalIdB);
+    assert(row.line_sent === 1, 'スタッフ用の確定操作でもline_sentが実際の通知結果で更新される');
+  }
+
+  // --------------------------------------------------------------------------
+  // 39. スタッフ色の保存・サロンダッシュボードの行事表示・スタッフダッシュボードの
+  //     月間シフト表まわり（GAS版staff_dashboard.html / calendar_page.htmlの未移植分）
+  // --------------------------------------------------------------------------
+  console.log('--- 39. スタッフ色・終日行事・月間シフト表・未定予約の表示 ---');
+  const fmt39 = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const plus39 = (n) => { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() + n); return fmt39(d); };
+  {
+    const r = await ownerFresh.get('/api/admin/staff');
+    const byName = {};
+    (r.body.staff || []).forEach((s) => { byName[s.name] = s.color; });
+    assert(byName['寿子'] === 'BLUE' && byName['花子'] === 'RED' && byName['美咲'] === 'GREEN',
+      '既存スタッフの表示色が、これまでの自動割り当てと同じ色でstaff.colorに保存されている（見た目が変わらない）');
+    assert(Array.isArray(r.body.colorOptions) && r.body.colorOptions.length === 13, 'スタッフ管理画面用に選べる色（GAS版と同じ13色）が返る');
+  }
+  let staff39Hanako = null;
+  {
+    const list = await ownerFresh.get('/api/admin/staff');
+    staff39Hanako = list.body.staff.find((s) => s.name === '花子');
+    const bad = await ownerFresh.putJson(`/api/admin/staff/${staff39Hanako.id}`, {
+      name: '花子', nickname: staff39Hanako.nickname, role: staff39Hanako.role, isActive: true, isOwner: false, showInBooking: true, color: 'PINK_NOT_EXIST'
+    });
+    assert(bad.status === 400, '存在しない色名は400エラーになる');
+    const ok = await ownerFresh.putJson(`/api/admin/staff/${staff39Hanako.id}`, {
+      name: '花子', nickname: staff39Hanako.nickname, role: staff39Hanako.role, isActive: true, isOwner: false, showInBooking: true, color: 'MAUVE'
+    });
+    assert(ok.status === 200 && ok.body.success === true, 'オーナーがスタッフの表示色を変更できる');
+    const wk = await ownerFresh.get('/api/staff/calendar/week?start=' + plus39(0));
+    assert(wk.body.data.staffColors['花子'] === 'MAUVE', '変更した色がサロンダッシュボードの色分けにそのまま反映される');
+    assert(wk.body.data.staffColors['寿子'] === 'BLUE', '他のスタッフの色は変わらない（以前の自動割り当てのように全員の色がずれない）');
+    // 色の項目を送らない更新（既存の画面・呼び出し元）では色が保持される
+    await ownerFresh.putJson(`/api/admin/staff/${staff39Hanako.id}`, {
+      name: '花子', nickname: staff39Hanako.nickname, role: staff39Hanako.role, isActive: true, isOwner: false, showInBooking: true
+    });
+    const after = await ownerFresh.get('/api/admin/staff');
+    assert(after.body.staff.find((s) => s.name === '花子').color === 'MAUVE', '色を送らないスタッフ更新では、保存済みの色がそのまま保持される');
+    await ownerFresh.putJson(`/api/admin/staff/${staff39Hanako.id}`, {
+      name: '花子', nickname: staff39Hanako.nickname, role: staff39Hanako.role, isActive: true, isOwner: false, showInBooking: true, color: 'RED'
+    });
+  }
+  {
+    const r = await ownerFresh.postJson('/api/admin/staff', { name: '色テスト新人', pin: '8642' });
+    const used = ['BLUE', 'RED', 'GREEN'];
+    assert(r.status === 200 && r.body.success === true && r.body.color && !used.includes(r.body.color),
+      '色を指定せずにスタッフを新規登録すると、まだ誰も使っていない色が自動で割り当てられる');
+  }
+  {
+    // 終日の行事は allDay:true で返り、時間指定の行事は allDay:false
+    const d = plus39(3);
+    await ownerFresh.postJson('/api/admin/events', { title: '終日テスト祝日', date: d, startTime: '00:00', endTime: '23:59', restrictBooking: false });
+    await ownerFresh.postJson('/api/admin/events', { title: '時間指定テスト', date: d, startTime: '14:00', endTime: '15:00', restrictBooking: true });
+    const wk = await ownerFresh.get('/api/staff/calendar/week?start=' + d);
+    const evs = wk.body.data.events.filter((e) => e.date === d);
+    const allDay = evs.find((e) => e.label === '終日テスト祝日');
+    const timed = evs.find((e) => e.label === '時間指定テスト');
+    assert(allDay && allDay.allDay === true && !allDay.blockStart, '終日の行事はallDay:trueで返る（列全体を覆うブロックではなく上部の帯として描くため）');
+    assert(timed && timed.allDay === false && timed.blockStart && timed.blockEnd, '時間指定の行事はallDay:falseで、予約ブロックの前後時間帯（斜線表示用）も返る');
+    assert(Array.isArray(wk.body.data.legendStaff) && wk.body.data.legendStaff.includes('寿子'), '凡例用の在籍スタッフ一覧が返る');
+  }
+  let undecided39Id = null;
+  {
+    // 担当「未定」の予約は一般スタッフにも見える（GAS版getWeeklyReservationsと同じ）
+    const d = plus39(4);
+    const r = await ownerFresh.postJson('/api/admin/reservations', {
+      realname: '未定表示テスト', staffName: '未定', menu: 'フェイシャル(60分)', date: d, time: '12:00', provisional: true, ownerOverride: true
+    });
+    undecided39Id = r.body.reservationId;
+    const hr = await hanako.get(`/api/staff/reservations?from=${d}&to=${d}`);
+    assert((hr.body.reservations || []).some((x) => x.realname === '未定表示テスト'), '担当が「未定」の予約は一般スタッフの予約一覧にも表示される（誰かが引き受けられるように）');
+    const up = await hanako.get('/api/staff/reservations/upcoming');
+    assert((up.body.reservations || []).some((x) => x.realname === '未定表示テスト'), '「直近の予約」にも担当未定の予約が表示される');
+    const others = (hr.body.reservations || []).filter((x) => x.staff_name !== '花子' && x.staff_name !== '未定');
+    assert(others.length === 0, '一般スタッフには他のスタッフが担当する予約は見えない');
+    const day = await hanako.get('/api/staff/reservations/day?date=' + d);
+    assert((day.body.reservations || []).some((x) => x.realname === '未定表示テスト' && x.end_time === '13:30'), '日別の予約（月間シフト表の詳細）にも未定予約が終了時刻付きで返る');
+  }
+  {
+    // 確定操作で担当スタッフも同時に決める（GAS版confirmReservationStatusのselectedStaffName）
+    const r = await ownerFresh.postJson(`/api/staff/reservations/${undecided39Id}/confirm`, { staffName: '美咲' });
+    const row = db.prepare('SELECT staff_name, status FROM reservations WHERE id = ?').get(undecided39Id);
+    assert(r.status === 200 && r.body.success === true && row.staff_name === '美咲' && row.status === '確定',
+      '担当未定の仮予約でも、確定と同時に担当スタッフを指定すれば確定できる（サロンダッシュボードの編集画面から）');
+  }
+  {
+    // 月間シフト表：一般スタッフは本人分のみ、オーナーは全員分＋色付きスタッフ一覧
+    const month = plus39(0).slice(0, 7);
+    const h = await hanako.get('/api/staff/shifts/monthly?month=' + month);
+    assert(h.status === 200 && h.body.shifts.length > 0 && h.body.shifts.every((s) => s.staffName === '花子'), '一般スタッフの月間シフト表は本人のシフトだけが返る');
+    const o = await ownerFresh.get('/api/staff/shifts/monthly?month=' + month);
+    const names = new Set(o.body.shifts.map((s) => s.staffName));
+    assert(names.has('寿子') && names.has('花子') && names.has('美咲'), 'オーナーの月間シフト表は全員分のシフトが返る');
+    const hk = (o.body.staffList || []).find((s) => s.name === '花子');
+    assert(hk && hk.color && hk.color.startsWith('#'), '月間シフト表のスタッフ一覧に表示色が付いている（サロンダッシュボードと同じ色）');
+    const cnt = await ownerFresh.get(`/api/staff/reservations/monthly?month=${month}&staff=${encodeURIComponent('花子')}`);
+    assert(cnt.body.staffName === '花子' && typeof cnt.body.pendingDates === 'object', 'オーナーは凡例で選んだスタッフの月間予約件数と、店舗全体の仮予約日を取得できる');
+    const hcnt = await hanako.get(`/api/staff/reservations/monthly?month=${month}&staff=${encodeURIComponent('寿子')}`);
+    assert(hcnt.body.staffName === '花子', '一般スタッフは他のスタッフの件数を指定しても本人分しか取得できない');
+  }
+  {
+    // オーナーの代理シフト追加・変更（GAS版addShiftRow/saveWeeklyShiftsのオーナー分岐）
+    const d = plus39(2); // 3日以内でもオーナーは可
+    const add = await ownerFresh.postJson('/api/staff/shifts', { date: d, startTime: '11:00', endTime: '15:00', staffName: '美咲' });
+    const row = db.prepare("SELECT * FROM shift_master WHERE store_id = 1 AND staff_name = '美咲' AND shift_date = ? AND start_time = '11:00'").get(d);
+    assert(add.status === 200 && add.body.success === true && !!row, 'オーナーはスタッフダッシュボードから他のスタッフのシフトを代理で追加できる');
+    const put = await ownerFresh.putJson(`/api/staff/shifts/${row.id}`, { startTime: '11:00', endTime: '16:00' });
+    assert(put.status === 200 && put.body.success === true, 'オーナーは他のスタッフのシフトも変更できる');
+    const hadd = await hanako.postJson('/api/staff/shifts', { date: plus39(20), startTime: '10:00', endTime: '12:00', staffName: '美咲' });
+    const leaked = db.prepare("SELECT 1 FROM shift_master WHERE store_id = 1 AND staff_name = '美咲' AND shift_date = ? AND start_time = '10:00'").get(plus39(20));
+    assert(hadd.status === 200 && !leaked, '一般スタッフがstaffNameを指定しても、他のスタッフのシフトは追加されない（本人分として扱われる）');
+    const hput = await hanako.putJson(`/api/staff/shifts/${row.id}`, { startTime: '10:00', endTime: '16:00' });
+    assert(hput.status === 404, '一般スタッフは他のスタッフのシフトを変更できない');
+    const chk = await ownerFresh.get(`/api/staff/shifts/booking-check?staffName=${encodeURIComponent('花子')}&date=${plus39(4)}`);
+    assert(chk.status === 200 && typeof chk.body.hasBooking === 'boolean', 'シフト削除前の予約確認（GAS版checkShiftBooking相当）が使える');
+    const ownerWeek = await ownerFresh.get(`/api/staff/shifts?from=${plus39(0)}&to=${plus39(6)}`);
+    const wn = new Set((ownerWeek.body.shifts || []).map((s) => s.staff_name));
+    assert(wn.size >= 2 && Array.isArray(ownerWeek.body.staffList), 'オーナーの週間シフトは全員分が返る（一般スタッフは従来どおり本人分のみ）');
   }
 
   // --------------------------------------------------------------------------

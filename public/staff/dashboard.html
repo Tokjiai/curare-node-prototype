@@ -7,14 +7,18 @@
 <style>
   /* ============================================================
      GAS版 staff_dashboard.html（📋予約確認・📅シフト管理の2タブ構成）の
-     Node移植版。GAS版は独自のグラデーション配色だったが、他の管理画面
-     （owner_ui.html移植分）と使用感を揃えるため、既存のクリーム＋セージ
-     配色トークンに合わせてある（色以外の構成・タブ分けはGAS版を踏襲）。
+     Node移植版。配色は他の管理画面と揃えたクリーム＋セージ＋ローズ。
+     ★2026-09-23：GAS版の「月間シフト表」（スタッフ毎の色分け・凡例から
+     スタッフ別に絞り込む抽出・出勤人数・仮予約アラート・日付タップの詳細）、
+     日ごとのシフトカード（🔒3日以内の表示・＋追加ボタン・過去日を隠す）、
+     担当「未定」予約の表示、30秒ごとのログイン確認を移植（README章50）。
+     週の始まりは他のNode版画面と同じく月曜のまま。
      ============================================================ */
   :root{
     --bg:#F5F4EF; --panel:#ffffff; --ink:#2B2B27; --ink-soft:#75746C; --ink-faint:#A9A79C;
     --line:#E4E2D9; --accent:#3D6B5C; --accent-soft:#E7EFE9; --warn:#B3542E; --warn-soft:#F7E9E2;
-    --rose:#d4a5a5; --rose-dark:#c99aa4;
+    --rose:#d4a5a5; --rose-dark:#c99aa4; --rose-soft:#f3e0e0;
+    --pending:#c67c00; --pending-soft:#fff8e1;
     --radius:14px;
   }
   *{box-sizing:border-box; margin:0; padding:0; font-family:'Hiragino Sans','Yu Gothic',sans-serif;}
@@ -22,74 +26,126 @@
   .shell{display:none; min-height:100vh;}
   .shell.ready{display:block;}
 
-  .header{background:linear-gradient(135deg, var(--rose) 0%, var(--rose-dark) 100%); color:#fff; padding:18px 20px;}
-  .header-top{display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;}
+  .header{background:linear-gradient(135deg, var(--rose) 0%, var(--rose-dark) 100%); color:#fff; padding:16px 18px;}
+  .header-top{display:flex; justify-content:space-between; align-items:center; gap:10px;}
   .header-top h1{font-size:17px; font-weight:700;}
   .header-user{font-size:12.5px; text-align:right; line-height:1.5;}
-  .header-sub{font-size:12px; opacity:0.9;}
+  .header-user a{color:#fff; font-size:11.5px;}
+  .header-sub{font-size:12px; opacity:0.9; margin-top:2px;}
   .proto-badge{display:inline-block; font-size:10px; font-weight:700; background:rgba(255,255,255,0.25); border-radius:6px; padding:2px 7px; margin-left:6px;}
+  .header-links{display:flex; gap:8px; margin-top:10px; flex-wrap:wrap;}
+  .header-links a, .header-links button{flex:1; min-width:120px; display:block; background:rgba(255,255,255,0.2); border:1px solid rgba(255,255,255,0.35); color:#fff; border-radius:8px; padding:9px 10px; font-size:12.5px; font-weight:600; text-align:center; text-decoration:none; cursor:pointer; font-family:inherit;}
+  .header-links .refresh{flex:0 0 auto; min-width:0; font-size:16px; padding:6px 12px;}
 
   .tabs{display:flex; background:#fff; border-bottom:1px solid var(--line); position:sticky; top:0; z-index:5;}
   .tab{flex:1; padding:13px; background:none; border:none; cursor:pointer; font-family:inherit; font-size:13.5px; font-weight:600; color:var(--ink-soft);}
   .tab.active{color:var(--rose-dark); border-bottom:3px solid var(--rose-dark);}
 
-  .main{padding:18px 16px; max-width:720px; margin:0 auto;}
+  .main{padding:16px 14px; max-width:760px; margin:0 auto;}
   .tab-content{display:none;}
   .tab-content.active{display:block;}
 
-  .week-nav{display:flex; align-items:center; justify-content:space-between; margin-bottom:14px;}
-  .week-nav button{padding:8px 14px; border:1px solid var(--line); border-radius:9px; background:#fff; cursor:pointer; font-family:inherit; font-size:12.5px; color:var(--accent); font-weight:600;}
-  .week-nav .label{font-size:13.5px; font-weight:700;}
+  .status-message{display:none; padding:11px; border-radius:9px; margin-bottom:12px; font-size:13px; font-weight:600; text-align:center; white-space:pre-line;}
+  .status-message.success{display:block; background:#d4edda; color:#155724;}
+  .status-message.error{display:block; background:#f8d7da; color:#721c24;}
 
-  .day-block{margin-bottom:14px;}
-  .day-block .day-label{font-size:12px; font-weight:700; color:var(--ink-soft); margin-bottom:6px; padding-left:2px;}
-  .day-block .day-label.today{color:var(--rose-dark);}
-  .day-block .day-label .dow-sun{color:#C0392B;} .day-block .day-label .dow-sat{color:#2980B9;}
+  .week-nav{display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; gap:8px;}
+  .week-nav button{padding:8px 14px; border:1px solid var(--line); border-radius:9px; background:#fff; cursor:pointer; font-family:inherit; font-size:12.5px; color:var(--rose-dark); font-weight:700;}
+  .week-nav .label{font-size:13.5px; font-weight:700; text-align:center;}
 
-  .card{background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px 14px; margin-bottom:8px;}
+  .section-title{font-size:13px; font-weight:700; color:var(--ink-soft); margin:2px 0 8px;}
+  .day-sep{font-size:12.5px; font-weight:700; color:var(--rose-dark); padding:8px 0 5px; border-bottom:1px dashed var(--line); margin-bottom:7px;}
+  .day-sep.today{color:var(--accent);}
+  .dow-sun{color:#C0392B;} .dow-sat{color:#2980B9;}
+
+  .card{background:var(--panel); border:1px solid var(--line); border-left:3px solid var(--rose); border-radius:10px; padding:10px 12px; margin-bottom:8px;}
   .card.cancelled{opacity:0.55;}
-  .card .row1{display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;}
-  .card .time{font-size:14px; font-weight:700; color:var(--accent);}
-  .card .menu{font-size:12px; color:var(--ink-soft);}
-  .card .customer{font-size:13.5px; font-weight:600;}
-  .card .badge-cancel{font-size:10.5px; color:var(--warn); background:var(--warn-soft); border-radius:6px; padding:2px 6px; font-weight:700;}
-  .card .note{font-size:11.5px; color:var(--ink-faint); margin-top:4px;}
-  .card .confirm-btn{margin-top:8px; padding:6px 12px; border:none; border-radius:8px; background:var(--accent); color:#fff; font-family:inherit; font-size:12px; font-weight:700; cursor:pointer;}
+  .card.pending{border-left-color:#ffab00; background:#fffbea;}
+  .card .row1{display:flex; justify-content:space-between; align-items:center; gap:8px;}
+  .card .name{font-size:15px; font-weight:700;}
+  .card .time{font-size:13.5px; font-weight:600; color:var(--ink-soft);}
+  .card .row2{display:flex; gap:10px; flex-wrap:wrap; margin-top:3px; font-size:12.5px; color:var(--ink-soft);}
+  .card .note{font-size:11.5px; color:var(--ink-faint); margin-top:3px;}
+  .badge{font-size:10.5px; border-radius:6px; padding:2px 6px; font-weight:700;}
+  .badge.cancel{color:var(--warn); background:var(--warn-soft);}
+  .badge.pend{color:var(--pending); background:#ffecb3;}
+  .badge.undecided{color:#555; background:#eee;}
+  .confirm-btn{padding:7px 14px; border:none; border-radius:8px; background:linear-gradient(135deg,#ffb300,#ff8f00); color:#fff; font-family:inherit; font-size:12.5px; font-weight:700; cursor:pointer; white-space:nowrap;}
 
-  .shift-card{background:var(--accent-soft); color:var(--accent); border-radius:10px; padding:10px 14px; font-size:13.5px; font-weight:700; margin-bottom:8px;}
+  /* シフト管理 */
+  .shift-head{display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; padding-bottom:8px; border-bottom:2px solid var(--rose);}
+  .shift-head .ttl{font-size:15px; font-weight:700;}
+  .view-tog{display:flex; border:1px solid #e0d5d5; border-radius:9px; overflow:hidden;}
+  .view-tog button{padding:8px 20px; font-size:14px; font-weight:700; border:none; cursor:pointer; background:#faf8f6; color:#999; font-family:inherit;}
+  .view-tog button.on{background:var(--rose); color:#fff;}
 
-  .cal-grid{display:grid; grid-template-columns:repeat(7,1fr); gap:5px;}
-  .cal-dow{font-size:11px; font-weight:700; color:var(--ink-soft); text-align:center; padding-bottom:4px;}
-  .cal-dow.dow-sun{color:#C0392B;} .cal-dow.dow-sat{color:#2980B9;}
-  .cal-cell{position:relative; aspect-ratio:1/1; border:1px solid var(--line); border-radius:9px; background:#fff; padding:4px; cursor:pointer; display:flex; flex-direction:column; align-items:center; justify-content:flex-start;}
-  .cal-cell.blank{visibility:hidden; cursor:default;}
-  .cal-cell.today{border-color:var(--rose-dark); border-width:2px;}
-  .cal-cell .num{font-size:12px; font-weight:700;}
-  .cal-cell .num.dow-sun{color:#C0392B;} .cal-cell .num.dow-sat{color:#2980B9;}
-  .cal-cell .cnt{margin-top:3px; font-size:10.5px; font-weight:700; color:#fff; background:var(--accent); border-radius:8px; padding:1px 6px; min-width:16px; text-align:center;}
-  .cal-cell .pending-dot{position:absolute; top:3px; right:5px; width:7px; height:7px; border-radius:50%; background:var(--warn);}
+  .day-card{background:#faf8f6; padding:12px; border-radius:10px; margin-bottom:12px; border-left:3px solid var(--rose);}
+  .day-card .day-header{font-size:13.5px; font-weight:700; margin-bottom:8px;}
+  .shift-row{background:#fff; padding:9px 11px; border-radius:8px; margin-bottom:7px; display:flex; align-items:center; gap:8px;}
+  .shift-row .who{font-size:12px; font-weight:700; margin-bottom:2px;}
+  .shift-row .hrs{font-size:14px; font-weight:700;}
+  .shift-row .lock{font-size:10px; color:#bbb; margin-left:6px; font-weight:400;}
+  .shift-row .edit-btn{margin-left:auto; font-size:11.5px; padding:5px 10px; border:1px solid var(--rose); border-radius:7px; background:#fff; color:var(--rose-dark); cursor:pointer; font-family:inherit; white-space:nowrap;}
+  .no-shift{padding:6px; font-size:12px; color:#bbb; text-align:center;}
+  .btn-add{width:100%; margin-top:4px; padding:9px; background:#fff; border:1px dashed var(--rose-dark); border-radius:8px; color:var(--rose-dark); font-size:12.5px; cursor:pointer; font-weight:700; font-family:inherit;}
+
+  .mo-legend-focus{display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px;}
+  .mo-legend-focus button{display:flex; align-items:center; gap:5px; font-size:11.5px; color:#666; font-weight:600; border:1px solid #e8e5e0; background:#faf8f6; border-radius:999px; padding:5px 10px 5px 7px; cursor:pointer; font-family:inherit;}
+  .mo-legend-focus button.active{background:var(--rose); color:#fff; border-color:var(--rose);}
+  .mo-legend-focus .d{width:9px; height:9px; border-radius:50%;}
+  .mo-hint{font-size:11px; color:var(--ink-faint); margin-bottom:8px;}
+  .mo-back-row{display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;}
+  .mo-back-row .who{font-size:13.5px; font-weight:700;}
+  .mo-back-row button{font-size:11.5px; color:#777; background:#faf8f6; border:1px solid #e8e5e0; border-radius:7px; padding:5px 10px; cursor:pointer; font-weight:600; font-family:inherit;}
+  .mo-head{display:grid; grid-template-columns:repeat(7,1fr); margin-bottom:5px;}
+  .mo-head div{text-align:center; font-size:10.5px; color:#999; font-weight:700;}
+  .mo-body{display:grid; grid-template-columns:repeat(7,1fr); gap:4px;}
+  .mo-day{min-height:64px; border-radius:7px; background:#faf8f6; border:1px solid #e8e5e0; padding:4px 3px; cursor:pointer; position:relative; overflow:hidden;}
+  .mo-day.blank{visibility:hidden; cursor:default;}
+  .mo-day.today{background:var(--rose);}
+  .mo-day .dnum{font-size:10.5px; font-weight:700; color:#666;}
+  .mo-day.today .dnum{color:#fff;}
+  .mo-day .pill{margin-top:3px; font-size:9.5px; font-weight:700; border-radius:4px; padding:2px 3px; background:var(--rose-soft); color:#a85d5d; line-height:1.2; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .mo-day.today .pill{background:rgba(255,255,255,0.35); color:#fff;}
+  .mo-day .pill.off{background:transparent; color:#c9c5c0; font-weight:500;}
+  .mo-day .res-count{margin-top:2px; font-size:9px; font-weight:700; color:#c99050;}
+  .mo-day .res-count.pending{color:var(--pending); font-weight:800;}
+  .mo-day.today .res-count{color:rgba(255,255,255,0.95);}
+  .mo-day .dots{display:flex; flex-wrap:wrap; gap:2px; margin-top:4px;}
+  .mo-day .dots .d{width:7px; height:7px; border-radius:50%;}
+  .mo-day .cnt{position:absolute; top:3px; right:4px; font-size:9px; font-weight:700; color:#b09a9a;}
+  .mo-day.today .cnt{color:rgba(255,255,255,0.9);}
+  .mo-day.pending-alert{box-shadow:inset 0 0 0 2px #ffab00;}
+  .mo-day.pending-alert:not(.today){background:var(--pending-soft);}
 
   .empty{color:var(--ink-faint); font-size:12.5px; text-align:center; padding:18px 0;}
   #loadingMsg{text-align:center; color:var(--ink-soft); font-size:13px; padding:60px 0;}
-  .footer-nav{text-align:center; padding:18px 0 30px;}
-  .footer-nav a{font-size:12px; color:var(--ink-soft); text-decoration:none;}
 
-  .section-title{font-size:13px; font-weight:700; color:var(--ink-soft); margin:2px 0 8px;}
-  .shift-add-btn{width:100%; padding:10px; border:1px dashed var(--rose-dark); border-radius:10px; background:#fff; color:var(--rose-dark); font-weight:700; font-size:13px; cursor:pointer; margin-bottom:14px;}
-  .shift-card{cursor:pointer;}
-  .modal-overlay{display:none; position:fixed; inset:0; background:rgba(0,0,0,0.4); z-index:50; align-items:center; justify-content:center; padding:16px;}
+  .modal-overlay{display:none; position:fixed; inset:0; background:rgba(0,0,0,0.42); z-index:50; align-items:center; justify-content:center; padding:16px;}
   .modal-overlay.open{display:flex;}
-  .modal-box{background:#fff; border-radius:14px; padding:18px; width:100%; max-width:340px;}
-  .modal-title{font-size:15px; font-weight:700; margin-bottom:14px;}
-  .modal-field{margin-bottom:12px;}
+  .modal-box{background:#fff; border-radius:14px; padding:18px; width:100%; max-width:380px; max-height:88vh; overflow-y:auto;}
+  .modal-title{font-size:15px; font-weight:700; margin-bottom:12px; padding-bottom:7px; border-bottom:2px solid var(--rose);}
+  .modal-field{margin-bottom:11px;}
   .modal-label{font-size:12px; color:var(--ink-soft); margin-bottom:4px; font-weight:600;}
-  .modal-field input{width:100%; padding:9px 10px; border:1px solid var(--line); border-radius:8px; font-family:inherit; font-size:13.5px;}
-  .modal-msg{font-size:12px; color:var(--warn); margin-bottom:8px; min-height:14px;}
-  .modal-actions{display:flex; gap:8px; margin-top:14px;}
+  .modal-field input, .modal-field select{width:100%; padding:9px 10px; border:1px solid var(--line); border-radius:8px; font-family:inherit; font-size:13.5px;}
+  .modal-date{font-size:14px; font-weight:700; color:var(--rose-dark);}
+  .modal-msg{font-size:12px; color:var(--warn); margin-bottom:8px; min-height:14px; white-space:pre-line;}
+  .modal-info{background:#faf8f6; border-radius:8px; padding:9px 11px; margin-bottom:11px; font-size:13px; color:#555; line-height:1.6;}
+  .modal-actions{display:flex; gap:8px; margin-top:12px;}
   .modal-btn{flex:1; padding:10px; border-radius:9px; border:none; font-weight:700; font-size:13px; cursor:pointer; font-family:inherit;}
   .modal-btn-cancel{background:#f0efe9; color:var(--ink-soft);}
-  .modal-btn-ok{background:var(--rose-dark); color:#fff;}
-  .modal-btn-delete{width:100%; margin-top:10px; padding:10px; background:var(--warn-soft); color:var(--warn); border:1px solid #e9b3b3; border-radius:9px; font-weight:700; font-size:13px; cursor:pointer; font-family:inherit;}
+  .modal-btn-ok{background:linear-gradient(135deg, var(--rose) 0%, var(--rose-dark) 100%); color:#fff;}
+  .modal-btn-delete{width:100%; margin-top:10px; padding:10px; background:#fff0f0; color:#c0392b; border:1px solid #e9b3b3; border-radius:9px; font-weight:700; font-size:13px; cursor:pointer; font-family:inherit;}
+  .md-item{background:#faf8f6; border-radius:8px; padding:9px 11px; margin-bottom:7px; border-left:3px solid var(--rose);}
+  .md-item.pending{border-left-color:#ffab00; background:#fffbea;}
+  .md-item .nm{font-size:14px; font-weight:700; margin-bottom:2px;}
+  .md-item .inf{font-size:12.5px; color:#666;}
+  .md-item .btns{margin-top:6px; display:flex; gap:6px;}
+  .md-item .btns button{padding:6px 12px; font-size:12px; border-radius:7px; cursor:pointer; font-family:inherit; font-weight:700;}
+  .md-staffrow{display:flex; align-items:center; justify-content:space-between; gap:8px;}
+  .md-sec{margin-top:12px; padding-top:9px; border-top:1px dashed #eee; font-size:12px; color:#999; font-weight:700; margin-bottom:6px;}
+  .small-btn{background:#f0efe9; color:var(--ink-soft); border:1px solid var(--line);}
+  .ok-btn{background:linear-gradient(135deg,#ffb300,#ff8f00); color:#fff; border:none;}
 </style>
 </head>
 <body>
@@ -98,26 +154,33 @@
   <div class="shell" id="shell">
     <div class="header">
       <div class="header-top">
-        <h1>🧑‍🤝‍🧑 スタッフダッシュボード<span class="proto-badge">PROTOTYPE</span></h1>
+        <h1>📊 スタッフダッシュボード<span class="proto-badge">PROTOTYPE</span></h1>
         <div class="header-user">
           <div id="headerStaffName"></div>
+          <a href="#" id="logoutLink">ログアウト</a>
         </div>
       </div>
       <div class="header-sub" id="headerStoreName"></div>
-      <a href="/staff/calendar.html" style="display:inline-block; margin-top:8px; font-size:12px; color:#fff; background:rgba(255,255,255,0.22); border-radius:8px; padding:6px 11px; text-decoration:none;">🛏️ サロンダッシュボード（店舗全体のカレンダー）へ →</a>
+      <div class="header-links">
+        <a href="/staff/calendar.html">🗓️ サロンダッシュボード</a>
+        <a href="/admin/customers-view.html" id="customerViewLink" style="display:none;">👤 顧客マスタ（閲覧）</a>
+        <button type="button" class="refresh" id="refreshBtn" title="最新の情報に更新">🔄</button>
+      </div>
     </div>
 
     <div class="tabs">
-      <button class="tab active" id="tabResBtn" type="button">📋 予約確認</button>
-      <button class="tab" id="tabShiftBtn" type="button">📅 シフト管理</button>
-      <button class="tab" id="tabCalBtn" type="button">📆 月間カレンダー</button>
+      <button class="tab" id="tabResBtn" type="button">📋 予約確認</button>
+      <button class="tab active" id="tabShiftBtn" type="button">📅 シフト管理</button>
     </div>
 
     <div class="main">
-      <div class="tab-content active" id="tabRes">
-        <div class="section-title">📋 直近の予約</div>
+      <div id="statusMessage" class="status-message"></div>
+
+      <div class="tab-content" id="tabRes">
+        <div class="section-title" id="upcomingTitle">📋 直近の予約</div>
         <div id="upcomingList" style="margin-bottom:18px;"></div>
 
+        <div class="section-title">📅 週ごとの予約</div>
         <div class="week-nav">
           <button id="resPrevBtn" type="button">← 前週</button>
           <div class="label" id="resWeekLabel"></div>
@@ -126,47 +189,49 @@
         <div id="resList"></div>
       </div>
 
-      <div class="tab-content" id="tabShift">
-        <button class="shift-add-btn" id="shiftAddOpenBtn" type="button">＋ シフトを追加</button>
-        <div class="week-nav">
-          <button id="shiftPrevBtn" type="button">← 前週</button>
-          <div class="label" id="shiftWeekLabel"></div>
-          <button id="shiftNextBtn" type="button">次週 →</button>
+      <div class="tab-content active" id="tabShift">
+        <div class="shift-head">
+          <div class="ttl">📅 <span id="shiftCardTitle">月間シフト</span></div>
+          <div class="view-tog">
+            <button id="shiftViewWeekBtn" type="button">週</button>
+            <button id="shiftViewMonthBtn" type="button" class="on">月</button>
+          </div>
         </div>
-        <div id="shiftList"></div>
-      </div>
 
-      <div class="tab-content" id="tabCal">
-        <div class="week-nav">
-          <button id="calPrevBtn" type="button">← 前月</button>
-          <div class="label" id="calMonthLabel"></div>
-          <button id="calNextBtn" type="button">次月 →</button>
+        <div id="weekShiftPane" style="display:none;">
+          <div class="week-nav">
+            <button id="shiftPrevBtn" type="button">← 前週</button>
+            <div class="label" id="shiftWeekLabel"></div>
+            <button id="shiftNextBtn" type="button">次週 →</button>
+          </div>
+          <div id="shiftList"></div>
         </div>
-        <div class="cal-grid" id="calGrid"></div>
-        <div class="empty" style="margin-top:10px;">日付をタップすると📋予約確認タブでその週を表示します</div>
-      </div>
 
-      <div class="footer-nav"><a href="#" id="logoutLink">🚪 ログアウト</a></div>
+        <div id="monthShiftPane">
+          <div class="week-nav">
+            <button id="monthPrevBtn" type="button">← 前月</button>
+            <div class="label" id="monthLabel"></div>
+            <button id="monthNextBtn" type="button">次月 →</button>
+          </div>
+          <div id="monthLegend"></div>
+          <div id="monthGrid"></div>
+        </div>
+      </div>
     </div>
   </div>
 
-  <!-- ＋ シフトを追加 モーダル -->
+  <!-- ＋ シフトを追加 -->
   <div class="modal-overlay" id="shiftAddModal">
     <div class="modal-box">
-      <div class="modal-title">＋ シフトを追加</div>
+      <div class="modal-title">➕ シフトを追加</div>
       <div class="modal-msg" id="shiftAddMsg"></div>
-      <div class="modal-field">
-        <div class="modal-label">日付</div>
-        <input type="date" id="addDate">
+      <div class="modal-field"><div class="modal-label">日付</div><div class="modal-date" id="addDateLabel"></div></div>
+      <div class="modal-field" id="addStaffWrap" style="display:none;">
+        <div class="modal-label">スタッフ</div>
+        <select id="addStaff"></select>
       </div>
-      <div class="modal-field">
-        <div class="modal-label">開始時間</div>
-        <input type="time" id="addStart" value="10:00">
-      </div>
-      <div class="modal-field">
-        <div class="modal-label">終了時間</div>
-        <input type="time" id="addEnd" value="19:00">
-      </div>
+      <div class="modal-field"><div class="modal-label">開始時間</div><input type="time" id="addStart" value="10:00"></div>
+      <div class="modal-field"><div class="modal-label">終了時間</div><input type="time" id="addEnd" value="19:00"></div>
       <div class="modal-actions">
         <button class="modal-btn modal-btn-cancel" id="shiftAddCancelBtn" type="button">キャンセル</button>
         <button class="modal-btn modal-btn-ok" id="shiftAddSaveBtn" type="button">追加する</button>
@@ -174,22 +239,14 @@
     </div>
   </div>
 
-  <!-- ✏️ シフトを変更 モーダル -->
+  <!-- ✏️ シフトを変更 -->
   <div class="modal-overlay" id="shiftEditModal">
     <div class="modal-box">
       <div class="modal-title">✏️ シフトを変更</div>
       <div class="modal-msg" id="shiftEditMsg"></div>
-      <div class="modal-field">
-        <div class="modal-label" id="shiftEditDateLabel"></div>
-      </div>
-      <div class="modal-field">
-        <div class="modal-label">開始時間</div>
-        <input type="time" id="editStart">
-      </div>
-      <div class="modal-field">
-        <div class="modal-label">終了時間</div>
-        <input type="time" id="editEnd">
-      </div>
+      <div class="modal-info" id="shiftEditInfo"></div>
+      <div class="modal-field"><div class="modal-label">開始時間</div><input type="time" id="editStart"></div>
+      <div class="modal-field"><div class="modal-label">終了時間</div><input type="time" id="editEnd"></div>
       <div class="modal-actions">
         <button class="modal-btn modal-btn-cancel" id="shiftEditCancelBtn" type="button">キャンセル</button>
         <button class="modal-btn modal-btn-ok" id="shiftEditSaveBtn" type="button">保存する</button>
@@ -198,356 +255,528 @@
     </div>
   </div>
 
+  <!-- 月表示：日付タップの詳細 -->
+  <div class="modal-overlay" id="monthDayModal">
+    <div class="modal-box">
+      <div class="modal-title" id="monthDayTitle">📅 詳細</div>
+      <div id="monthDayBody"></div>
+      <div class="modal-actions"><button class="modal-btn modal-btn-ok" id="monthDayCloseBtn" type="button">閉じる</button></div>
+    </div>
+  </div>
+
 <script>
 (function(){
   const loadingMsg = document.getElementById('loadingMsg');
   const shell = document.getElementById('shell');
+  const LOCK_DAYS = 3; // GAS版と同じ「3日以内は一般スタッフが変更できない」ルール
+  let ME = null;
   let resWeekStart = startOfWeek(new Date());
   let shiftWeekStart = startOfWeek(new Date());
-  let calMonth = new Date(); calMonth.setDate(1); calMonth.setHours(0,0,0,0);
+  let monthDate = new Date(); monthDate.setDate(1); monthDate.setHours(0,0,0,0);
+  let shiftView = 'month';
+  let ownerFocus = null;        // オーナーが凡例で選んだスタッフ（null＝全員表示）
+  let monthData = null;         // { shifts, staffList, counts, pendingDates }
+  let staffColorByName = {};
 
-  function startOfWeek(d) {
-    const x = new Date(d); x.setHours(0,0,0,0);
-    const dow = (x.getDay() + 6) % 7; // 0=月曜始まり
-    x.setDate(x.getDate() - dow);
-    return x;
-  }
-  function fmt(d) {
-    const y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,'0'), day = String(d.getDate()).padStart(2,'0');
-    return `${y}-${m}-${day}`;
-  }
+  function startOfWeek(d) { const x = new Date(d); x.setHours(0,0,0,0); x.setDate(x.getDate() - (x.getDay() + 6) % 7); return x; }
+  function pad2(n) { return String(n).padStart(2,'0'); }
+  function fmt(d) { return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`; }
   function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate()+n); return x; }
-  const DOW_LABELS = ['月','火','水','木','金','土','日'];
-  function dowClass(jsDay) { return jsDay === 0 ? 'dow-sun' : (jsDay === 6 ? 'dow-sat' : ''); }
+  function parseDate(s) { return new Date(s + 'T00:00:00'); }
+  const DOW = ['日','月','火','水','木','金','土'];
+  function dowCls(jsDay) { return jsDay === 0 ? 'dow-sun' : (jsDay === 6 ? 'dow-sat' : ''); }
+  function jpDate(s) { const d = parseDate(s); return `${d.getMonth()+1}月${d.getDate()}日（<span class="${dowCls(d.getDay())}">${DOW[d.getDay()]}</span>）`; }
+  function jpDatePlain(s) { const d = parseDate(s); return `${d.getMonth()+1}月${d.getDate()}日（${DOW[d.getDay()]}）`; }
+  function todayDate() { const t = new Date(); t.setHours(0,0,0,0); return t; }
   function todayStr() { return fmt(new Date()); }
-
-  async function staffFetch(url) {
-    const res = await fetch(url);
-    if (res.status === 401) throw new Error('UNAUTHORIZED');
-    if (!res.ok) throw new Error('サーバーエラー: ' + res.status);
-    return res.json();
+  function endTime(t) { const [h, m] = String(t).split(':').map(Number); const x = h * 60 + (m || 0) + 90; return `${pad2(Math.floor(x/60))}:${pad2(x%60)}`; }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+  function colorOf(name) { return staffColorByName[name] || '#9E9E9E'; }
+  // 一般スタッフは3日以内のシフトを変更できない（オーナーは制限なし）
+  function canEditShift(staffName, dateStr) {
+    if (ME.isOwner) return true;
+    if (staffName !== ME.name) return false;
+    const limit = addDays(todayDate(), LOCK_DAYS);
+    return parseDate(dateStr) >= limit;
   }
 
-  async function staffPost(url) {
-    const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
-    if (res.status === 401) throw new Error('UNAUTHORIZED');
+  async function api(url, opts) {
+    const res = await fetch(url, opts);
+    if (res.status === 401) { showLoggedOutOverlay(); throw new Error('UNAUTHORIZED'); }
     const data = await res.json().catch(() => ({}));
-    if (!res.ok || data.success === false) throw new Error(data.message || 'サーバーエラー: ' + res.status);
+    if (!res.ok && data.success === undefined) throw new Error(data.message || data.error || ('サーバーエラー: ' + res.status));
     return data;
   }
+  function jsonOpts(method, body) { return { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) }; }
 
-  // ---- 仮予約→確定（GAS版staff_dashboard.htmlのconfirmReservation相当。
-  //      オーナー限定の分岐は無く、ログイン中のスタッフなら誰でも確定できる） ----
-  async function confirmReservation(id, name) {
-    if (!window.confirm(`${name}さんの予約を確定しますか？`)) return;
-    try {
-      await staffPost(`/api/staff/reservations/${id}/confirm`);
-      await Promise.all([loadUpcoming(), loadReservations(), loadCalendar()]);
-    } catch (e) {
-      alert(e.message === 'UNAUTHORIZED' ? 'セッションが切れました。再度ログインしてください' : ('確定に失敗しました：' + e.message));
-    }
+  // ★GAS版showStatus相当：成功は3秒で消し、エラーは残す
+  let statusTimer = null;
+  function showStatus(message, type) {
+    const el = document.getElementById('statusMessage');
+    el.textContent = message;
+    el.className = 'status-message ' + type;
+    clearTimeout(statusTimer);
+    if (type === 'success') statusTimer = setTimeout(() => { el.className = 'status-message'; }, 3000);
+    else el.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
 
+  // ================= 初期化 =================
   async function init() {
     try {
-      const me = await staffFetch('/api/auth/me');
-      document.getElementById('headerStaffName').textContent = me.staff.name + (me.staff.isOwner ? '（オーナー）' : '');
-      const storeData = await staffFetch('/api/store');
+      const me = await api('/api/auth/me');
+      ME = me.staff;
+      document.getElementById('headerStaffName').textContent = ME.name + (ME.isOwner ? '（オーナー）' : '');
+      if (ME.isOwner) document.getElementById('customerViewLink').style.display = '';
+      const storeData = await api('/api/store');
       document.getElementById('headerStoreName').textContent = storeData.store.name;
-      await loadUpcoming();
-      await loadReservations();
-      await loadShifts();
-      await loadCalendar();
+      document.getElementById('upcomingTitle').textContent = ME.isOwner ? '📋 直近の予約（全員分）' : '📋 直近の予約（自分の担当＋担当未定）';
+      // ★GAS版と同じく、ログイン直後は「シフト管理・月表示」を初期画面にする
+      await Promise.all([loadUpcoming(), loadReservations(), loadWeekShifts(), loadMonth()]);
       loadingMsg.style.display = 'none';
       shell.classList.add('ready');
     } catch (e) {
-      // ★他の管理画面と同じく、セッション切れ時は元居たこのページへ戻れるよう
-      //   next パラメータを付ける
       window.location.href = '/admin/login.html?next=' + encodeURIComponent(window.location.pathname);
     }
   }
 
-  // ---- 📋 直近の予約（GAS版dashboard_functions.gs getUpcomingReservationsの移植） ----
+  async function refreshAll() {
+    await Promise.all([loadUpcoming(), loadReservations(), loadWeekShifts(), loadMonth()]);
+  }
+
+  // ================= 予約カード =================
+  function reservationCard(r) {
+    const cancelled = r.realname === 'キャンセル';
+    const pending = !cancelled && r.status === '仮予約';
+    const card = document.createElement('div');
+    card.className = 'card' + (cancelled ? ' cancelled' : '') + (pending ? ' pending' : '');
+    const staffLabel = r.staff_name === '未定' ? '<span class="badge undecided">担当未定</span>' : '👤 ' + esc(r.staff_name);
+    card.innerHTML = `
+      <div class="row1">
+        <div><span class="name">${esc(cancelled ? (r.kana || '（顧客名不明）') : r.realname)}</span>
+          <span class="time">⏱ ${esc(r.reservation_time)}〜${endTime(r.reservation_time)}</span></div>
+        ${cancelled ? '<span class="badge cancel">キャンセル</span>' : ''}
+        ${pending ? '<button type="button" class="confirm-btn">仮予約 → 確定する</button>' : ''}
+      </div>
+      <div class="row2"><span>📋 ${esc(r.menu || '-')}</span><span>${staffLabel}</span></div>
+      ${r.note ? `<div class="note">📝 ${esc(r.note)}</div>` : ''}
+    `;
+    if (pending) card.querySelector('.confirm-btn').addEventListener('click', () => confirmReservation(r.id, r.realname, r.staff_name));
+    return card;
+  }
+
+  // ---- 仮予約→確定（GAS版confirmReservation相当。誰でも確定できる。担当未定のままでは確定不可） ----
+  async function confirmReservation(id, name, staffName) {
+    if (staffName === '未定') {
+      showStatus('❌ 担当スタッフが未定のため確定できません。サロンダッシュボードで担当を決めてから確定してください', 'error');
+      return;
+    }
+    if (!window.confirm(`${name}さんの予約を確定しますか？`)) return;
+    try {
+      const data = await api(`/api/staff/reservations/${id}/confirm`, jsonOpts('POST'));
+      if (!data.success) { showStatus('❌ ' + (data.message || '確定に失敗しました'), 'error'); return; }
+      showStatus(data.message || '✅ 予約を確定しました', 'success');
+      await refreshAll();
+    } catch (e) {
+      if (e.message !== 'UNAUTHORIZED') showStatus('❌ 確定に失敗しました：' + e.message, 'error');
+    }
+  }
+
+  // ---- 📋 直近の予約（GAS版getUpcomingReservations。日付ごとに区切って表示） ----
   async function loadUpcoming() {
     const el = document.getElementById('upcomingList');
     try {
-      const data = await staffFetch('/api/staff/reservations/upcoming');
+      const data = await api('/api/staff/reservations/upcoming');
       const rows = data.reservations || [];
-      if (rows.length === 0) {
-        el.innerHTML = `<div class="empty">今後${data.rangeDays || 15}日以内の担当予約はありません</div>`;
-        return;
-      }
+      if (rows.length === 0) { el.innerHTML = `<div class="empty">今後${data.rangeDays || 15}日以内の予約はありません</div>`; return; }
       el.innerHTML = '';
+      let last = '';
       rows.forEach((r) => {
-        const card = document.createElement('div');
-        card.className = 'card';
-        const isProvisional = r.status === '仮予約';
-        card.innerHTML = `
-          <div class="row1">
-            <span class="time">${r.reservation_date} ${r.reservation_time}〜</span>
-            ${isProvisional ? '<span class="badge-cancel">仮予約</span>' : ''}
-          </div>
-          <div class="customer">${r.realname}</div>
-          <div class="menu">${r.menu || ''}</div>
-          ${isProvisional ? '<button type="button" class="confirm-btn">✅ 確定する</button>' : ''}
-        `;
-        if (isProvisional) {
-          card.querySelector('.confirm-btn').addEventListener('click', () => confirmReservation(r.id, r.realname));
+        if (r.reservation_date !== last) {
+          const sep = document.createElement('div');
+          sep.className = 'day-sep' + (r.reservation_date === todayStr() ? ' today' : '');
+          sep.innerHTML = '📅 ' + jpDate(r.reservation_date) + (r.reservation_date === todayStr() ? '・本日' : '');
+          el.appendChild(sep);
+          last = r.reservation_date;
         }
-        el.appendChild(card);
+        el.appendChild(reservationCard(r));
       });
     } catch (e) {
-      el.innerHTML = '<div class="empty">読み込みに失敗しました</div>';
+      if (e.message !== 'UNAUTHORIZED') el.innerHTML = '<div class="empty">読み込みに失敗しました</div>';
     }
   }
 
-  // ---- 📋 予約確認タブ ----
+  // ---- 📅 週ごとの予約 ----
   async function loadReservations() {
-    const from = fmt(resWeekStart);
-    const to = fmt(addDays(resWeekStart, 6));
-    document.getElementById('resWeekLabel').textContent = `${from} 〜 ${to}`;
-    const data = await staffFetch(`/api/staff/reservations?from=${from}&to=${to}`);
-
-    const byDate = {};
-    (data.reservations || []).forEach((r) => {
-      (byDate[r.reservation_date] = byDate[r.reservation_date] || []).push(r);
-    });
-
+    const from = fmt(resWeekStart), to = fmt(addDays(resWeekStart, 6));
+    document.getElementById('resWeekLabel').textContent = `${from.slice(5).replace('-','/')} 〜 ${to.slice(5).replace('-','/')}`;
     const listEl = document.getElementById('resList');
-    listEl.innerHTML = '';
-    let any = false;
-    for (let i = 0; i < 7; i++) {
-      const d = addDays(resWeekStart, i);
-      const dStr = fmt(d);
-      const rows = (byDate[dStr] || []).sort((a, b) => a.reservation_time.localeCompare(b.reservation_time));
-      if (rows.length === 0) continue;
-      any = true;
-      const block = document.createElement('div');
-      block.className = 'day-block';
-      const isToday = dStr === todayStr();
-      block.innerHTML = `<div class="day-label${isToday ? ' today' : ''}">${dStr}（<span class="${dowClass(d.getDay())}">${DOW_LABELS[i]}</span>）${isToday ? ' ・本日' : ''}</div>`;
-      rows.forEach((r) => {
-        const cancelled = r.realname === 'キャンセル';
-        const isProvisional = !cancelled && r.status === '仮予約';
-        const card = document.createElement('div');
-        card.className = 'card' + (cancelled ? ' cancelled' : '');
-        card.innerHTML = `
-          <div class="row1">
-            <span class="time">${r.reservation_time}〜</span>
-            ${cancelled ? '<span class="badge-cancel">キャンセル</span>' : ''}
-            ${isProvisional ? '<span class="badge-cancel">仮予約</span>' : ''}
-          </div>
-          <div class="customer">${cancelled ? (r.kana || '（顧客名不明）') : r.realname}</div>
-          <div class="menu">${r.menu || ''}</div>
-          ${r.note ? `<div class="note">${r.note}</div>` : ''}
-          ${isProvisional ? '<button type="button" class="confirm-btn">✅ 確定する</button>' : ''}
-        `;
-        if (isProvisional) {
-          card.querySelector('.confirm-btn').addEventListener('click', () => confirmReservation(r.id, r.realname));
-        }
-        block.appendChild(card);
-      });
-      listEl.appendChild(block);
-    }
-    if (!any) {
-      listEl.innerHTML = '<div class="empty">この週に担当の予約はありません</div>';
+    try {
+      const data = await api(`/api/staff/reservations?from=${from}&to=${to}`);
+      const byDate = {};
+      (data.reservations || []).forEach((r) => { (byDate[r.reservation_date] = byDate[r.reservation_date] || []).push(r); });
+      listEl.innerHTML = '';
+      let any = false;
+      for (let i = 0; i < 7; i++) {
+        const ds = fmt(addDays(resWeekStart, i));
+        const rows = (byDate[ds] || []).sort((a, b) => a.reservation_time.localeCompare(b.reservation_time));
+        if (!rows.length) continue;
+        any = true;
+        const sep = document.createElement('div');
+        sep.className = 'day-sep' + (ds === todayStr() ? ' today' : '');
+        sep.innerHTML = '📅 ' + jpDate(ds) + (ds === todayStr() ? '・本日' : '');
+        listEl.appendChild(sep);
+        rows.forEach((r) => listEl.appendChild(reservationCard(r)));
+      }
+      if (!any) listEl.innerHTML = '<div class="empty">この週の予約はありません</div>';
+    } catch (e) {
+      if (e.message !== 'UNAUTHORIZED') listEl.innerHTML = '<div class="empty">読み込みに失敗しました</div>';
     }
   }
 
-  // ---- 📅 シフト管理タブ（自分のシフトの閲覧のみ。追加・削除はオーナー管理画面から） ----
-  async function loadShifts() {
-    const from = fmt(shiftWeekStart);
-    const to = fmt(addDays(shiftWeekStart, 6));
-    document.getElementById('shiftWeekLabel').textContent = `${from} 〜 ${to}`;
-    const data = await staffFetch(`/api/staff/shifts?from=${from}&to=${to}`);
-
-    const byDate = {};
-    (data.shifts || []).forEach((s) => {
-      (byDate[s.shift_date] = byDate[s.shift_date] || []).push(s);
-    });
-
+  // ================= シフト：週表示（GAS版renderShifts 796-856行） =================
+  async function loadWeekShifts() {
+    const from = fmt(shiftWeekStart), to = fmt(addDays(shiftWeekStart, 6));
+    document.getElementById('shiftWeekLabel').textContent = `${from.slice(5).replace('-','/')} 〜 ${to.slice(5).replace('-','/')}`;
     const listEl = document.getElementById('shiftList');
-    listEl.innerHTML = '';
-    let any = false;
-    for (let i = 0; i < 7; i++) {
-      const d = addDays(shiftWeekStart, i);
-      const dStr = fmt(d);
-      const rows = byDate[dStr] || [];
-      const isToday = dStr === todayStr();
-      const block = document.createElement('div');
-      block.className = 'day-block';
-      block.innerHTML = `<div class="day-label${isToday ? ' today' : ''}">${dStr}（<span class="${dowClass(d.getDay())}">${DOW_LABELS[i]}</span>）${isToday ? ' ・本日' : ''}</div>`;
-      if (rows.length > 0) {
-        any = true;
-        rows.forEach((s) => {
-          const card = document.createElement('div');
-          card.className = 'shift-card';
-          card.textContent = `${s.start_time} 〜 ${s.end_time}`;
-          card.addEventListener('click', () => openShiftEditModal(s, dStr));
-          block.appendChild(card);
+    try {
+      const data = await api(`/api/staff/shifts?from=${from}&to=${to}`);
+      if (data.staffList && data.staffList.length) data.staffList.forEach((s) => { staffColorByName[s.name] = s.color; });
+      const today = todayDate();
+      listEl.innerHTML = '';
+      for (let i = 0; i < 7; i++) {
+        const d = addDays(shiftWeekStart, i);
+        if (d < today) continue; // ★GAS版と同じく過去の日は表示しない
+        const ds = fmt(d);
+        const dayShifts = (data.shifts || []).filter((s) => s.shift_date === ds);
+        const card = document.createElement('div');
+        card.className = 'day-card';
+        card.innerHTML = `<div class="day-header">${jpDate(ds)}${ds === todayStr() ? '・本日' : ''}</div>`;
+        if (!dayShifts.length) {
+          card.insertAdjacentHTML('beforeend', '<div class="no-shift">シフトなし</div>');
+        }
+        dayShifts.forEach((s) => card.appendChild(shiftRow({ id: s.id, staffName: s.staff_name, date: ds, startTime: s.start_time, endTime: s.end_time })));
+        const add = document.createElement('button');
+        add.type = 'button';
+        add.className = 'btn-add';
+        add.textContent = ME.isOwner ? '＋ シフトを追加' : '＋ 自分のシフトを追加';
+        add.addEventListener('click', () => openShiftAdd(ds, ME.isOwner ? null : ME.name));
+        card.appendChild(add);
+        listEl.appendChild(card);
+      }
+      if (!listEl.children.length) listEl.innerHTML = '<div class="empty">この週は表示できる日がありません（過去の日は表示しません）</div>';
+    } catch (e) {
+      if (e.message !== 'UNAUTHORIZED') listEl.innerHTML = '<div class="empty">シフト情報を読み込めませんでした</div>';
+    }
+  }
+
+  function shiftRow(s) {
+    const row = document.createElement('div');
+    row.className = 'shift-row';
+    const editable = canEditShift(s.staffName, s.date);
+    const lock = (!editable && s.staffName === ME.name) ? `<span class="lock">🔒 ${LOCK_DAYS}日以内</span>` : '';
+    row.innerHTML = `
+      <div style="flex:1;">
+        <div class="who" style="color:${colorOf(s.staffName)};">● ${esc(s.staffName)}${lock}</div>
+        <div class="hrs">🕐 ${esc(s.startTime)} ～ ${esc(s.endTime)}</div>
+      </div>
+      ${editable ? '<button type="button" class="edit-btn">✏️ 変更</button>' : ''}
+    `;
+    if (editable) row.querySelector('.edit-btn').addEventListener('click', () => openShiftEdit(s));
+    return row;
+  }
+
+  // ================= シフト：月表示（GAS版1045-1218行） =================
+  async function loadMonth() {
+    const y = monthDate.getFullYear(), m = monthDate.getMonth() + 1;
+    const monthStr = `${y}-${pad2(m)}`;
+    document.getElementById('monthLabel').textContent = `${y}年${m}月`;
+    const grid = document.getElementById('monthGrid');
+    try {
+      const [sh, cnt] = await Promise.all([
+        api(`/api/staff/shifts/monthly?month=${monthStr}`),
+        api(`/api/staff/reservations/monthly?month=${monthStr}` + (ME.isOwner && ownerFocus ? `&staff=${encodeURIComponent(ownerFocus)}` : ''))
+      ]);
+      monthData = { shifts: sh.shifts || [], staffList: sh.staffList || [], counts: cnt.counts || {}, pendingDates: cnt.pendingDates || {} };
+      monthData.staffList.forEach((s) => { staffColorByName[s.name] = s.color; });
+      renderMonth();
+    } catch (e) {
+      if (e.message !== 'UNAUTHORIZED') grid.innerHTML = '<div class="empty">読み込みに失敗しました</div>';
+    }
+  }
+
+  function renderMonth() {
+    const legend = document.getElementById('monthLegend');
+    const singleMode = !ME.isOwner || !!ownerFocus;
+    const focusName = ME.isOwner ? ownerFocus : ME.name;
+
+    // ★オーナー：凡例ボタン（押すとそのスタッフの1ヶ月に絞り込み＝GAS版focusOwnerStaff）
+    if (ME.isOwner) {
+      let h = '<div class="mo-hint">名前を押すと、そのスタッフの1ヶ月（出勤時間・予約件数）に切り替わります</div><div class="mo-legend-focus">';
+      monthData.staffList.forEach((s) => {
+        h += `<button type="button" class="${ownerFocus === s.name ? 'active' : ''}" data-focus="${esc(s.name)}"><span class="d" style="background:${s.color};"></span>${esc(s.name)}</button>`;
+      });
+      h += '</div>';
+      if (ownerFocus) h += `<div class="mo-back-row"><div class="who">${esc(ownerFocus)}さんの1ヶ月</div><button type="button" id="focusBackBtn">← 全員表示に戻る</button></div>`;
+      legend.innerHTML = h;
+      legend.querySelectorAll('[data-focus]').forEach((b) => b.addEventListener('click', () => focusStaff(b.dataset.focus)));
+      const back = document.getElementById('focusBackBtn');
+      if (back) back.addEventListener('click', () => focusStaff(ownerFocus));
+    } else {
+      legend.innerHTML = '';
+    }
+
+    const y = monthDate.getFullYear(), mo = monthDate.getMonth();
+    const first = new Date(y, mo, 1);
+    const lead = (first.getDay() + 6) % 7; // 月曜始まり
+    const days = new Date(y, mo + 1, 0).getDate();
+    const tStr = todayStr();
+    let h = '<div class="mo-head">' + ['月','火','水','木','金','土','日'].map((d, i) => `<div class="${i === 5 ? 'dow-sat' : (i === 6 ? 'dow-sun' : '')}">${d}</div>`).join('') + '</div><div class="mo-body">';
+    for (let i = 0; i < lead; i++) h += '<div class="mo-day blank"></div>';
+    for (let d = 1; d <= days; d++) {
+      const ds = `${y}-${pad2(mo + 1)}-${pad2(d)}`;
+      let cls = 'mo-day' + (ds === tStr ? ' today' : '');
+      let inner = `<div class="dnum">${d}</div>`;
+      if (singleMode) {
+        const daily = monthData.shifts.filter((s) => s.staffName === focusName && s.date === ds);
+        if (daily.length) inner += daily.map((s) => `<div class="pill">${esc(s.startTime)}〜${esc(s.endTime)}</div>`).join('');
+        else inner += '<div class="pill off">休み</div>';
+        const info = monthData.counts[ds];
+        if (info && info.count > 0) {
+          inner += `<div class="res-count${info.pending ? ' pending' : ''}">📋予約${info.count}件${info.pending ? ' ⚠️' : ''}</div>`;
+          if (info.pending) cls += ' pending-alert';
+        }
+      } else {
+        const names = [];
+        monthData.shifts.forEach((s) => { if (s.date === ds && !names.includes(s.staffName)) names.push(s.staffName); });
+        inner += `<div class="dots">${names.map((n) => `<div class="d" style="background:${colorOf(n)};" title="${esc(n)}"></div>`).join('')}</div>`;
+        inner += `<div class="cnt">${names.length}名</div>`;
+        if (monthData.pendingDates[ds]) { cls += ' pending-alert'; inner += '<div class="res-count pending">⚠️仮予約</div>'; }
+      }
+      h += `<div class="${cls}" data-date="${ds}">${inner}</div>`;
+    }
+    h += '</div>';
+    const grid = document.getElementById('monthGrid');
+    grid.innerHTML = h;
+    grid.querySelectorAll('.mo-day[data-date]').forEach((c) => c.addEventListener('click', () => openMonthDay(c.dataset.date)));
+  }
+
+  function focusStaff(name) {
+    ownerFocus = (ownerFocus === name) ? null : name;
+    loadMonth();
+  }
+
+  // ---- 日付タップの詳細（GAS版openMonthDay 1220-1314行） ----
+  async function openMonthDay(ds) {
+    const singleMode = !ME.isOwner || !!ownerFocus;
+    const focusName = ME.isOwner ? ownerFocus : ME.name;
+    document.getElementById('monthDayTitle').textContent = '📅 ' + jpDatePlain(ds) + (singleMode ? '　' + focusName + 'さん' : '');
+    const body = document.getElementById('monthDayBody');
+    body.innerHTML = '<div class="empty">読み込み中...</div>';
+    document.getElementById('monthDayModal').classList.add('open');
+    let resList = [];
+    try { resList = (await api('/api/staff/reservations/day?date=' + ds)).reservations || []; } catch (e) { /* 表示は続ける */ }
+
+    body.innerHTML = '';
+    if (singleMode) {
+      const shifts = monthData.shifts.filter((s) => s.staffName === focusName && s.date === ds);
+      if (shifts.length) {
+        shifts.forEach((s) => {
+          const it = document.createElement('div');
+          it.className = 'md-item';
+          const editable = canEditShift(focusName, ds);
+          it.innerHTML = `<div class="inf">🕐 ${esc(s.startTime)}〜${esc(s.endTime)}${editable ? '' : `　<span style="color:#bbb;font-size:11px;">🔒 ${LOCK_DAYS}日以内は変更できません</span>`}</div>` +
+            (editable ? '<div class="btns"><button type="button" class="small-btn">✏️ 変更</button></div>' : '');
+          if (editable) it.querySelector('button').addEventListener('click', () => { closeModal('monthDayModal'); openShiftEdit(s); });
+          body.appendChild(it);
         });
-        listEl.appendChild(block);
+      } else {
+        body.insertAdjacentHTML('beforeend', '<p style="color:#999;text-align:center;padding:8px 0;">この日はお休みです</p>');
+        if (canEditShift(focusName, ds)) {
+          const wrap = document.createElement('div');
+          wrap.style.textAlign = 'center';
+          wrap.innerHTML = '<button type="button" class="modal-btn modal-btn-ok" style="flex:none;width:auto;padding:8px 16px;">＋ シフトを追加</button>';
+          wrap.querySelector('button').addEventListener('click', () => { closeModal('monthDayModal'); openShiftAdd(ds, focusName); });
+          body.appendChild(wrap);
+        }
+      }
+      body.insertAdjacentHTML('beforeend', '<div class="md-sec">📋 この日の予約</div>');
+      const mine = resList.filter((r) => r.staff_name === focusName);
+      if (!mine.length) body.insertAdjacentHTML('beforeend', '<p style="color:#ccc;text-align:center;font-size:12px;">予約はありません</p>');
+      mine.forEach((r) => {
+        const pending = r.status === '仮予約';
+        const it = document.createElement('div');
+        it.className = 'md-item' + (pending ? ' pending' : '');
+        it.innerHTML = `<div class="nm">${esc(r.realname)}${pending ? ' <span class="badge pend">⚠️仮予約</span>' : ''}</div>
+          <div class="inf">🕐 ${esc(r.reservation_time)}〜${esc(r.end_time)}</div><div class="inf">📋 ${esc(r.menu || '-')}</div>` +
+          (pending ? '<div class="btns"><button type="button" class="ok-btn">✅ 確定する</button></div>' : '');
+        if (pending) it.querySelector('button').addEventListener('click', () => { closeModal('monthDayModal'); confirmReservation(r.id, r.realname, r.staff_name); });
+        body.appendChild(it);
+      });
+    } else {
+      // 全員表示（オーナー）：スタッフ毎の出勤時間・休み・仮予約の有無、「開く →」で絞り込み
+      const pendingStaff = {};
+      resList.forEach((r) => { if (r.status === '仮予約') pendingStaff[r.staff_name] = true; });
+      monthData.staffList.forEach((st) => {
+        const shifts = monthData.shifts.filter((s) => s.staffName === st.name && s.date === ds);
+        const pending = !!pendingStaff[st.name];
+        const it = document.createElement('div');
+        it.className = 'md-item md-staffrow' + (pending ? ' pending' : '');
+        if (!pending) it.style.borderLeftColor = st.color;
+        it.innerHTML = `<div><div class="nm" style="color:${st.color};">● ${esc(st.name)}${pending ? ' <span class="badge pend">⚠️仮予約</span>' : ''}</div>
+          <div class="inf">${shifts.length ? shifts.map((s) => esc(s.startTime) + '〜' + esc(s.endTime)).join('、') : '休み'}</div></div>
+          <button type="button" class="small-btn" style="padding:6px 12px;border-radius:7px;cursor:pointer;font-size:12px;font-weight:700;">開く →</button>`;
+        it.querySelector('button').addEventListener('click', () => { closeModal('monthDayModal'); focusStaff(st.name); });
+        body.appendChild(it);
+      });
+      if (pendingStaff['未定']) {
+        body.insertAdjacentHTML('beforeend', '<div class="md-item pending"><div class="nm">担当未定の仮予約があります</div><div class="inf">サロンダッシュボードで担当を決めてから確定してください</div></div>');
       }
     }
-    if (!any) {
-      listEl.innerHTML = '<div class="empty">この週の出勤シフトは登録されていません</div>';
-    }
   }
 
-  // ---- 📆 月間カレンダータブ ----
-  async function loadCalendar() {
-    const monthStr = `${calMonth.getFullYear()}-${String(calMonth.getMonth()+1).padStart(2,'0')}`;
-    document.getElementById('calMonthLabel').textContent = `${calMonth.getFullYear()}年${calMonth.getMonth()+1}月`;
-    const data = await staffFetch(`/api/staff/reservations/monthly?month=${monthStr}`);
-    const counts = data.counts || {};
-
-    const gridEl = document.getElementById('calGrid');
-    gridEl.innerHTML = '';
-    DOW_LABELS.forEach((label, i) => {
-      const dow = document.createElement('div');
-      dow.className = 'cal-dow ' + (i === 5 ? 'dow-sat' : (i === 6 ? 'dow-sun' : ''));
-      dow.textContent = label;
-      gridEl.appendChild(dow);
-    });
-
-    const firstOfMonth = new Date(calMonth.getFullYear(), calMonth.getMonth(), 1);
-    const leadBlanks = (firstOfMonth.getDay() + 6) % 7; // 月曜始まり
-    const daysInMonth = new Date(calMonth.getFullYear(), calMonth.getMonth() + 1, 0).getDate();
-    const tStr = todayStr();
-
-    for (let i = 0; i < leadBlanks; i++) {
-      const blank = document.createElement('div');
-      blank.className = 'cal-cell blank';
-      gridEl.appendChild(blank);
-    }
-    for (let d = 1; d <= daysInMonth; d++) {
-      const date = new Date(calMonth.getFullYear(), calMonth.getMonth(), d);
-      const dStr = fmt(date);
-      const info = counts[dStr];
-      const cell = document.createElement('div');
-      cell.className = 'cal-cell' + (dStr === tStr ? ' today' : '');
-      cell.innerHTML = `<span class="num ${dowClass(date.getDay())}">${d}</span>` +
-        (info && info.count > 0 ? `<span class="cnt">${info.count}</span>` : '') +
-        (info && info.pending ? '<span class="pending-dot" title="仮予約あり"></span>' : '');
-      cell.addEventListener('click', () => {
-        resWeekStart = startOfWeek(date);
-        loadReservations();
-        switchTab('tabResBtn', 'tabRes');
-      });
-      gridEl.appendChild(cell);
-    }
-  }
-
-  // ---- シフト追加・変更・削除モーダル（GAS版staff_dashboard.htmlの
-  //   ①シフト追加モーダル・②シフト編集モーダル相当。自分自身のシフトのみ対象） ----
-  let _editingShiftId = null;
-
-  function openShiftAddModal() {
+  // ================= シフト追加・変更・削除 =================
+  let addTarget = { date: '', staffName: null };
+  function openShiftAdd(ds, fixedStaff) {
+    addTarget = { date: ds, staffName: fixedStaff };
     document.getElementById('shiftAddMsg').textContent = '';
-    document.getElementById('addDate').value = fmt(shiftWeekStart);
+    document.getElementById('addDateLabel').textContent = jpDatePlain(ds) + (fixedStaff && fixedStaff !== ME.name ? `　${fixedStaff}さん` : '');
+    const wrap = document.getElementById('addStaffWrap');
+    if (ME.isOwner && !fixedStaff) {
+      const sel = document.getElementById('addStaff');
+      const list = (monthData && monthData.staffList) || [];
+      sel.innerHTML = list.map((s) => `<option value="${esc(s.name)}">${esc(s.name)}</option>`).join('');
+      wrap.style.display = '';
+    } else {
+      wrap.style.display = 'none';
+    }
     document.getElementById('addStart').value = '10:00';
     document.getElementById('addEnd').value = '19:00';
     document.getElementById('shiftAddModal').classList.add('open');
   }
-  function closeShiftAddModal() {
-    document.getElementById('shiftAddModal').classList.remove('open');
-  }
   async function submitShiftAdd() {
-    const msgEl = document.getElementById('shiftAddMsg');
-    msgEl.textContent = '';
-    const date = document.getElementById('addDate').value;
+    const msg = document.getElementById('shiftAddMsg');
     const startTime = document.getElementById('addStart').value;
     const endTime = document.getElementById('addEnd').value;
-    if (!date || !startTime || !endTime) { msgEl.textContent = '日付・時間を入力してください'; return; }
+    const staffName = addTarget.staffName || (ME.isOwner ? document.getElementById('addStaff').value : ME.name);
+    if (!staffName || !startTime || !endTime) { msg.textContent = 'すべての項目を入力してください'; return; }
     try {
-      const res = await fetch('/api/staff/shifts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ date, startTime, endTime })
-      });
-      const data = await res.json();
-      if (!data.success) { msgEl.textContent = data.message || '追加に失敗しました'; return; }
-      closeShiftAddModal();
-      await loadShifts();
-    } catch (e) {
-      msgEl.textContent = '通信エラーが発生しました';
-    }
+      const data = await api('/api/staff/shifts', jsonOpts('POST', { date: addTarget.date, startTime, endTime, staffName }));
+      if (!data.success) { msg.textContent = data.message || '追加に失敗しました'; return; }
+      closeModal('shiftAddModal');
+      showStatus('✅ シフトを追加しました', 'success');
+      await Promise.all([loadWeekShifts(), loadMonth()]);
+    } catch (e) { if (e.message !== 'UNAUTHORIZED') msg.textContent = '通信エラーが発生しました'; }
   }
 
-  function openShiftEditModal(shift, dStr) {
-    _editingShiftId = shift.id;
+  let editing = null;
+  function openShiftEdit(s) {
+    editing = s;
     document.getElementById('shiftEditMsg').textContent = '';
-    document.getElementById('shiftEditDateLabel').textContent = `${dStr}（${shift.start_time} 〜 ${shift.end_time}）`;
-    document.getElementById('editStart').value = shift.start_time;
-    document.getElementById('editEnd').value = shift.end_time;
+    document.getElementById('shiftEditInfo').innerHTML = `👤 ${esc(s.staffName)}<br>📅 ${jpDate(s.date)}<br>現在：${esc(s.startTime)} ～ ${esc(s.endTime)}`;
+    document.getElementById('editStart').value = s.startTime;
+    document.getElementById('editEnd').value = s.endTime;
     document.getElementById('shiftEditModal').classList.add('open');
   }
-  function closeShiftEditModal() {
-    document.getElementById('shiftEditModal').classList.remove('open');
-    _editingShiftId = null;
-  }
   async function submitShiftEdit() {
-    const msgEl = document.getElementById('shiftEditMsg');
-    msgEl.textContent = '';
+    const msg = document.getElementById('shiftEditMsg');
     const startTime = document.getElementById('editStart').value;
     const endTime = document.getElementById('editEnd').value;
-    if (!startTime || !endTime) { msgEl.textContent = '時間を入力してください'; return; }
+    if (!startTime || !endTime) { msg.textContent = '時間を入力してください'; return; }
     try {
-      const res = await fetch(`/api/staff/shifts/${_editingShiftId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ startTime, endTime })
-      });
-      const data = await res.json();
-      if (!data.success) { msgEl.textContent = data.message || '変更に失敗しました'; return; }
-      closeShiftEditModal();
-      await loadShifts();
-    } catch (e) {
-      msgEl.textContent = '通信エラーが発生しました';
-    }
+      const data = await api(`/api/staff/shifts/${editing.id}`, jsonOpts('PUT', { startTime, endTime }));
+      if (!data.success) { msg.textContent = data.message || '変更に失敗しました'; return; }
+      closeModal('shiftEditModal');
+      showStatus('✅ シフトを変更しました', 'success');
+      await Promise.all([loadWeekShifts(), loadMonth()]);
+    } catch (e) { if (e.message !== 'UNAUTHORIZED') msg.textContent = '通信エラーが発生しました'; }
   }
+  // ★GAS版submitShiftDelete（899-950行）：予約の有無を確認してから削除の確認を出す
   async function submitShiftDelete() {
-    const msgEl = document.getElementById('shiftEditMsg');
-    msgEl.textContent = '';
+    const msg = document.getElementById('shiftEditMsg');
+    const s = editing;
+    let confirmMsg = `「${s.staffName}」の ${s.date} ${s.startTime}～${s.endTime} のシフトを削除しますか？`;
     try {
-      const res = await fetch(`/api/staff/shifts/${_editingShiftId}`, { method: 'DELETE' });
-      const data = await res.json();
-      if (!data.success) { msgEl.textContent = data.message || '削除に失敗しました'; return; }
-      closeShiftEditModal();
-      await loadShifts();
-    } catch (e) {
-      msgEl.textContent = '通信エラーが発生しました';
-    }
+      const chk = await api(`/api/staff/shifts/booking-check?staffName=${encodeURIComponent(s.staffName)}&date=${s.date}`);
+      if (chk.hasBooking) {
+        confirmMsg = `⚠️ ${s.date} に予約が入っています！\n\n予約内容：${chk.bookingInfo}\n\n` +
+          (ME.isOwner ? 'それでもシフトを削除しますか？' : '予約の時間帯と重なるシフトは削除できません。それでも削除を試しますか？');
+      }
+    } catch (_) { /* 確認に失敗しても通常の確認で続行 */ }
+    if (!window.confirm(confirmMsg)) return;
+    try {
+      const data = await api(`/api/staff/shifts/${s.id}`, { method: 'DELETE' });
+      if (!data.success) { msg.textContent = data.message || '削除に失敗しました'; return; }
+      closeModal('shiftEditModal');
+      showStatus('✅ シフトを削除しました', 'success');
+      await Promise.all([loadWeekShifts(), loadMonth()]);
+    } catch (e) { if (e.message !== 'UNAUTHORIZED') msg.textContent = '通信エラーが発生しました'; }
   }
 
-  document.getElementById('shiftAddOpenBtn').addEventListener('click', openShiftAddModal);
-  document.getElementById('shiftAddCancelBtn').addEventListener('click', closeShiftAddModal);
-  document.getElementById('shiftAddSaveBtn').addEventListener('click', submitShiftAdd);
-  document.getElementById('shiftEditCancelBtn').addEventListener('click', closeShiftEditModal);
-  document.getElementById('shiftEditSaveBtn').addEventListener('click', submitShiftEdit);
-  document.getElementById('shiftEditDeleteBtn').addEventListener('click', submitShiftDelete);
+  function closeModal(id) { document.getElementById(id).classList.remove('open'); }
 
-  function switchTab(btnId, contentId) {
-    ['tabResBtn', 'tabShiftBtn', 'tabCalBtn'].forEach((id) => document.getElementById(id).classList.toggle('active', id === btnId));
-    ['tabRes', 'tabShift', 'tabCal'].forEach((id) => document.getElementById(id).classList.toggle('active', id === contentId));
+  // ================= 画面切替・ナビ =================
+  function switchTab(which) {
+    const res = which === 'res';
+    document.getElementById('tabResBtn').classList.toggle('active', res);
+    document.getElementById('tabShiftBtn').classList.toggle('active', !res);
+    document.getElementById('tabRes').classList.toggle('active', res);
+    document.getElementById('tabShift').classList.toggle('active', !res);
+  }
+  function setShiftView(v) {
+    shiftView = v;
+    document.getElementById('shiftViewWeekBtn').classList.toggle('on', v === 'week');
+    document.getElementById('shiftViewMonthBtn').classList.toggle('on', v === 'month');
+    document.getElementById('weekShiftPane').style.display = v === 'week' ? '' : 'none';
+    document.getElementById('monthShiftPane').style.display = v === 'month' ? '' : 'none';
+    document.getElementById('shiftCardTitle').textContent = v === 'week' ? '週間シフト' : '月間シフト';
+    if (v === 'month') { ownerFocus = null; loadMonth(); }
   }
 
-  document.getElementById('tabResBtn').addEventListener('click', () => switchTab('tabResBtn', 'tabRes'));
-  document.getElementById('tabShiftBtn').addEventListener('click', () => switchTab('tabShiftBtn', 'tabShift'));
-  document.getElementById('tabCalBtn').addEventListener('click', () => switchTab('tabCalBtn', 'tabCal'));
-
+  document.getElementById('tabResBtn').addEventListener('click', () => switchTab('res'));
+  document.getElementById('tabShiftBtn').addEventListener('click', () => switchTab('shift'));
+  document.getElementById('shiftViewWeekBtn').addEventListener('click', () => setShiftView('week'));
+  document.getElementById('shiftViewMonthBtn').addEventListener('click', () => setShiftView('month'));
   document.getElementById('resPrevBtn').addEventListener('click', () => { resWeekStart = addDays(resWeekStart, -7); loadReservations(); });
   document.getElementById('resNextBtn').addEventListener('click', () => { resWeekStart = addDays(resWeekStart, 7); loadReservations(); });
-  document.getElementById('shiftPrevBtn').addEventListener('click', () => { shiftWeekStart = addDays(shiftWeekStart, -7); loadShifts(); });
-  document.getElementById('shiftNextBtn').addEventListener('click', () => { shiftWeekStart = addDays(shiftWeekStart, 7); loadShifts(); });
-  document.getElementById('calPrevBtn').addEventListener('click', () => { calMonth.setMonth(calMonth.getMonth() - 1); loadCalendar(); });
-  document.getElementById('calNextBtn').addEventListener('click', () => { calMonth.setMonth(calMonth.getMonth() + 1); loadCalendar(); });
+  document.getElementById('shiftPrevBtn').addEventListener('click', () => { shiftWeekStart = addDays(shiftWeekStart, -7); loadWeekShifts(); });
+  document.getElementById('shiftNextBtn').addEventListener('click', () => { shiftWeekStart = addDays(shiftWeekStart, 7); loadWeekShifts(); });
+  document.getElementById('monthPrevBtn').addEventListener('click', () => { monthDate.setMonth(monthDate.getMonth() - 1); loadMonth(); });
+  document.getElementById('monthNextBtn').addEventListener('click', () => { monthDate.setMonth(monthDate.getMonth() + 1); loadMonth(); });
+  document.getElementById('shiftAddCancelBtn').addEventListener('click', () => closeModal('shiftAddModal'));
+  document.getElementById('shiftAddSaveBtn').addEventListener('click', submitShiftAdd);
+  document.getElementById('shiftEditCancelBtn').addEventListener('click', () => closeModal('shiftEditModal'));
+  document.getElementById('shiftEditSaveBtn').addEventListener('click', submitShiftEdit);
+  document.getElementById('shiftEditDeleteBtn').addEventListener('click', submitShiftDelete);
+  document.getElementById('monthDayCloseBtn').addEventListener('click', () => closeModal('monthDayModal'));
+  ['shiftAddModal', 'shiftEditModal', 'monthDayModal'].forEach((id) => {
+    document.getElementById(id).addEventListener('click', (e) => { if (e.target.id === id) closeModal(id); });
+  });
+  document.getElementById('refreshBtn').addEventListener('click', async () => { await refreshAll(); checkSessionStillValid(); showStatus('🔄 最新の情報に更新しました', 'success'); });
 
   document.getElementById('logoutLink').addEventListener('click', async (e) => {
     e.preventDefault();
+    if (!window.confirm('ログアウトしますか？次回はPINでのログインが必要になります。')) return;
     try { await fetch('/api/auth/logout', { method: 'POST' }); } catch (_) {}
     window.location.href = '/admin/login.html';
   });
+
+  // ★GAS版（508-536行）と同じく、30秒ごとにログイン状態を確認する
+  async function checkSessionStillValid() {
+    try { const r = await fetch('/api/auth/me'); if (r.status === 401) showLoggedOutOverlay(); } catch (_) {}
+  }
+  function showLoggedOutOverlay() {
+    if (document.getElementById('loggedOutOverlay')) return;
+    document.getElementById('headerStaffName').textContent = '🔒 ログアウト済み';
+    const ov = document.createElement('div');
+    ov.id = 'loggedOutOverlay';
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(255,255,255,0.7);z-index:9999;display:flex;align-items:center;justify-content:center;';
+    ov.innerHTML = '<div style="background:#fff;border:1px solid #ddd;border-radius:12px;padding:24px 28px;text-align:center;box-shadow:0 4px 16px rgba(0,0,0,0.15);max-width:320px;">' +
+      '<p style="margin-bottom:14px;font-size:14px;line-height:1.6;">🔒 ログアウトされました<br><span style="font-size:12px;color:#777;">（別の画面でログアウトが行われたか、ログインの有効期限が切れました）</span></p>' +
+      '<button type="button" style="background:#3D6B5C;color:#fff;border:none;border-radius:8px;padding:10px 20px;cursor:pointer;font-family:inherit;">もう一度ログインする</button></div>';
+    ov.querySelector('button').addEventListener('click', () => { window.location.href = '/admin/login.html?next=' + encodeURIComponent(window.location.pathname); });
+    document.body.appendChild(ov);
+  }
+  setInterval(checkSessionStillValid, 30000);
 
   init();
 })();

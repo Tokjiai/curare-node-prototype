@@ -11,8 +11,10 @@
      編集・キャンセル、イベント（臨時休業等）の確認・管理ができる画面）の
      Node移植版。色以外は他の管理画面と使用感を揃えるクリーム＋セージの
      配色トークンに合わせてある。GAS版との差異はREADME_PROTOTYPE.md章44参照
-     （週の開始曜日を月曜に統一・スタッフ色を自動割り当て・イベントの
-     バッファ時間帯の視覚表現を簡略化・Googleカレンダー連携は対象外）。
+     （週の開始曜日を月曜に統一・Googleカレンダー連携は対象外）。
+     ★2026-09-23：スタッフ色はGAS版と同じくスタッフ毎に保存した色（スタッフ管理画面で
+     オーナーが選択）を使う方式に変更。終日行事の帯表示・行事の前後ブロック時間帯の
+     斜線表示もGAS版どおりに移植した（README章50参照）。
      ============================================================ */
   :root{
     --bg:#F5F4EF; --panel:#ffffff; --ink:#2B2B27; --ink-soft:#75746C; --ink-faint:#A9A79C;
@@ -56,15 +58,25 @@
   .wk-hourcol{border-right:1px solid var(--line);}
   .wk-hour{height:44px; font-size:10px; color:var(--ink-faint); text-align:right; padding-right:4px; border-bottom:1px dashed var(--line); position:relative; top:-6px;}
   .wk-day{position:relative; border-right:1px solid var(--line); border-bottom:none;}
-  .wk-day-inner{position:relative; height:660px;} /* 15時間 x 44px */
+  .wk-day-inner{position:relative; height:660px;} /* 15時間（9:00〜23:59） x 44px */
   .wk-hourline{position:absolute; left:0; right:0; height:1px; background:var(--line);}
-  .wk-slot-click{position:absolute; left:0; right:0; height:44px; cursor:pointer;}
+  .wk-slot-click{position:absolute; left:0; right:0; height:44px; cursor:pointer; z-index:1;}
   .wk-slot-click:hover{background:rgba(61,107,92,0.06);}
 
-  .ev-blk{position:absolute; border-radius:6px; border-left:4px solid; padding:2px 5px; font-size:10.5px; line-height:1.35; overflow:hidden; cursor:pointer; box-shadow:0 1px 2px rgba(0,0,0,0.08);}
+  .ev-blk{position:absolute; border-radius:6px; border-left:4px solid; padding:2px 5px; font-size:10.5px; line-height:1.35; overflow:hidden; cursor:pointer; box-shadow:0 1px 2px rgba(0,0,0,0.08); z-index:4;}
   .ev-blk .prov{color:#D32F2F; font-weight:700;}
   .ev-blk .nm{font-weight:700;}
-  .ev-event{position:absolute; left:2px; right:2px; background:#D6D6D6; color:#333; border-top:3px solid #757575; border-radius:4px; padding:2px 5px; font-size:10px; cursor:pointer; overflow:hidden;}
+  .ev-blk .opt{font-weight:400; font-size:9px; color:#666;}
+  /* ★2026-09-23修正：GAS版calendar_page.html 93-98行と同じ重なり順・見た目に揃えた。
+     以前は「終日」の行事が00:00〜23:59の縦長ブロックとして列全体を覆ってしまい、
+     その日の予約が隠れて押せなくなる不具合があった */
+  .ev-event{position:absolute; left:2px; right:2px; background:#D6D6D6; color:#333; border-top:3px solid #757575; border-radius:4px; padding:2px 5px; font-size:10px; cursor:pointer; overflow:hidden; z-index:3;}
+  .ev-buffer{position:absolute; left:0; right:0; z-index:2; background:repeating-linear-gradient(45deg,#E6E6E6,#E6E6E6 8px,#CFCFCF 8px,#CFCFCF 16px); opacity:0.7; pointer-events:none;}
+  .wk-day-inner.fullblock{background:#D6D6D6;}
+  .ev-allday-wrap{position:absolute; top:0; left:0; right:0; z-index:5; display:flex; flex-direction:column; gap:1px;}
+  .ev-allday-bar{font-size:10.5px; font-weight:600; padding:3px 5px; background:repeating-linear-gradient(45deg,#F5F5F5,#F5F5F5 8px,#E4E4E4 8px,#E4E4E4 16px); color:#555; border-bottom:2px solid #9E9E9E; cursor:pointer; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .ev-allday-bar.is-blocked{background:#BDBDBD; color:#333; border-bottom:2px solid #757575;}
+  .mevent-bar.is-blocked{background:#BDBDBD; color:#222;}
 
   /* ---- 月表示 ---- */
   .month-grid{display:grid; grid-template-columns:repeat(7,1fr); background:#fff; border:1px solid var(--line); border-radius:var(--radius); overflow:hidden;}
@@ -147,7 +159,10 @@
     <div class="header">
       <div class="header-top">
         <h1>🛏️ サロンダッシュボード</h1>
-        <a class="back-link" href="/staff/dashboard.html">← ダッシュボードへ</a>
+        <div style="display:flex; gap:6px; align-items:center;">
+          <a class="back-link" href="/staff/dashboard.html">← ダッシュボードへ</a>
+          <a class="back-link" href="#" id="calLogoutLink">ログアウト</a>
+        </div>
       </div>
       <div class="header-user" id="headerInfo"></div>
     </div>
@@ -235,6 +250,11 @@
       <div class="modal-field"><label>日付</label><input type="date" id="rmDate"></div>
       <div class="modal-field"><label>時刻</label><input type="time" id="rmTime"></div>
       <div class="modal-field"><label>備考（任意）</label><input type="text" id="rmNote"></div>
+      <!-- ★2026-09-23追加：GAS版reservation_form_markup.html 128行・assets.html 1006-1060行の
+           「仮予約中（チェックを外すと確定になります）」。仮予約を編集画面から確定できる -->
+      <div class="modal-field" id="rmProvGroup" style="display:none;">
+        <label class="chk-row" style="font-weight:700; color:#D32F2F; font-size:13px;"><input type="checkbox" id="rmProvChk" checked> 仮予約中（チェックを外すと確定になります）</label>
+      </div>
       <div class="modal-err" id="rmErr"></div>
       <div class="modal-actions">
         <button class="modal-btn-cancel" id="rmCancelBtn" type="button">閉じる</button>
@@ -292,9 +312,13 @@
   let currentPopupEvent = null;
   let editingResvId = null;
   let emEditingId = null;
-  const HOURS = []; for (let h = 9; h <= 22; h++) HOURS.push(h);
+  // ★2026-09-23：GAS版（HOURS 9:00〜23:00、END=23:59）と同じく23時台まで表示する
+  //   （以前は22時台までで、21:30以降の予約がグリッドからはみ出していた）
+  const HOURS = []; for (let h = 9; h <= 23; h++) HOURS.push(h);
   const SH = 44; // px / hour
   const BASE_MIN = 9 * 60;
+  const END_MIN = 23 * 60 + 59;
+  const MENU_SEP = '　＋　';
 
   function pad2(n){ return String(n).padStart(2,'0'); }
   function fmtDate(d){ return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`; }
@@ -371,8 +395,10 @@
     return r.data;
   }
 
+  let legendStaff = [];
   function applyPalette(data) {
     staffColors = data.staffColors || {};
+    legendStaff = data.legendStaff || Object.keys(staffColors);
     colorMap = data.colorMap || {};
     bgMap = data.bgMap || {};
     txMap = data.txMap || {};
@@ -401,13 +427,18 @@
   function renderLegend() {
     const el = document.getElementById('legend');
     el.innerHTML = '';
-    Object.keys(staffColors).forEach((name) => {
+    legendStaff.forEach((name) => {
       const c = colorFor(name);
       const chip = document.createElement('span');
       chip.className = 'chip';
-      chip.innerHTML = `<span class="dot" style="background:${c.border};"></span>${name}`;
+      chip.innerHTML = `<span class="dot" style="background:${c.border};"></span>${escHtml(name)}`;
       el.appendChild(chip);
     });
+    // ★2026-09-23追加：GAS版の凡例（calendar_page.html 349行）と同じく「行事」も載せる
+    const evChip = document.createElement('span');
+    evChip.className = 'chip';
+    evChip.innerHTML = '<span class="dot" style="background:#757575;"></span>行事';
+    el.appendChild(evChip);
   }
 
   // ---------------- 週表示 ----------------
@@ -456,7 +487,7 @@
       const dayResv = (data.reservations || []).filter((r) => r.date === ds);
       const dayEv = (data.events || []).filter((e) => e.date === ds);
       layoutDayLanes(ds, dayResv);
-      dayEv.forEach((e) => renderWeekEventChip(ds, e));
+      renderWeekEvents(ds, dayEv);
     });
 
     wrap.querySelectorAll('.wk-slot-click').forEach((el) => {
@@ -492,7 +523,8 @@
 
       const c = colorFor(r.staffName);
       const top = (s - BASE_MIN) / 60 * SH;
-      const height = Math.max(18, (e - s) / 60 * SH - 2);
+      // ★GAS版と同じく23:59で切る（グリッドの下にはみ出さない）
+      const height = Math.max(18, (Math.min(e, END_MIN) - s) / 60 * SH - 2);
       const left = lane === 0 ? '2%' : '51%';
       const width = '47%';
       const blk = document.createElement('div');
@@ -501,28 +533,62 @@
       blk.style.height = height + 'px';
       blk.style.left = left; blk.style.width = width;
       blk.style.background = c.bg; blk.style.borderLeftColor = c.border; blk.style.color = c.tx;
-      blk.innerHTML = (r.isProvisional ? '<span class="prov">仮＋</span>' : '') + `<span class="nm">${escHtml(r.realname)}</span><br>${r.startTime} ${escHtml(r.staffName)}`;
-      blk.addEventListener('click', () => openReservationPopup(r));
+      // ★2026-09-23追加：GAS版（calendar_page.html 729-740行）と同じく、メニューの
+      //   オプション部分（「メイン　＋　オプション」の2つ目以降）を「＋◯◯」で表示する
+      const optNames = String(r.menu || '').split(MENU_SEP).slice(1).map((x) => x.trim()).filter(Boolean);
+      blk.innerHTML = (r.isProvisional ? '<span class="prov">仮＋</span>' : '') + `<span class="nm">${escHtml(r.realname)}</span><br>${r.startTime} ${escHtml(r.staffName)}` +
+        (optNames.length ? `<br><span class="opt">＋${escHtml(optNames.join('＋'))}</span>` : '');
+      blk.addEventListener('click', (ev) => { ev.stopPropagation(); openReservationPopup(r); });
       col.appendChild(blk);
     });
   }
 
-  function renderWeekEventChip(ds, e) {
+  // ★2026-09-23修正：GAS版calendar_page.html 678-702行の描き分けを移植。
+  //   ・終日の行事 … 列の上端に帯（.ev-allday-bar）で表示。予約不可（休業）の終日行事が
+  //     ある日は、列全体を灰色にする（予約ブロックの下に敷く背景なので予約は隠れない）
+  //   ・時間指定の行事 … その時間帯にブロック表示（予約より下の重なり順）。予約ブロック
+  //     対象なら、前後の予約不可時間帯を斜線で表示（GAS版の.ev-buffer）
+  //   以前は終日の行事も00:00〜23:59の縦長ブロックとして描いていたため、列全体を覆って
+  //   その日の予約が見えず・押せなくなる不具合があった（社長ご指摘の棚卸しで発見）。
+  function renderWeekEvents(ds, dayEvents) {
     const col = document.getElementById('wkcol-' + ds);
     if (!col) return;
-    let top, height;
-    if (!e.startTime) { top = 0; height = 20; }
-    else {
-      const s = toMin(e.startTime), en = toMin(e.endTime || e.startTime);
-      top = Math.max(0, (s - BASE_MIN) / 60 * SH);
-      height = Math.max(16, (en - s) / 60 * SH);
+    const allDay = dayEvents.filter((e) => e.allDay);
+    const timed = dayEvents.filter((e) => !e.allDay);
+    if (allDay.some((e) => e.blockReservation)) col.classList.add('fullblock');
+    if (allDay.length) {
+      const wrap = document.createElement('div');
+      wrap.className = 'ev-allday-wrap';
+      allDay.forEach((e) => {
+        const bar = document.createElement('div');
+        bar.className = 'ev-allday-bar' + (e.blockReservation ? ' is-blocked' : '');
+        bar.textContent = (e.blockReservation ? '🚫 ' : '📌 ') + e.label;
+        bar.title = e.blockReservation ? '終日休み（予約不可）' : '終日の行事（予約可）';
+        bar.addEventListener('click', (ev) => { ev.stopPropagation(); openEventPopup(e); });
+        wrap.appendChild(bar);
+      });
+      col.appendChild(wrap);
     }
-    const blk = document.createElement('div');
-    blk.className = 'ev-event';
-    blk.style.top = top + 'px'; blk.style.height = height + 'px';
-    blk.textContent = '📌 ' + e.label;
-    blk.addEventListener('click', () => openEventPopup(e));
-    col.appendChild(blk);
+    timed.forEach((e) => {
+      const s = toMin(e.startTime), en = toMin(e.endTime || e.startTime);
+      if (e.blockReservation && e.blockStart && e.blockEnd) {
+        const bs = Math.max(BASE_MIN, toMin(e.blockStart)), be = Math.min(END_MIN, toMin(e.blockEnd));
+        if (be > bs) {
+          const buf = document.createElement('div');
+          buf.className = 'ev-buffer';
+          buf.style.top = ((bs - BASE_MIN) / 60 * SH) + 'px';
+          buf.style.height = ((be - bs) / 60 * SH) + 'px';
+          col.appendChild(buf);
+        }
+      }
+      const blk = document.createElement('div');
+      blk.className = 'ev-event';
+      blk.style.top = Math.max(0, (s - BASE_MIN) / 60 * SH) + 'px';
+      blk.style.height = Math.max(36, (Math.min(en, END_MIN) - Math.max(s, BASE_MIN)) / 60 * SH - 1) + 'px';
+      blk.textContent = (e.blockReservation ? '🚫 ' : '📌 ') + e.label;
+      blk.addEventListener('click', (ev) => { ev.stopPropagation(); openEventPopup(e); });
+      col.appendChild(blk);
+    });
   }
 
   // ---------------- 月表示 ----------------
@@ -561,14 +627,15 @@
       let inner = `<div class="dnum ${isToday ? 'today' : ''}">${d.getDate()}</div>`;
       if (inMonth && ME.isOwner) inner += `<div class="m-add-icon" data-date="${ds}">📌</div>`;
       if (inMonth) {
-        const list = (resvByDate[ds] || []).slice(0, 3);
-        list.forEach((r) => {
-          const c = colorFor(r.staffName);
-          inner += `<div class="mev" data-idx="${(resvByDate[ds]||[]).indexOf(r)}" data-date="${ds}" style="background:${c.bg}; border-left-color:${c.border}; color:${c.tx};">${r.startTime} ${escHtml(r.realname)}</div>`;
+        // ★2026-09-23変更：GAS版（calendar_page.html 778-784行）と同じく、行事を先に、
+        //   その日の予約は件数制限なく全件表示する（以前は先頭3件＋「他N件」で、
+        //   「他N件」を押しても開けなかった）
+        (evByDate[ds] || []).forEach((e, ei) => {
+          inner += `<div class="mevent-bar${e.blockReservation ? ' is-blocked' : ''}" data-date="${ds}" data-evidx="${ei}">${e.blockReservation ? '🚫' : '📌'} ${escHtml(e.label)}</div>`;
         });
-        if ((resvByDate[ds] || []).length > 3) inner += `<div class="m-more">他${(resvByDate[ds].length - 3)}件</div>`;
-        (evByDate[ds] || []).forEach((e) => {
-          inner += `<div class="mevent-bar" data-date="${ds}" data-label="${escHtml(e.label)}">📌 ${escHtml(e.label)}</div>`;
+        (resvByDate[ds] || []).forEach((r, idx) => {
+          const c = colorFor(r.staffName);
+          inner += `<div class="mev" data-idx="${idx}" data-date="${ds}" style="background:${c.bg}; border-left-color:${c.border}; color:${c.tx};">${r.isProvisional ? '<b style="color:#D32F2F;">仮</b> ' : ''}${r.startTime} ${escHtml(r.realname)}</div>`;
         });
       }
       html += `<div class="${cls.join(' ')}" data-date="${ds}" data-inmonth="${inMonth}">${inner}</div>`;
@@ -594,7 +661,7 @@
       chip.addEventListener('click', (ev) => {
         ev.stopPropagation();
         const ds = chip.dataset.date;
-        const e = (evByDate[ds] || []).find((x) => x.label === chip.dataset.label);
+        const e = (evByDate[ds] || [])[Number(chip.dataset.evidx)];
         if (e) openEventPopup(e);
       });
     });
@@ -625,7 +692,37 @@
   document.getElementById('navPrevBtn').addEventListener('click', () => { curDate = view === 'week' ? addDays(curDate, -7) : new Date(curDate.getFullYear(), curDate.getMonth()-1, 1); render(); });
   document.getElementById('navNextBtn').addEventListener('click', () => { curDate = view === 'week' ? addDays(curDate, 7) : new Date(curDate.getFullYear(), curDate.getMonth()+1, 1); render(); });
   document.getElementById('navTodayBtn').addEventListener('click', () => { curDate = new Date(); curDate.setHours(0,0,0,0); render(); });
-  document.getElementById('reloadBtn').addEventListener('click', () => { weekCache = {}; monthCache = {}; render(); });
+  document.getElementById('reloadBtn').addEventListener('click', () => { weekCache = {}; monthCache = {}; render(); checkSessionStillValid(); });
+
+  // ★2026-09-23追加：GAS版calendar_page.html 288-319行と同じく、30秒ごとにログイン状態を
+  //   確認し、別の画面でログアウトされていたら「ログアウトされました」と表示して操作を止める
+  //   （以前は次に何か操作してエラーになるまで気付けなかった）
+  async function checkSessionStillValid() {
+    try {
+      const res = await fetch('/api/auth/me');
+      if (res.status === 401) showLoggedOutOverlay();
+    } catch (_) { /* 通信エラーは一時的な可能性があるため無視 */ }
+  }
+  function showLoggedOutOverlay() {
+    if (document.getElementById('loggedOutOverlay')) return;
+    const ov = document.createElement('div');
+    ov.id = 'loggedOutOverlay';
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(255,255,255,0.7);z-index:9999;display:flex;align-items:center;justify-content:center;';
+    ov.innerHTML = '<div style="background:#fff;border:1px solid #ddd;border-radius:12px;padding:24px 28px;text-align:center;box-shadow:0 4px 16px rgba(0,0,0,0.15);max-width:320px;">' +
+      '<p style="margin-bottom:14px;font-size:14px;line-height:1.6;">🔒 ログアウトされました<br><span style="font-size:12px;color:#777;">（別の画面でログアウトが行われたか、ログインの有効期限が切れました）</span></p>' +
+      '<button type="button" style="background:#3D6B5C;color:#fff;border:none;border-radius:8px;padding:10px 20px;cursor:pointer;font-family:inherit;">もう一度ログインする</button></div>';
+    ov.querySelector('button').addEventListener('click', () => {
+      window.location.href = '/admin/login.html?next=' + encodeURIComponent(window.location.pathname);
+    });
+    document.body.appendChild(ov);
+  }
+  setInterval(checkSessionStillValid, 30000);
+  document.getElementById('calLogoutLink').addEventListener('click', async (e) => {
+    e.preventDefault();
+    if (!confirm('ログアウトしますか？次回はPINでのログインが必要になります。')) return;
+    try { await fetch('/api/auth/logout', { method: 'POST' }); } catch (_) {}
+    window.location.href = '/admin/login.html';
+  });
 
   // ---------------- 予約詳細ポップアップ ----------------
   function openReservationPopup(r) {
@@ -661,8 +758,12 @@
   // ---------------- イベント詳細ポップアップ ----------------
   function openEventPopup(e) {
     currentPopupEvent = e;
-    document.getElementById('epTitle').textContent = '📌 ' + e.label;
-    document.getElementById('epDatetime').textContent = e.startTime ? `${e.date} ${e.startTime}〜${e.endTime}` : `${e.date}（終日）`;
+    document.getElementById('epTitle').textContent = (e.blockReservation ? '🚫 ' : '📌 ') + e.label;
+    // ★2026-09-23修正：終日の行事は00:00〜23:59として保存されているため、以前は
+    //   「00:00〜23:59」と表示されていた。GAS版（calendar_page.html 842行）と同じく「終日」と出す
+    document.getElementById('epDatetime').textContent = e.allDay
+      ? `${e.date}（終日${e.blockReservation ? '・予約不可' : '・予約可'}）`
+      : `${e.date} ${e.startTime}〜${e.endTime}${e.blockReservation ? '（前後の時間帯も予約不可）' : ''}`;
     document.getElementById('epManageBtn').style.display = ME.isOwner ? '' : 'none';
     document.getElementById('evPopup').classList.add('show');
   }
@@ -828,6 +929,9 @@
     document.getElementById('rmTime').value = time || '10:00';
     document.getElementById('rmNote').value = '';
     document.getElementById('rmErr').style.display = 'none';
+    document.getElementById('rmProvGroup').style.display = 'none';
+    document.getElementById('rmSaveBtn').disabled = false;
+    document.getElementById('rmSaveBtn').style.opacity = '1';
     document.getElementById('resModal').classList.add('show');
   }
   function openEditReservation(r) {
@@ -848,8 +952,42 @@
     document.getElementById('rmTime').value = r.startTime;
     document.getElementById('rmNote').value = '';
     document.getElementById('rmErr').style.display = 'none';
+    // ★仮予約なら「仮予約中」チェックを表示（GAS版と同じく、編集できる人＝オーナー・
+    //   自分の担当・担当未定の予約のときだけ操作可能）
+    const canEdit = ME.isOwner || r.staffName === ME.name || r.staffName === '未定';
+    const provGroup = document.getElementById('rmProvGroup');
+    const provChk = document.getElementById('rmProvChk');
+    provGroup.style.display = r.isProvisional ? '' : 'none';
+    provChk.checked = true;
+    provChk.disabled = !canEdit;
+    document.getElementById('rmSaveBtn').disabled = false;
+    document.getElementById('rmSaveBtn').style.opacity = '1';
     document.getElementById('resModal').classList.add('show');
   }
+
+  // ★2026-09-23追加：「仮予約中」のチェックを外す＝確定（GAS版onProvisionalCheckboxChange相当）。
+  //   GAS版と同じく、画面上で担当スタッフを選び直していれば、その担当で確定する。
+  //   確定後は「保存する」ボタンを無効にする（確定直後に保存を押すと、中身が同じでも
+  //   「予約が変更されました」のLINEが二重に送られてしまうため。GAS版と同じ安全策）
+  document.getElementById('rmProvChk').addEventListener('change', async (ev) => {
+    const chk = ev.target;
+    if (chk.checked || !editingResvId) return; // 仮予約に戻す操作は一方通行のため何もしない
+    if (!confirm('この予約を確定していいですか？')) { chk.checked = true; return; }
+    chk.disabled = true;
+    try {
+      const r = await staffFetch(`/api/staff/reservations/${editingResvId}/confirm`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ staffName: document.getElementById('rmStaff').value })
+      });
+      if (!r.success) { alert(r.message || '確定に失敗しました'); chk.checked = true; chk.disabled = false; return; }
+      document.getElementById('rmProvGroup').style.display = 'none';
+      const saveBtn = document.getElementById('rmSaveBtn');
+      saveBtn.disabled = true; saveBtn.style.opacity = '0.4';
+      weekCache = {}; monthCache = {};
+      render();
+      if (r.message) alert(r.message);
+    } catch (e) { alert(e.message); chk.checked = true; chk.disabled = false; }
+  });
   document.getElementById('rmCancelBtn').addEventListener('click', () => document.getElementById('resModal').classList.remove('show'));
   document.getElementById('rmSaveBtn').addEventListener('click', async () => {
     const errBox = document.getElementById('rmErr');
@@ -943,7 +1081,7 @@
         const row = document.createElement('div');
         row.className = 'ev-list-item';
         row.innerHTML = `
-          <div>${escHtml(ev.label)}（${ev.startTime ? ev.startTime + '〜' + ev.endTime : '終日'}）${ev.restrictBooking ? ' 🚫予約ブロック' : ''}</div>
+          <div>${escHtml(ev.label)}（${(!ev.startTime || (ev.startTime === '00:00' && ev.endTime === '23:59')) ? (ev.restrictBooking ? '終日休み（予約不可）' : '終日の行事（予約可）') : ev.startTime + '〜' + ev.endTime}）${ev.restrictBooking ? ' 🚫予約ブロック' : ''}</div>
           <div class="ev-btns"><button type="button" data-act="edit">編集</button><button type="button" data-act="del">削除</button></div>
         `;
         row.querySelector('[data-act=edit]').addEventListener('click', () => {

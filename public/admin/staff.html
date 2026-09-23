@@ -58,6 +58,13 @@
   .modal-btn-ok{background:var(--accent); color:#fff; border:none; border-radius:9px; padding:9px 16px; font-size:13px; font-weight:600; cursor:pointer; font-family:inherit;}
   .modal-err{color:var(--warn); font-size:12px; margin-top:8px; display:none;}
   .modal-hint{font-size:11px; color:var(--ink-faint); margin-top:-6px; margin-bottom:12px;}
+  /* ★2026-09-23追加：カレンダー表示色の選択（GAS版マスタC列の色名に相当） */
+  .color-grid{display:grid; grid-template-columns:repeat(auto-fill, minmax(78px, 1fr)); gap:6px;}
+  .color-opt{display:flex; align-items:center; gap:6px; border:1px solid var(--line); border-radius:8px; padding:6px 7px; font-size:11.5px; cursor:pointer; background:#fff; font-family:inherit; text-align:left;}
+  .color-opt .sw{width:14px; height:14px; border-radius:4px; flex-shrink:0;}
+  .color-opt.selected{border:2px solid var(--ink); padding:5px 6px; font-weight:700;}
+  .color-opt .used{font-size:9.5px; color:var(--ink-faint); margin-left:auto;}
+  .color-dot{display:inline-block; width:11px; height:11px; border-radius:50%; vertical-align:-1px; margin-right:5px;}
 
   #loadingMsg{text-align:center; color:var(--ink-soft); font-size:13px; padding:60px 0;}
 
@@ -107,7 +114,7 @@
       <div class="panel">
         <table>
           <thead>
-            <tr><th>氏名</th><th>ニックネーム</th><th>役割</th><th>状態</th><th>操作</th></tr>
+            <tr><th>氏名</th><th>ニックネーム</th><th>役割</th><th>表示色</th><th>状態</th><th>操作</th></tr>
           </thead>
           <tbody id="tbody"></tbody>
         </table>
@@ -135,6 +142,10 @@
           <option value="見習い">見習い</option>
         </select>
       </div>
+      <div class="modal-field">
+        <label>カレンダーの表示色（サロンダッシュボード・スタッフダッシュボードで使われます）</label>
+        <div class="color-grid" id="fColorGrid"></div>
+      </div>
       <div class="modal-check"><input type="checkbox" id="fShowInBooking" checked><label for="fShowInBooking">予約フォームに表示する</label></div>
       <div class="modal-check"><input type="checkbox" id="fOptSupport"><label for="fOptSupport">オプションメニュー対応可</label></div>
       <div class="modal-check"><input type="checkbox" id="fNightRestrict"><label for="fNightRestrict">夜間固定枠の対象</label></div>
@@ -158,6 +169,8 @@
   const loadingMsg = document.getElementById('loadingMsg');
   const shell = document.getElementById('shell');
   let staffList = [];
+  let colorOptions = [];
+  let selectedColor = '';
   let editingId = null;
   let myStaffId = null;
 
@@ -197,7 +210,36 @@
   async function load() {
     const r = await adminFetch('/api/admin/staff');
     staffList = r.body.staff;
+    colorOptions = r.body.colorOptions || [];
     render();
+  }
+
+  function colorOf(key) { return colorOptions.find((c) => c.key === key); }
+
+  // ★2026-09-23追加：色選択（GAS版はマスタC列に色名を手入力していた）。他の在籍中
+  //   スタッフが使っている色には「使用中」と表示する（重複自体は禁止しない）
+  function renderColorGrid() {
+    const grid = document.getElementById('fColorGrid');
+    const usedBy = {};
+    staffList.forEach((s) => {
+      if (s.is_active && s.id !== editingId && s.color) usedBy[s.color] = s.name;
+    });
+    grid.innerHTML = '';
+    colorOptions.forEach((c) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'color-opt' + (selectedColor === c.key ? ' selected' : '');
+      btn.dataset.color = c.key;
+      btn.title = usedBy[c.key] ? `${usedBy[c.key]}さんが使用中` : '';
+      btn.innerHTML = `<span class="sw" style="background:${c.border};"></span>${esc(c.label)}${usedBy[c.key] ? '<span class="used">使用中</span>' : ''}`;
+      btn.addEventListener('click', () => { selectedColor = c.key; renderColorGrid(); });
+      grid.appendChild(btn);
+    });
+  }
+  function firstUnusedColor() {
+    const used = new Set(staffList.filter((s) => s.is_active).map((s) => s.color));
+    const free = colorOptions.find((c) => !used.has(c.key));
+    return free ? free.key : (colorOptions[0] ? colorOptions[0].key : '');
   }
 
   function esc(v) { return String(v == null ? '' : v).replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
@@ -212,6 +254,7 @@
         <td>${esc(s.name)} ${s.is_owner ? '<span class="badge owner">オーナー</span>' : ''}</td>
         <td>${esc(s.nickname || '')}</td>
         <td>${esc(s.role)}</td>
+        <td>${(() => { const c = colorOf(s.color || s.effective_color); return c ? `<span class="color-dot" style="background:${c.border};"></span>${esc(c.label)}${s.color ? '' : '（未設定）'}` : '—'; })()}</td>
         <td>${s.is_active ? '在籍中' : '<span class="badge inactive">退職済み</span>'}</td>
         <td><button class="row-btn" type="button" data-edit="${s.id}">編集</button></td>
       `;
@@ -237,6 +280,8 @@
     document.getElementById('pinLabel').textContent = 'ログインPIN（4桁・必須）';
     document.getElementById('pinHint').textContent = '';
     document.getElementById('modalErr').style.display = 'none';
+    selectedColor = firstUnusedColor();
+    renderColorGrid();
     document.getElementById('staffModal').classList.add('open');
   }
 
@@ -257,6 +302,8 @@
     document.getElementById('pinLabel').textContent = 'ログインPIN（4桁・変更する場合のみ入力）';
     document.getElementById('pinHint').textContent = s.has_pin ? '空欄のままにすると、現在のPINを変更しません。' : 'PIN未設定です。ログインさせるには設定してください。';
     document.getElementById('modalErr').style.display = 'none';
+    selectedColor = s.color || s.effective_color || '';
+    renderColorGrid();
     document.getElementById('staffModal').classList.add('open');
 
     // 自分自身は在籍中フラグを外せない（誰もログインできなくなる事故防止）
@@ -280,7 +327,8 @@
       nightRestrict: document.getElementById('fNightRestrict').checked,
       isOwner: document.getElementById('fIsOwner').checked,
       isActive: document.getElementById('fIsActive').checked,
-      pin: document.getElementById('fPin').value.trim()
+      pin: document.getElementById('fPin').value.trim(),
+      color: selectedColor
     };
     try {
       let res;

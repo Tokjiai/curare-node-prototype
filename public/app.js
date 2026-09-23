@@ -401,15 +401,26 @@ async function submitRegistrationIfNeeded() {
   let combinedName = null;
 
   if (needsFullReg) {
+    // ★2026-09-23追加修正：以前は姓・名の未入力しかチェックしておらず、フリガナ・
+    //   電話番号・ご住所が空欄のままでも登録→予約が完走できてしまっていた
+    //   （社長のテストで発覚。サーバー側lib/customerMerge.jsも同時に修正済み）。
+    //   お客様への案内としてここで先に空欄チェックを行い、該当欄にフォーカスする。
     const lastName = document.getElementById('regLastName').value.trim();
     const firstName = document.getElementById('regFirstName').value.trim();
+    const lastKana = document.getElementById('regLastKana').value.trim();
+    const firstKana = document.getElementById('regFirstKana').value.trim();
+    const phone = document.getElementById('regPhone').value.trim();
+    const address = document.getElementById('regAddress').value.trim();
     if (!lastName || !firstName) return { success: false, message: '姓・名を入力してください' };
+    if (!lastKana || !firstKana) return { success: false, message: 'フリガナ姓・フリガナ名を入力してください' };
+    if (!phone) return { success: false, message: '電話番号を入力してください' };
+    if (!address) return { success: false, message: 'ご住所を入力してください' };
     payload.lastName = lastName;
     payload.firstName = firstName;
-    payload.lastKana = document.getElementById('regLastKana').value.trim();
-    payload.firstKana = document.getElementById('regFirstKana').value.trim();
-    payload.phone = document.getElementById('regPhone').value.trim();
-    payload.address = document.getElementById('regAddress').value.trim();
+    payload.lastKana = lastKana;
+    payload.firstKana = firstKana;
+    payload.phone = phone;
+    payload.address = address;
     combinedName = `${lastName} ${firstName}`;
   }
   if (keepRequestToSend) {

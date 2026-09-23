@@ -86,6 +86,8 @@ CREATE TABLE IF NOT EXISTS staff (
                                                    --   自分の4桁PINをテキストで送ると、routes/lineWebhook.js が
                                                    --   staffマスタと照合し、未設定ならここに自動登録する。
                                                    --   既に値がある場合は上書きしない（なりすまし登録防止）。
+  color            VARCHAR(20),                  -- ★2026-09-23追加：カレンダー表示色（GAS版マスタC列相当。
+                                                   --   'BLUE'/'RED'等の色キー。オーナーがスタッフ管理画面で選ぶ）
   created_at       DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
