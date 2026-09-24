@@ -73,6 +73,7 @@
       <div class="store-name">クラーレ寿</div>
       <div class="proto-badge">PROTOTYPE</div>
       <div class="nav">
+        <a href="/menu.html" class="nav-item">🏠 メニュー（統一タイル）</a>
         <a href="index.html" class="nav-item active">📊 ダッシュボード</a>
         <a href="customers.html" class="nav-item">👥 顧客マスタ</a>
         <a href="reservations.html" class="nav-item">📅 予約データ</a>
@@ -191,7 +192,9 @@
       //   専用のスタッフダッシュボードへ誘導する（そのままだとオーナー専用APIが
       //   401になり、以前の「顧客マスタに入れない」不具合と同種の見た目のループに
       //   なってしまうため）
-      if (!me.staff.isOwner) { window.location.href = '/staff/dashboard.html'; return; }
+      // ★2026-09-24変更：一般スタッフ・サロン端末（GAS版ST099相当）はオーナー専用画面に入れないため、
+      //   統一タイルメニュー（GAS版top_page.html相当）へ戻す
+      if (!me.staff.isOwner || me.staff.isTerminal) { window.location.href = '/menu.html'; return; }
       const data = await adminFetch('/api/admin/dashboard');
       loadingMsg.style.display = 'none';
       shell.classList.add('ready');

@@ -91,6 +91,11 @@ CREATE TABLE IF NOT EXISTS staff (
                                                    --   既に値がある場合は上書きしない（なりすまし登録防止）。
   color            VARCHAR(20),                  -- ★2026-09-23追加：カレンダー表示色（GAS版マスタC列相当。
                                                    --   'BLUE'/'RED'等の色キー。オーナーがスタッフ管理画面で選ぶ）
+  is_shared_terminal BOOLEAN NOT NULL DEFAULT 0,  -- ★2026-09-24追加：「サロン端末」共有ログイン用アカウントか
+                                                   --   （GAS版の全店共通staffId 'ST099' 相当）。1の行は is_owner=1 として
+                                                   --   カレンダー上の予約編集はオーナーと同じ全権限を持つが、
+                                                   --   オーナー設定・スタッフ管理・顧客/予約の編集画面には入れない。
+                                                   --   予約対象スタッフ・シフト表・凡例・LINE通知の対象からは除外する。
   created_at       DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 

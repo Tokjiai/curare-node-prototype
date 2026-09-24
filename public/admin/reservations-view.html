@@ -74,7 +74,7 @@
     </div>
     <div style="display:flex; align-items:center; gap:10px;">
       <div class="view-badge" id="viewBadge">👤 -</div>
-      <button class="close-btn" type="button" onclick="window.location.href='index.html'">✕ 閉じる</button>
+      <button class="close-btn" type="button" onclick="window.close(); setTimeout(function(){ window.location.href='/menu.html'; }, 200);">✕ 閉じる</button>
     </div>
   </div>
 
@@ -131,7 +131,7 @@
         loadingMsg.textContent = 'この画面はオーナー権限のみ利用できます';
         return;
       }
-      document.getElementById('viewBadge').textContent = '👤 ' + me.staff.name + '（オーナー）';
+      document.getElementById('viewBadge').textContent = (me.staff.isTerminal ? '🖥️ ' + me.staff.name : '👤 ' + me.staff.name + '（オーナー）');
       await loadReservations();
       loadingMsg.style.display = 'none';
       wrap.classList.add('ready');

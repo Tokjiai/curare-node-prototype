@@ -122,8 +122,8 @@
   async function init() {
     try {
       const me = await adminFetch('/api/auth/me');
-      if (!me.staff.isOwner) {
-        loadingMsg.textContent = 'この画面はオーナー権限のみ利用できます';
+      if (!me.staff.isOwner || me.staff.isTerminal) {
+        loadingMsg.textContent = 'この画面はオーナー権限のみ利用できます（サロン端末では利用できません）';
         return;
       }
       document.getElementById('viewBadge').textContent = '👤 ' + me.staff.name + '（オーナー）';

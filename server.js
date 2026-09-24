@@ -11,7 +11,8 @@
 //   GET  /api/admin/customers    【オーナー管理画面】顧客マスタ検索（要ログインセッション・オーナー権限）
 //   GET  /api/admin/reservations 【オーナー管理画面】予約データ検索（要ログインセッション・オーナー権限）
 //   GET  /api/admin/dashboard    【オーナー管理画面】ダッシュボード集計（要ログインセッション・オーナー権限）
-//   POST /api/auth/login         スタッフPINログイン（4桁PIN、GAS版の電話番号下4桁運用を踏襲）
+//   GET  /api/auth/login-staff   ログイン画面の名前タイル一覧（GAS版getStaffLoginList相当）
+//   POST /api/auth/login         スタッフPINログイン（タイルで選んだstaffId＋4桁PIN。GAS版loginStaff_相当）
 //   POST /api/auth/logout        ログアウト（セッション破棄）
 //   GET  /api/auth/me            現在のログイン状態確認
 //   POST /webhook/line            LINE Messaging API Webhook受信（routes/lineWebhook.js）
@@ -568,30 +569,86 @@ app.post('/api/customer-registration', (req, res) => {
 // ============================================================================
 
 // ----------------------------------------------------------------------------
-// POST /api/auth/login : { store, pin } でログインし、成功時はセッションを発行する
+// ★2026-09-24追加：ログインをGAS版login_modal_partial.htmlと同じ2段階方式に変更
+//   ①店舗のスタッフ名タイル一覧を出す（GET /api/auth/login-staff、GAS版getStaffLoginList相当）
+//   ②タイルで本人を選び、4桁PINを入力して送信（POST /api/auth/login、GAS版loginStaff_相当）
+//   以前の「店舗＋PINだけ」で店舗内の全スタッフと照合する方式は、同じ店舗にPINが
+//   重複するスタッフがいると誰としてログインしたか区別できなかったため廃止した
+//   （staffIdで本人を特定してからPINを照合するので、PINの重複は問題にならない）。
+// ----------------------------------------------------------------------------
+
+// 店舗の slug または ID を厳密に解決する（resolveStoreIdと違い、見つからなければnull。
+//   ログイン画面で店舗の打ち間違いに気付かず、既定店舗のタイルが出てしまう事故を防ぐため）
+function resolveStoreIdStrict_(storeSlugOrId) {
+  if (storeSlugOrId == null || String(storeSlugOrId).trim() === '') return null;
+  const key = String(storeSlugOrId).trim();
+  const byId = /^\d+$/.test(key) ? db.prepare('SELECT id FROM stores WHERE id = ?').get(Number(key)) : null;
+  if (byId) return byId.id;
+  const bySlug = db.prepare('SELECT id FROM stores WHERE slug = ?').get(key);
+  return bySlug ? bySlug.id : null;
+}
+
+// ----------------------------------------------------------------------------
+// GET /api/auth/login-staff?store=slugまたはID
+//   → { success, store:{id,slug,name}, staff:[{id,name,isTerminal}] }
+//   ログイン画面の名前タイル用。在籍中かつPIN設定済みのスタッフのみ、登録順（id順）で
+//   返し、サロン端末（共有ログイン）はGAS版のタイル並びと同じく末尾に置く。
+//   未ログインで呼べるAPIのため、権限（isOwner）やPIN有無などの内部情報は返さない。
+// ----------------------------------------------------------------------------
+app.get('/api/auth/login-staff', (req, res) => {
+  try {
+    const storeId = resolveStoreIdStrict_(req.query.store);
+    if (!storeId) {
+      return res.status(404).json({ success: false, message: '店舗が見つかりません' });
+    }
+    const store = db.prepare('SELECT id, slug, name FROM stores WHERE id = ?').get(storeId);
+    const rows = db.prepare(`
+      SELECT id, name, is_shared_terminal FROM staff
+      WHERE store_id = ? AND is_active = 1 AND pin_hash IS NOT NULL
+      ORDER BY is_shared_terminal ASC, id ASC
+    `).all(storeId);
+    res.json({
+      success: true,
+      store,
+      staff: rows.map((r) => ({ id: r.id, name: r.name, isTerminal: !!r.is_shared_terminal }))
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// POST /api/auth/login : { staffId, pin, store? } でログインし、成功時はセッションを発行する
+//   → { success, staffId, name, role, isOwner, isTerminal, storeId }（GAS版loginStaff_の戻り値
+//   {success, staffId, name, role, isOwner, token} に合わせた形。GAS版のtokenは、Node版では
+//   Cookieのセッションが同じ役割を担うため返さない）
+//   store を一緒に送った場合は、そのstaffIdが本当にその店舗の人かも確認する。
 // ----------------------------------------------------------------------------
 app.post('/api/auth/login', (req, res) => {
   try {
-    const { store, pin } = req.body || {};
-    if (!store || !pin) {
-      return res.status(400).json({ success: false, message: 'store と pin は必須です' });
+    const { staffId, pin, store } = req.body || {};
+    if (!staffId || !pin) {
+      return res.status(400).json({ success: false, message: 'スタッフを選択し、PINを入力してください' });
     }
-    const storeId = resolveStoreId(store);
-    const candidates = db.prepare(
-      'SELECT * FROM staff WHERE store_id = ? AND is_active = 1 AND pin_hash IS NOT NULL'
-    ).all(storeId);
-
-    const matched = candidates.find((s) => verifyPin(pin, s.pin_salt, s.pin_hash));
-
-    if (!matched) {
+    const matched = db.prepare(
+      'SELECT * FROM staff WHERE id = ? AND is_active = 1 AND pin_hash IS NOT NULL'
+    ).get(Number(staffId));
+    const storeOk = !store || (matched && resolveStoreIdStrict_(store) === matched.store_id);
+    if (!matched || !storeOk || !verifyPin(pin, matched.pin_salt, matched.pin_hash)) {
       return res.status(401).json({ success: false, message: 'PINが正しくありません' });
     }
 
+    const isTerminal = !!matched.is_shared_terminal;
     req.session.staff = {
       id: matched.id,
       storeId: matched.store_id,
       name: matched.name,
-      isOwner: !!matched.is_owner
+      role: matched.role,
+      // ★サロン端末はGAS版（ST099）と同じくisOwner扱い。カレンダー上の予約編集は
+      //   オーナーと同等の全権限を持たせるのが意図した設計（社長確認済み）
+      isOwner: !!matched.is_owner || isTerminal,
+      isTerminal
     };
 
     // ★2026-09-19追加：res.json()を呼ぶ前にreq.session.save()の完了を明示的に待つ。
@@ -605,7 +662,11 @@ app.post('/api/auth/login', (req, res) => {
         console.error('セッション保存エラー:', err);
         return res.status(500).json({ success: false, message: 'セッションの保存に失敗しました' });
       }
-      res.json({ success: true, staffName: matched.name, storeId: matched.store_id, isOwner: !!matched.is_owner });
+      const st = req.session.staff;
+      res.json({
+        success: true, staffId: st.id, name: st.name, staffName: st.name, role: st.role,
+        storeId: st.storeId, isOwner: st.isOwner, isTerminal: st.isTerminal
+      });
     });
   } catch (e) {
     console.error(e);
@@ -635,10 +696,42 @@ app.get('/api/auth/me', (req, res) => {
 
 // ----------------------------------------------------------------------------
 // requireOwnerSession : /api/admin/* をセッション＋オーナー権限で保護するミドルウェア
+//   ★2026-09-24追加：サロン端末（GAS版ST099相当、session.staff.isTerminal）は
+//   isOwner扱いだが、/api/admin/* のうち下の TERMINAL_ALLOWED_ADMIN_APIS に挙げた
+//   API（GAS版top_page.htmlで端末にも出していた「顧客マスタ閲覧」「予約データ閲覧」
+//   画面が使うものと、カレンダー上のイベント（予約枠ブロック）操作）だけを許可し、
+//   それ以外（店舗設定・スタッフ管理・顧客/予約の編集など）は403で拒否する。
+//   「許可したものだけ通す」方式なので、今後/api/admin/*にAPIを足しても、
+//   端末からは自動的に使えない（安全側に倒れる）。
 // ----------------------------------------------------------------------------
+const TERMINAL_ALLOWED_ADMIN_APIS = [
+  // 顧客マスタ閲覧（customers-view.html）。GAS版customer_view.htmlは閲覧専用画面だが、
+  //   統合（マージ）とキープメンバーの1クリック切替だけはこの画面から操作できたため、
+  //   同画面を開ける端末でも同じ操作を許可する（README 57章参照）
+  { method: 'GET', re: /^\/api\/admin\/customers$/ },
+  { method: 'GET', re: /^\/api\/admin\/customers\/merge-candidates$/ },
+  { method: 'POST', re: /^\/api\/admin\/customers\/merge-candidates\/dismiss$/ },
+  { method: 'POST', re: /^\/api\/admin\/customers\/merge$/ },
+  { method: 'POST', re: /^\/api\/admin\/customers\/[^/]+\/toggle-keep-member$/ },
+  // 予約データ閲覧（reservations-view.html）
+  { method: 'GET', re: /^\/api\/admin\/reservations$/ },
+  // サロンダッシュボード（staff/calendar.html）のイベント＝予約枠ブロックの登録・編集・削除。
+  //   端末はカレンダー上ではオーナーと同等の全権限を持つ設計のため
+  { method: 'GET', re: /^\/api\/admin\/events$/ },
+  { method: 'POST', re: /^\/api\/admin\/events$/ },
+  { method: 'PUT', re: /^\/api\/admin\/events\/\d+$/ },
+  { method: 'DELETE', re: /^\/api\/admin\/events\/\d+$/ }
+];
+function terminalMayUseAdminApi_(req) {
+  const path = req.baseUrl + req.path;
+  return TERMINAL_ALLOWED_ADMIN_APIS.some((a) => a.method === req.method && a.re.test(path));
+}
 function requireOwnerSession(req, res, next) {
   if (!req.session || !req.session.staff || !req.session.staff.isOwner) {
     return res.status(401).json({ error: 'unauthorized' });
+  }
+  if (req.session.staff.isTerminal && !terminalMayUseAdminApi_(req)) {
+    return res.status(403).json({ error: 'forbidden_for_shared_terminal', message: 'サロン端末ではこの操作はできません（オーナーのみ）' });
   }
   next();
 }
@@ -685,7 +778,7 @@ function staffReservationVisibility_(sessStaff) {
 function shiftTargetStaff_(storeId) {
   const colors = assignStaffColors_(storeId);
   return db.prepare(`
-    SELECT name FROM staff WHERE store_id = ? AND is_active = 1 AND role != '見習い' ORDER BY id ASC
+    SELECT name FROM staff WHERE store_id = ? AND is_active = 1 AND role != '見習い' AND is_shared_terminal = 0 ORDER BY id ASC
   `).all(storeId).map((r) => ({
     name: r.name,
     colorKey: colors[r.name] || '',
@@ -1021,7 +1114,7 @@ app.post('/api/staff/shifts', requireStaffSession, (req, res) => {
     //   代理でシフトを追加できる（一般スタッフは常に本人分のみ）
     let staffName = req.session.staff.name;
     if (isOwner && req.body && req.body.staffName && req.body.staffName !== staffName) {
-      const target = db.prepare('SELECT name FROM staff WHERE store_id = ? AND name = ? AND is_active = 1').get(storeId, String(req.body.staffName));
+      const target = db.prepare('SELECT name FROM staff WHERE store_id = ? AND name = ? AND is_active = 1 AND is_shared_terminal = 0').get(storeId, String(req.body.staffName));
       if (!target) return res.status(400).json({ success: false, message: '在籍中のスタッフとして見つかりません' });
       staffName = target.name;
     }
@@ -1463,7 +1556,7 @@ const CALENDAR_COLOR_LABELS = {
 //     色を表示上だけ割り当てる（保存はしない。オーナーがスタッフ管理画面で選び直せる）
 function getStaffColorRows_(storeId) {
   return db.prepare(`
-    SELECT name, color, is_active FROM staff WHERE store_id = ? ORDER BY is_active DESC, id ASC
+    SELECT name, color, is_active FROM staff WHERE store_id = ? AND is_shared_terminal = 0 ORDER BY is_active DESC, id ASC
   `).all(storeId);
 }
 function assignStaffColors_(storeId, { includeInactive = true } = {}) {
@@ -1483,12 +1576,12 @@ function assignStaffColors_(storeId, { includeInactive = true } = {}) {
 // 凡例用：在籍中スタッフの名前だけ（表示順＝staff.id順）
 function activeStaffNamesForLegend_(storeId) {
   return db.prepare(`
-    SELECT name FROM staff WHERE store_id = ? AND is_active = 1 AND role != '見習い' ORDER BY id ASC
+    SELECT name FROM staff WHERE store_id = ? AND is_active = 1 AND role != '見習い' AND is_shared_terminal = 0 ORDER BY id ASC
   `).all(storeId).map((r) => r.name);
 }
 // 新規スタッフ登録時の既定色：同じ店舗でまだ使われていない最初の色
 function nextUnusedStaffColor_(storeId) {
-  const used = new Set(db.prepare('SELECT color FROM staff WHERE store_id = ? AND is_active = 1').all(storeId).map((r) => r.color));
+  const used = new Set(db.prepare('SELECT color FROM staff WHERE store_id = ? AND is_active = 1 AND is_shared_terminal = 0').all(storeId).map((r) => r.color));
   return CALENDAR_COLOR_KEYS.find((k) => !used.has(k)) || CALENDAR_COLOR_KEYS[0];
 }
 
@@ -2038,7 +2131,7 @@ app.get('/api/admin/staff', requireOwnerSession, (req, res) => {
     //   差異が生じていた。マスタの登録順に一致させるため、並び順の指定をid ASC
     //   （＝登録順）に統一する（在籍中／退職済みでのグループ分けも行わない）。
     const rows = db.prepare(`
-      SELECT id, name, nickname, role, opt_support, night_restrict, show_in_booking, is_active, is_owner, color,
+      SELECT id, name, nickname, role, opt_support, night_restrict, show_in_booking, is_active, is_owner, is_shared_terminal, color,
              (pin_hash IS NOT NULL) AS has_pin
       FROM staff WHERE store_id = ? ORDER BY id ASC
     `).all(storeId);
@@ -2088,14 +2181,19 @@ app.post('/api/admin/staff', requireOwnerSession, (req, res) => {
     // ★色の指定が無ければ、同じ店舗でまだ誰も使っていない色を既定で割り当てる
     const color = data.color || nextUnusedStaffColor_(storeId);
 
+    // ★2026-09-24追加：サロン端末（共有ログイン、GAS版ST099相当）として登録する場合は、
+    //   GAS版と同じくisOwner扱い（is_owner=1）にし、予約対象スタッフには出さない
+    //   （show_in_booking=0）。表示色も割り当てない（カレンダーの担当者色に使わないため）
+    const isTerminal = !!data.isSharedTerminal;
     const { hash, salt } = createPinHash(data.pin);
     const info = db.prepare(`
-      INSERT INTO staff (store_id, name, nickname, role, opt_support, night_restrict, show_in_booking, is_active, pin_hash, pin_salt, is_owner, color)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+      INSERT INTO staff (store_id, name, nickname, role, opt_support, night_restrict, show_in_booking, is_active, pin_hash, pin_salt, is_owner, color, is_shared_terminal)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
     `).run(
-      storeId, data.name.trim(), data.nickname || '', data.role || 'スタッフ',
-      data.optSupport ? 1 : 0, data.nightRestrict ? 1 : 0, data.showInBooking === false ? 0 : 1,
-      hash, salt, data.isOwner ? 1 : 0, color
+      storeId, data.name.trim(), data.nickname || '', data.role || (isTerminal ? 'サロン端末' : 'スタッフ'),
+      isTerminal ? 0 : (data.optSupport ? 1 : 0), isTerminal ? 0 : (data.nightRestrict ? 1 : 0),
+      isTerminal ? 0 : (data.showInBooking === false ? 0 : 1),
+      hash, salt, (data.isOwner || isTerminal) ? 1 : 0, isTerminal ? null : color, isTerminal ? 1 : 0
     );
     res.json({ success: true, staffId: info.lastInsertRowid, color });
   } catch (e) {
@@ -2135,6 +2233,20 @@ app.put('/api/admin/staff/:id', requireOwnerSession, (req, res) => {
       show_in_booking: data.showInBooking === false ? 0 : 1,
       is_active: data.isActive === false ? 0 : 1, is_owner: data.isOwner ? 1 : 0
     };
+    // ★2026-09-24追加：サロン端末フラグ。項目を送らない既存の呼び出し元（テスト等）では
+    //   現在の値を保持する。端末ならPOSTと同じくis_owner=1・予約対象外に揃える。
+    //   ログイン中の本人の端末フラグは切り替えられない（オーナーが自分を端末化して
+    //   オーナー設定・スタッフ管理に入れなくなる事故を防ぐ）
+    const isTerminal = Object.prototype.hasOwnProperty.call(data, 'isSharedTerminal')
+      ? !!data.isSharedTerminal : !!existing.is_shared_terminal;
+    if (id === req.session.staff.id && isTerminal !== !!existing.is_shared_terminal) {
+      return res.status(400).json({ success: false, message: 'ログイン中の自分自身のサロン端末設定は変更できません' });
+    }
+    params.is_shared_terminal = isTerminal ? 1 : 0;
+    if (isTerminal) {
+      params.is_owner = 1;
+      params.show_in_booking = 0;
+    }
     if (data.pin) {
       if (!/^\d{4}$/.test(String(data.pin))) {
         return res.status(400).json({ success: false, message: 'PINは4桁の数字で指定してください' });
@@ -2159,7 +2271,7 @@ app.put('/api/admin/staff/:id', requireOwnerSession, (req, res) => {
       UPDATE staff
       SET name = @name, nickname = @nickname, role = @role,
           opt_support = @opt_support, night_restrict = @night_restrict, show_in_booking = @show_in_booking,
-          is_active = @is_active, is_owner = @is_owner
+          is_active = @is_active, is_owner = @is_owner, is_shared_terminal = @is_shared_terminal
           ${pinClause}${colorClause}
       WHERE id = @id AND store_id = @store_id
     `).run(params);
@@ -2458,7 +2570,7 @@ app.post('/api/admin/shifts', requireOwnerSession, (req, res) => {
       return res.status(400).json({ success: false, message: '終了時間は開始時間より後にしてください' });
     }
     const staffExists = db.prepare(
-      'SELECT 1 FROM staff WHERE store_id = ? AND name = ? AND is_active = 1'
+      'SELECT 1 FROM staff WHERE store_id = ? AND name = ? AND is_active = 1 AND is_shared_terminal = 0'
     ).get(storeId, staffName);
     if (!staffExists) {
       return res.status(400).json({ success: false, message: '在籍中のスタッフとして見つかりません' });
@@ -2544,7 +2656,7 @@ app.post('/api/admin/settings/shift-templates', requireOwnerSession, (req, res) 
       return res.status(400).json({ success: false, message: '終了時間は開始時間より後にしてください' });
     }
     const staffExists = db.prepare(
-      'SELECT 1 FROM staff WHERE store_id = ? AND name = ? AND is_active = 1'
+      'SELECT 1 FROM staff WHERE store_id = ? AND name = ? AND is_active = 1 AND is_shared_terminal = 0'
     ).get(storeId, staffName);
     if (!staffExists) {
       return res.status(400).json({ success: false, message: '在籍中のスタッフとして見つかりません' });

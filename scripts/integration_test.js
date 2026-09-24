@@ -69,6 +69,15 @@ function makeSession() {
     },
     async del(path) {
       return this.request(path, { method: 'DELETE' });
+    },
+    // ★2026-09-24追加：ログインがGAS版と同じ「名前タイルで本人を選ぶ→PIN」の2段階に
+    //   なったため、画面と同じ手順（①タイル一覧を取得→②名前からstaffIdを特定→
+    //   ③staffId＋PINで送信）でログインする
+    async loginAs(store, staffName, pin) {
+      const list = await this.get('/api/auth/login-staff?store=' + encodeURIComponent(store));
+      const tile = ((list.body && list.body.staff) || []).find((t) => t.name === staffName);
+      if (!tile) return { status: 404, body: { success: false, message: 'タイルが見つかりません: ' + staffName } };
+      return this.postJson('/api/auth/login', { staffId: tile.id, pin, store });
     }
   };
 }
@@ -88,11 +97,11 @@ async function main() {
 
   const owner1 = makeSession();
   {
-    const r = await owner1.postJson('/api/auth/login', { store: '1', pin: '9999' });
+    const r = await owner1.loginAs('1', '寿子', '9999');
     assert(r.status === 401, '誤ったPINでのログインは401になる（正しいPINと誤認しない）');
   }
   {
-    const r = await owner1.postJson('/api/auth/login', { store: '1', pin: '5678' });
+    const r = await owner1.loginAs('1', '寿子', '5678');
     assert(r.status === 200 && r.body.success === true, 'store1オーナー（PIN5678）が正しくログインできる');
   }
   {
@@ -103,7 +112,7 @@ async function main() {
     //   （以前は403で失敗する想定だったためowner1を流用していたが、今は成功するので
     //   流用するとowner1が花子のセッションに変わってしまい、以降のテストが壊れる）
     const hanakoProbe = makeSession();
-    const r = await hanakoProbe.postJson('/api/auth/login', { store: '1', pin: '6789' }); // 花子（is_owner=0）
+    const r = await hanakoProbe.loginAs('1', '花子', '6789'); // 花子（is_owner=0）
     assert(r.status === 200 && r.body.success === true && r.body.isOwner === false, '一般スタッフPINでもログインでき、isOwner:falseが返る');
   }
 
@@ -113,7 +122,7 @@ async function main() {
   console.log('--- 2. 複数店舗のデータ分離 ---');
   const owner2 = makeSession();
   {
-    const r = await owner2.postJson('/api/auth/login', { store: 'iwatamachi-test', pin: '4321' });
+    const r = await owner2.loginAs('iwatamachi-test', '岩田町オーナー', '4321');
     assert(r.status === 200 && r.body.success === true, '岩田町店（テスト用2店舗目）のオーナーがログインできる');
   }
   {
@@ -235,7 +244,7 @@ async function main() {
   // --------------------------------------------------------------------------
   console.log('--- 8. シフト管理 ---');
   const ownerFresh = makeSession();
-  await ownerFresh.postJson('/api/auth/login', { store: '1', pin: '5678' });
+  await ownerFresh.loginAs('1', '寿子', '5678');
   {
     const r = await ownerFresh.get('/api/admin/staff');
     assert(r.status === 200 && Array.isArray(r.body.staff) && r.body.staff.length >= 3, 'スタッフ一覧（見習い含む全員）が取得できる');
@@ -677,7 +686,7 @@ async function main() {
   // ownerFresh とは別に、同じ寿子でもう1つログインセッションを作る（複数端末ログインを模す）
   const kotokoOtherDevice = makeSession();
   {
-    const r = await kotokoOtherDevice.postJson('/api/auth/login', { store: '1', pin: '5678' });
+    const r = await kotokoOtherDevice.loginAs('1', '寿子', '5678');
     assert(r.status === 200 && r.body.success === true, '同じ寿子で別端末からもログインできる（多重ログイン）');
   }
   {
@@ -702,7 +711,7 @@ async function main() {
   }
   // 以降のテストで ownerFresh を使い続けられるよう、再ログインしておく
   {
-    const r = await ownerFresh.postJson('/api/auth/login', { store: '1', pin: '5678' });
+    const r = await ownerFresh.loginAs('1', '寿子', '5678');
     assert(r.status === 200 && r.body.success === true, '強制ログアウト後、再ログインすればownerFreshを引き続き使える');
   }
   {
@@ -793,7 +802,7 @@ async function main() {
   console.log('--- 17. スタッフダッシュボード ---');
   const hanako = makeSession();
   {
-    const r = await hanako.postJson('/api/auth/login', { store: '1', pin: '6789' }); // 花子（is_owner=0）
+    const r = await hanako.loginAs('1', '花子', '6789'); // 花子（is_owner=0）
     assert(r.status === 200 && r.body.success === true && r.body.staffName === '花子', '一般スタッフ（花子）がログインできる');
   }
   {
@@ -1000,7 +1009,7 @@ async function main() {
   // --------------------------------------------------------------------------
   console.log('--- 21. 月間カレンダー ---');
   const hanakoFresh = makeSession();
-  await hanakoFresh.postJson('/api/auth/login', { store: '1', pin: '6789' }); // 花子（is_owner=0）
+  await hanakoFresh.loginAs('1', '花子', '6789'); // 花子（is_owner=0）
   {
     const r = await fetch(BASE + '/api/staff/reservations/monthly?month=2026-09').then((res) => res.status);
     assert(r === 401, '未ログインでは月間カレンダーAPIは401になる');
@@ -2582,11 +2591,11 @@ async function main() {
     const searched = await ownerFresh.get('/api/admin/db-viewer/customers?q=' + encodeURIComponent('花子'));
     assert(searched.status === 200 && (searched.body.rows || []).every((r) => JSON.stringify(r).includes('花子')), 'DB一覧ビューアの検索（あいまい一致）が機能する');
     const owner2Session = makeSession();
-    await owner2Session.postJson('/api/auth/login', { store: '2', pin: '4321' });
+    await owner2Session.loginAs('2', '岩田町オーナー', '4321');
     const scoped = await owner2Session.get('/api/admin/db-viewer/staff');
     assert(scoped.status === 200 && (scoped.body.rows || []).every((r) => !String(r.name || '').includes('寿子')), '他店舗のオーナーは自店舗のデータしかDB一覧ビューアで見られない（店舗スコープの確認）');
     const staffSession = makeSession();
-    await staffSession.postJson('/api/auth/login', { store: '1', pin: '6789' }); // 花子（is_owner=0）
+    await staffSession.loginAs('1', '花子', '6789'); // 花子（is_owner=0）
     const denied = await staffSession.get('/api/admin/db-viewer/reservations');
     assert(denied.status === 401 || denied.status === 403, '一般スタッフ（オーナー権限なし）はDB一覧ビューアにアクセスできない');
   }
@@ -2785,6 +2794,218 @@ async function main() {
     // 一般スタッフはルール値を変更できない（オーナー限定、他の設定変更系エンドポイントと同じ方針）
     const deniedPut = await hanako.putJson('/api/admin/settings/rules/REMINDER_HOUR', { value: '10' });
     assert(deniedPut.status === 401 || deniedPut.status === 403, '一般スタッフはスケジューラの実行時刻設定を変更できない（オーナー限定）');
+  }
+
+  // --------------------------------------------------------------------------
+  // 45. ログインUI（名前タイル→PIN）・統一タイルメニュー・サロン端末（GAS版ST099相当）の権限分岐
+  //     （GAS版 login_modal_partial.html / loginStaff_ / top_page.html の移植。README 57章）
+  // --------------------------------------------------------------------------
+  console.log('--- 45. ログインUI・統一メニュー・サロン端末の権限分岐 ---');
+  const tiles45 = await makeSession().get('/api/auth/login-staff?store=1');
+  const tile45 = (name) => ((tiles45.body && tiles45.body.staff) || []).find((t) => t.name === name);
+  {
+    const names = (tiles45.body.staff || []).map((t) => t.name);
+    assert(tiles45.status === 200 && tiles45.body.success === true && tiles45.body.store.id === 1,
+      'ログイン画面用の名前タイル一覧（GAS版getStaffLoginList相当）を未ログインで取得できる');
+    assert(['寿子', '花子', '美咲', 'サロン端末'].every((n) => names.includes(n)), 'タイル一覧に在籍中のスタッフ全員とサロン端末が並ぶ');
+    assert(names[names.length - 1] === 'サロン端末' && tile45('サロン端末').isTerminal === true && tile45('花子').isTerminal === false,
+      'サロン端末のタイルは末尾に置かれ、isTerminal:trueで区別できる');
+    const keys = Object.keys(tiles45.body.staff[0]).sort().join(',');
+    assert(keys === 'id,isTerminal,name', 'タイル一覧はid・name・isTerminalだけを返す（権限やPINの有無など内部情報は未ログインに見せない）');
+  }
+  {
+    const r = await makeSession().get('/api/auth/login-staff?store=iwatamachi-test');
+    const names = (r.body.staff || []).map((t) => t.name);
+    assert(r.status === 200 && names.length === 1 && names[0] === '岩田町オーナー', 'slug指定でその店舗のスタッフだけがタイルに出る（他店のスタッフは混ざらない）');
+  }
+  {
+    const r = await makeSession().get('/api/auth/login-staff?store=no-such-store');
+    assert(r.status === 404 && r.body.success === false, '存在しない店舗を指定するとタイル一覧は404（既定店舗のタイルにすり替わらない）');
+  }
+  {
+    const ins = db.prepare(`INSERT INTO staff (store_id, name, role, is_active, pin_hash, pin_salt) VALUES (1, '退職済みタイル45', 'スタッフ', 0, 'x', 'y')`).run();
+    const r = await makeSession().get('/api/auth/login-staff?store=1');
+    assert(!(r.body.staff || []).some((t) => t.name === '退職済みタイル45'), '在籍中フラグOFFのスタッフはタイルに出ない');
+    db.prepare('DELETE FROM staff WHERE id = ?').run(ins.lastInsertRowid);
+  }
+  {
+    const r = await makeSession().postJson('/api/auth/login', { store: '1', pin: '5678' });
+    assert(r.status === 400 && r.body.success === false, '旧方式（店舗＋PINのみ、staffIdなし）のログインは400で受け付けない');
+  }
+  {
+    const r = await makeSession().postJson('/api/auth/login', { staffId: tile45('花子').id, pin: '5678', store: '1' });
+    assert(r.status === 401, '選んだ本人と違うスタッフ（寿子）のPINではログインできない（staffIdで本人を特定してから照合）');
+  }
+  {
+    const r = await makeSession().postJson('/api/auth/login', { staffId: tile45('花子').id, pin: '6789', store: 'iwatamachi-test' });
+    assert(r.status === 401, 'staffIdと店舗の組み合わせが食い違うとログインできない');
+  }
+  {
+    // PIN重複：旧方式では同じ店舗に同じPINの人がいると誰でログインしたか区別できなかった
+    const { createPinHash } = require('../lib/auth');
+    const h = createPinHash('6789');
+    const dupId = db.prepare(`INSERT INTO staff (store_id, name, role, is_active, show_in_booking, pin_hash, pin_salt) VALUES (1, 'PIN重複45', 'スタッフ', 1, 0, ?, ?)`).run(h.hash, h.salt).lastInsertRowid;
+    const sDup = makeSession();
+    const rDup = await sDup.loginAs('1', 'PIN重複45', '6789');
+    const sHana = makeSession();
+    const rHana = await sHana.loginAs('1', '花子', '6789');
+    assert(rDup.status === 200 && rDup.body.name === 'PIN重複45' && rHana.status === 200 && rHana.body.name === '花子',
+      '同じ店舗でPINが重複していても、タイルで選んだ本人としてログインできる');
+    db.prepare('DELETE FROM staff WHERE id = ?').run(dupId);
+  }
+
+  const owner45 = makeSession();
+  const staff45 = makeSession();
+  const term45 = makeSession();
+  {
+    const rO = await owner45.loginAs('1', '寿子', '5678');
+    const rS = await staff45.loginAs('1', '花子', '6789');
+    const rT = await term45.loginAs('1', 'サロン端末', '0000');
+    assert(rO.status === 200 && rO.body.isOwner === true && rO.body.isTerminal === false && rO.body.staffId === tile45('寿子').id,
+      'オーナー：ログイン結果が {staffId, name, role, isOwner:true, isTerminal:false}（GAS版loginStaff_の戻り値相当）');
+    assert(rS.status === 200 && rS.body.isOwner === false && rS.body.isTerminal === false, '一般スタッフ：isOwner:false・isTerminal:false');
+    assert(rT.status === 200 && rT.body.isOwner === true && rT.body.isTerminal === true && rT.body.role === 'サロン端末',
+      'サロン端末：GAS版ST099と同じくisOwner:true扱いで、isTerminal:trueが付く');
+    const me = await term45.get('/api/auth/me');
+    assert(me.status === 200 && me.body.staff.isTerminal === true && me.body.staff.isOwner === true, '/api/auth/meでもサロン端末であることが分かる（統一メニューの出し分けに使う）');
+  }
+
+  // 統一タイルメニュー（GAS版top_page.html）の3段階の出し分けに対応する実際の権限
+  {
+    const page = await fetch(BASE + '/menu.html').then((r) => r.text());
+    assert(page.includes("tier: 'all'") && page.includes("tier: 'owner'") && page.includes("tier: 'trueOwner'") &&
+      page.includes('me.isOwner && !me.isTerminal'), '統一タイルメニュー（/menu.html）が存在し、全員／isOwner／isOwnerかつ端末以外の3段階で出し分ける');
+    const login = await fetch(BASE + '/admin/login.html').then((r) => r.text());
+    assert(login.includes('/api/auth/login-staff') && login.includes('staffId: selectedStaff.id') && login.includes("'/menu.html'"),
+      'ログイン画面は名前タイル→PINの2段階で、ログイン後は統一メニューへ進む');
+  }
+  {
+    // ①全員共通：カレンダー（koyomi＝スタッフダッシュボード）・サロンダッシュボードのAPI
+    for (const [label, sess] of [['一般スタッフ', staff45], ['サロン端末', term45], ['オーナー', owner45]]) {
+      const a = await sess.get('/api/staff/reservations/upcoming');
+      const b = await sess.get('/api/staff/calendar/week?start=' + fmtDate_(new Date()));
+      assert(a.status === 200 && b.status === 200, `${label}：カレンダー（スタッフダッシュボード）・サロンダッシュボードのAPIを使える`);
+    }
+  }
+  {
+    // ②isOwner（端末含む）：顧客マスタ閲覧・予約データ閲覧
+    const sC = await staff45.get('/api/admin/customers?limit=5');
+    const sR = await staff45.get('/api/admin/reservations');
+    assert(sC.status === 401 && sR.status === 401, '一般スタッフ：顧客マスタ閲覧・予約データ閲覧のAPIは使えない（401）');
+    const tC = await term45.get('/api/admin/customers?limit=200');
+    const tR = await term45.get('/api/admin/reservations');
+    const tM = await term45.get('/api/admin/customers/merge-candidates');
+    assert(tC.status === 200 && tR.status === 200 && tM.status === 200, 'サロン端末：顧客マスタ閲覧・予約データ閲覧の画面が使うAPIは使える');
+    assert(!(tC.body.customers || []).some((c) => c.realname === '岩田 花子'), 'サロン端末でも他店舗の顧客は見えない（店舗スコープは維持）');
+    const oC = await owner45.get('/api/admin/customers?limit=5');
+    assert(oC.status === 200, 'オーナー：顧客マスタ閲覧のAPIを使える');
+  }
+  {
+    // ③isOwnerかつ端末以外：オーナー設定・スタッフ管理、顧客/予約の編集
+    const custRow = db.prepare(`SELECT customer_id FROM customers WHERE store_id = 1 AND is_deleted = 0 LIMIT 1`).get();
+    const resvRow = db.prepare(`SELECT id FROM reservations WHERE store_id = 1 AND realname != 'キャンセル' LIMIT 1`).get();
+    const denied = [
+      ['GET', '/api/admin/settings/rules'], ['PUT', '/api/admin/settings/rules/REMINDER_HOUR'],
+      ['GET', '/api/admin/settings/menu'], ['GET', '/api/admin/settings/line'],
+      ['GET', '/api/admin/staff'], ['POST', '/api/admin/staff'], ['PUT', '/api/admin/staff/1'],
+      ['GET', '/api/admin/dashboard'], ['GET', '/api/admin/shifts'],
+      ['POST', '/api/admin/customers'], ['PUT', '/api/admin/customers/' + (custRow ? custRow.customer_id : 'X')],
+      ['DELETE', '/api/admin/customers/' + (custRow ? custRow.customer_id : 'X')],
+      ['POST', '/api/admin/reservations'], ['PUT', '/api/admin/reservations/' + (resvRow ? resvRow.id : 1)],
+      ['DELETE', '/api/admin/reservations/' + (resvRow ? resvRow.id : 1)],
+      ['GET', '/api/admin/db-viewer/tables'], ['GET', '/api/admin/plan'], ['GET', '/api/admin/sessions/staff-list'],
+      ['POST', '/api/admin/import-sample-data']
+    ];
+    const results = [];
+    for (const [method, path] of denied) {
+      const r = await term45.request(path, { method, headers: { 'Content-Type': 'application/json' }, body: method === 'GET' ? undefined : JSON.stringify({ value: '10', name: 'x', pin: '1234' }) });
+      results.push([method, path, r.status, r.body && r.body.error]);
+    }
+    const bad = results.filter((x) => x[2] !== 403 || x[3] !== 'forbidden_for_shared_terminal');
+    assert(bad.length === 0, 'サロン端末：オーナー設定・スタッフ管理・顧客/予約の編集など真のオーナー専用APIはすべて403' + (bad.length ? ' ' + JSON.stringify(bad) : ''));
+    const stillThere = custRow && db.prepare('SELECT is_deleted FROM customers WHERE store_id = 1 AND customer_id = ?').get(custRow.customer_id);
+    assert(!stillThere || stillThere.is_deleted === 0, 'サロン端末からの顧客削除要求で実際にデータが消えていない');
+    const oS = await owner45.get('/api/admin/staff');
+    const oR = await owner45.get('/api/admin/settings/rules');
+    assert(oS.status === 200 && oR.status === 200, 'オーナー（端末以外）：スタッフ管理・オーナー設定のAPIを使える');
+  }
+
+  // サロン端末はカレンダー経由の予約編集でオーナーと同等の全権限（社長確認済みの意図的な設計）
+  const date45 = fmtDate_(new Date(Date.now() + 700 * 86400000));
+  {
+    const rS = await staff45.postJson('/api/staff/reservations', { realname: '端末テスト45', staffName: '寿子', menu: 'フェイシャル(60分)', date: date45, time: '10:00' });
+    assert(rS.status === 403, '一般スタッフ：他スタッフ担当の予約は登録できない（比較用）');
+    const rT = await term45.postJson('/api/staff/reservations', { realname: '端末テスト45', staffName: '寿子', menu: 'フェイシャル(60分)', date: date45, time: '10:00' });
+    assert(rT.status === 200 && rT.body.success === true, 'サロン端末：他スタッフ（寿子）担当の予約を登録できる');
+    const row = db.prepare(`SELECT id, editor FROM reservations WHERE store_id = 1 AND realname = '端末テスト45'`).get();
+    const rPutS = await staff45.putJson(`/api/staff/reservations/${row.id}`, { staffName: '寿子', menu: 'フェイシャル(90分)', date: date45, time: '10:00', note: '' });
+    assert(rPutS.status === 403, '一般スタッフ：他スタッフ担当の予約は編集できない（比較用）');
+    const rPutT = await term45.putJson(`/api/staff/reservations/${row.id}`, { staffName: '寿子', menu: 'フェイシャル(90分)', date: date45, time: '10:00', note: '端末で変更' });
+    assert(rPutT.status === 200 && rPutT.body.success === true, 'サロン端末：他スタッフ担当の予約を編集できる');
+    const edited = db.prepare('SELECT menu, editor FROM reservations WHERE id = ?').get(row.id);
+    assert(edited.menu === 'フェイシャル(90分)' && edited.editor === 'サロン端末', '端末での編集はeditor＝「サロン端末」として記録される');
+    const rDelT = await term45.del(`/api/staff/reservations/${row.id}`);
+    assert(rDelT.status === 200 && rDelT.body.success === true, 'サロン端末：他スタッフ担当の予約をキャンセルできる');
+    db.prepare(`DELETE FROM reservations WHERE store_id = 1 AND realname IN ('端末テスト45', 'キャンセル') AND reservation_date = ?`).run(date45);
+  }
+  {
+    // 予約上限：一般スタッフはハードブロック、端末はオーナーと同じく確認のうえ超過登録できる
+    const limitDate = (n) => fmtDate_(new Date(Date.now() + (710 + n) * 86400000));
+    for (let i = 0; i < 3; i++) {
+      db.prepare(`INSERT INTO reservations (store_id, realname, staff_name, menu, reservation_date, reservation_time, status) VALUES (1, '上限テスト客45', '花子', 'テストメニュー', ?, '10:00', '確定')`).run(limitDate(i));
+    }
+    const rW = await term45.postJson('/api/staff/reservations', { realname: '上限テスト客45', staffName: '花子', menu: 'フェイシャル(60分)', date: limitDate(3), time: '10:00' });
+    assert(rW.status === 200 && rW.body.isLimitWarning === true, 'サロン端末：予約上限超過はオーナーと同じく確認メッセージ（ハードブロックされない）');
+    const rOv = await term45.postJson('/api/staff/reservations', { realname: '上限テスト客45', staffName: '花子', menu: 'フェイシャル(60分)', date: limitDate(3), time: '10:00', ownerOverride: true });
+    assert(rOv.status === 200 && rOv.body.success === true, 'サロン端末：ownerOverrideで上限を超えて登録できる');
+    db.prepare(`DELETE FROM reservations WHERE store_id = 1 AND realname = '上限テスト客45'`).run();
+  }
+  {
+    // 予約枠ブロック（イベント）：サロンダッシュボードから端末でも登録・削除できる
+    const rS = await staff45.postJson('/api/admin/events', { title: '端末ブロック45', date: date45, startTime: '09:00', endTime: '12:00', restrictBooking: true });
+    assert(rS.status === 401, '一般スタッフ：予約枠ブロック（イベント）は登録できない（比較用）');
+    const rT = await term45.postJson('/api/admin/events', { title: '端末ブロック45', date: date45, startTime: '09:00', endTime: '12:00', restrictBooking: true });
+    assert(rT.status === 200 && rT.body.success === true, 'サロン端末：予約枠ブロック（イベント）を登録できる');
+    const rD = await term45.del(`/api/admin/events/${rT.body.eventId}`);
+    assert(rD.status === 200 && rD.body.success === true, 'サロン端末：予約枠ブロック（イベント）を削除できる');
+  }
+
+  // サロン端末は「人」ではないので、予約対象スタッフ・シフト表・凡例には出さない
+  {
+    const st = await makeSession().get('/api/store?store=1');
+    assert(!(st.body.staffList || []).some((s) => s.realName === 'サロン端末'), 'お客様予約フォームの担当者一覧にサロン端末は出ない');
+    const sh = await owner45.get(`/api/staff/shifts?from=${date45}&to=${date45}`);
+    assert(sh.status === 200 && (sh.body.staffList || []).length > 0 && !(sh.body.staffList || []).some((s) => s.name === 'サロン端末'), 'シフト表の対象スタッフにサロン端末は出ない');
+    const wk = await owner45.get('/api/staff/calendar/week?start=' + date45);
+    assert(!(wk.body.data.legendStaff || []).includes('サロン端末'), 'サロンダッシュボードの担当者凡例にサロン端末は出ない');
+    const rShift = await owner45.postJson('/api/admin/shifts', { staffName: 'サロン端末', date: date45, startTime: '10:00', endTime: '18:00' });
+    assert(rShift.status === 400 || rShift.status === 404, 'サロン端末にはシフトを登録できない');
+  }
+
+  // スタッフ管理：オーナーが端末アカウントを追加・設定できる
+  {
+    const list = await owner45.get('/api/admin/staff');
+    const t = (list.body.staff || []).find((s) => s.name === 'サロン端末');
+    assert(!!t && t.is_shared_terminal === 1 && t.is_owner === 1 && t.show_in_booking === 0, 'スタッフ管理一覧でサロン端末はis_shared_terminal=1（オーナー扱い・予約フォーム非表示）');
+    const add = await owner45.postJson('/api/admin/staff', { name: '2号端末45', pin: '2468', isSharedTerminal: true, isOwner: false, showInBooking: true });
+    const row = db.prepare('SELECT * FROM staff WHERE id = ?').get(add.body.staffId);
+    assert(add.status === 200 && row.is_shared_terminal === 1 && row.is_owner === 1 && row.show_in_booking === 0 && row.color === null,
+      'サロン端末として登録すると、指定に関わらずオーナー扱い・予約フォーム非表示・表示色なしに揃う');
+    const s2 = makeSession();
+    const r2 = await s2.loginAs('1', '2号端末45', '2468');
+    const r2d = await s2.get('/api/admin/staff');
+    assert(r2.status === 200 && r2.body.isTerminal === true && r2d.status === 403, '追加した端末アカウントでもログインでき、スタッフ管理には入れない');
+    const upd = await owner45.putJson(`/api/admin/staff/${row.id}`, { name: '2号端末45', role: 'サロン端末', isOwner: false, showInBooking: true, isActive: true });
+    const row2 = db.prepare('SELECT is_shared_terminal, is_owner, show_in_booking FROM staff WHERE id = ?').get(row.id);
+    assert(upd.status === 200 && row2.is_shared_terminal === 1 && row2.is_owner === 1 && row2.show_in_booking === 0,
+      '端末フラグを送らない更新では端末設定が保持され、オーナー扱い・予約フォーム非表示も維持される');
+    const off = await owner45.putJson(`/api/admin/staff/${row.id}`, { name: '2号端末45', role: 'スタッフ', isOwner: false, showInBooking: false, isActive: false, isSharedTerminal: false });
+    const row3 = db.prepare('SELECT is_shared_terminal, is_owner FROM staff WHERE id = ?').get(row.id);
+    assert(off.status === 200 && row3.is_shared_terminal === 0 && row3.is_owner === 0, '端末フラグをOFFにすると通常のスタッフ扱いに戻せる');
+    db.prepare('DELETE FROM staff WHERE id = ?').run(row.id);
+    const self = await owner45.putJson(`/api/admin/staff/${tile45('寿子').id}`, { name: '寿子', role: 'オーナー', isOwner: true, isActive: true, isSharedTerminal: true });
+    const selfRow = db.prepare('SELECT is_shared_terminal FROM staff WHERE id = ?').get(tile45('寿子').id);
+    assert(self.status === 400 && selfRow.is_shared_terminal === 0, 'ログイン中の自分自身をサロン端末に切り替えることはできない（オーナー画面に入れなくなる事故防止）');
   }
 
   // --------------------------------------------------------------------------

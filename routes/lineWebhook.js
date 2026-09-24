@@ -97,7 +97,8 @@ function handleStaffPinRegistration(storeId, lineUserId, text) {
   if (storeId == null) return;
 
   const candidates = db.prepare(
-    'SELECT * FROM staff WHERE store_id = ? AND is_active = 1 AND pin_hash IS NOT NULL'
+    // ★2026-09-24追加：サロン端末（共有ログイン）は個人のLINEと紐づけない
+    'SELECT * FROM staff WHERE store_id = ? AND is_active = 1 AND is_shared_terminal = 0 AND pin_hash IS NOT NULL'
   ).all(storeId);
 
   const matched = candidates.find((s) => verifyPin(text, s.pin_salt, s.pin_hash));
