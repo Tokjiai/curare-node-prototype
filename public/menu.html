@@ -8,7 +8,7 @@
   /* ============================================================
      ★2026-09-24追加：GAS版 top_page.html（ログイン後の統一タイルメニュー）のNode移植版。
      ログインした人の権限に応じて、GAS版と同じ3段階でタイルを出し分ける：
-       ①全員（一般スタッフ含む）…カレンダー（koyomi）・サロンダッシュボード
+       ①全員（一般スタッフ含む）…サロンダッシュボード（GAS版のカレンダー koyomi）・スタッフダッシュボード
        ②isOwner（サロン端末も含む）…＋顧客マスタ閲覧・予約データ閲覧
        ③isOwnerかつサロン端末でない（GAS版 staffId !== 'ST099'）…＋オーナー設定・スタッフ管理
      各タイルはGAS版と同じく別タブ（target=_blank）で開く。GAS版はリンクURLに
@@ -77,9 +77,10 @@
   // タイル定義：tier = 'all'（全員）／'owner'（isOwner。サロン端末も含む）／'trueOwner'（サロン端末を除くオーナー）
   const TILES = [
     // ★2026-09-24修正：GAS版の「カレンダー（koyomi）」（p=koyomi）は、サロン端末（ST099）が日常使う
-    //   全スタッフ共有のカレンダー画面そのもの（社長確認済み）。Node版では44章の/staff/calendar.html
-    { tier: 'all', cls: '', icon: '📅', name: 'カレンダー（koyomi）', desc: '全スタッフの予約を担当者別に色分けした共有カレンダー（週・月表示・登録）', href: '/staff/calendar.html' },
-    { tier: 'all', cls: '', icon: '🗓️', name: 'サロンダッシュボード', desc: '予約確認・シフト管理（スタッフダッシュボード）', href: '/staff/dashboard.html' },
+    //   全スタッフ共有のカレンダー画面そのもの（社長確認済み）。Node版では44章の/staff/calendar.html。
+    //   タイル名は各リンク先ページの実際のタイトル（<title>）に揃える（README 58章）
+    { tier: 'all', cls: '', icon: '🗓️', name: 'サロンダッシュボード', desc: '全スタッフの予約を担当者別に色分けした共有カレンダー（週・月表示・登録）', href: '/staff/calendar.html' },
+    { tier: 'all', cls: '', icon: '📊', name: 'スタッフダッシュボード', desc: 'ご自身の予約確認・シフト管理', href: '/staff/dashboard.html' },
     { tier: 'owner', cls: 'view', icon: '👤', name: '顧客マスタ閲覧', desc: '顧客情報の確認（閲覧専用）', href: '/admin/customers-view.html' },
     { tier: 'owner', cls: 'view', icon: '📋', name: '予約データ閲覧', desc: '予約データの確認（閲覧専用）', href: '/admin/reservations-view.html' },
     { tier: 'trueOwner', cls: 'owner', icon: '⚙️', name: 'オーナー設定', desc: '店舗設定・顧客/予約の編集・シフト管理など', href: '/admin/index.html' },
@@ -121,7 +122,7 @@
       ? 'サロン端末でログイン中です。カレンダー上の予約はすべて編集できます（フロント業務用）。顧客・予約データは閲覧専用で、オーナー設定・スタッフ管理はオーナーのPINでログインしてください。'
       : (me.isOwner
         ? 'オーナーでログイン中です。すべてのメニューを利用できます。'
-        : 'カレンダー・サロンダッシュボードでは、ご自身の担当と「未定」の予約を編集できます。');
+        : 'サロンダッシュボード・スタッフダッシュボードでは、ご自身の担当と「未定」の予約を編集できます。');
 
     const tiers = visibleTiers(me);
     document.getElementById('sections').innerHTML = tiers.map((tier) => {
