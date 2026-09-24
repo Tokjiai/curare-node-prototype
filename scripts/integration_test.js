@@ -2875,18 +2875,21 @@ async function main() {
     const page = await fetch(BASE + '/menu.html').then((r) => r.text());
     assert(page.includes("tier: 'all'") && page.includes("tier: 'owner'") && page.includes("tier: 'trueOwner'") &&
       page.includes('me.isOwner && !me.isTerminal'), '統一タイルメニュー（/menu.html）が存在し、全員／isOwner／isOwnerかつ端末以外の3段階で出し分ける');
-    // GAS版の「カレンダー（koyomi）」＝サロン端末が日常使う全スタッフ共有カレンダー（README 57-7）
-    assert(/name: 'カレンダー（koyomi）'[^}]*href: '\/staff\/calendar\.html'/.test(page), '「カレンダー（koyomi）」タイルは共有カレンダー（/staff/calendar.html）を開く');
+    // GAS版の「カレンダー（koyomi）」＝サロン端末が日常使う全スタッフ共有カレンダー（README 57-7）。
+    //   タイル名はリンク先ページの実際のタイトルに揃える（README 58章）
+    assert(/name: 'サロンダッシュボード'[^}]*href: '\/staff\/calendar\.html'/.test(page), '「サロンダッシュボード」タイルは共有カレンダー（/staff/calendar.html、GAS版koyomi相当）を開く');
+    assert(/name: 'スタッフダッシュボード'[^}]*href: '\/staff\/dashboard\.html'/.test(page), '「スタッフダッシュボード」タイルは個人ダッシュボード（/staff/dashboard.html）を開く');
+    assert(!page.includes("name: 'カレンダー（koyomi）'"), 'リンク先のタイトルと食い違う旧ラベル「カレンダー（koyomi）」のタイルは残っていない');
     const login = await fetch(BASE + '/admin/login.html').then((r) => r.text());
     assert(login.includes('/api/auth/login-staff') && login.includes('staffId: selectedStaff.id') && login.includes("'/menu.html'"),
       'ログイン画面は名前タイル→PINの2段階で、ログイン後は統一メニューへ進む');
   }
   {
-    // ①全員共通：カレンダー（koyomi＝スタッフダッシュボード）・サロンダッシュボードのAPI
+    // ①全員共通：サロンダッシュボード（GAS版koyomi）・スタッフダッシュボードのAPI
     for (const [label, sess] of [['一般スタッフ', staff45], ['サロン端末', term45], ['オーナー', owner45]]) {
       const a = await sess.get('/api/staff/reservations/upcoming');
       const b = await sess.get('/api/staff/calendar/week?start=' + fmtDate_(new Date()));
-      assert(a.status === 200 && b.status === 200, `${label}：カレンダー（スタッフダッシュボード）・サロンダッシュボードのAPIを使える`);
+      assert(a.status === 200 && b.status === 200, `${label}：サロンダッシュボード・スタッフダッシュボードのAPIを使える`);
     }
   }
   {
