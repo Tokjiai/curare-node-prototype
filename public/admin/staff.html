@@ -140,6 +140,7 @@
           <option value="オーナー">オーナー</option>
           <option value="スタッフ" selected>スタッフ</option>
           <option value="見習い">見習い</option>
+          <option value="サロン端末">サロン端末</option>
         </select>
       </div>
       <div class="modal-field">
@@ -151,6 +152,10 @@
       <div class="modal-check"><input type="checkbox" id="fNightRestrict"><label for="fNightRestrict">夜間固定枠の対象</label></div>
       <div class="modal-check"><input type="checkbox" id="fIsOwner"><label for="fIsOwner">オーナー権限（管理画面ログイン可）</label></div>
       <div class="modal-check"><input type="checkbox" id="fIsActive" checked><label for="fIsActive">在籍中</label></div>
+      <!-- ★2026-09-24追加：サロン端末（GAS版の共有ログイン staffId 'ST099' 相当）。
+           ONにすると自動的にオーナー権限扱い・予約フォーム非表示になる。カレンダー上の予約は
+           すべて編集できるが、オーナー設定・スタッフ管理・顧客/予約の編集画面には入れない -->
+      <div class="modal-check"><input type="checkbox" id="fIsTerminal"><label for="fIsTerminal">サロン端末（店頭の共有ログイン用。カレンダーの予約は全編集可・設定画面は不可）</label></div>
       <div class="modal-field">
         <label id="pinLabel">ログインPIN（4桁）</label>
         <input type="text" id="fPin" class="pin" maxlength="4" placeholder="例：1234" inputmode="numeric">
@@ -187,7 +192,8 @@
     try {
       const me = await adminFetch('/api/auth/me');
       myStaffId = me.body.staff.id;
-      if (!me.body.staff.isOwner) { window.location.href = '/staff/dashboard.html'; return; }
+      // ★2026-09-24変更：一般スタッフ・サロン端末はスタッフ管理に入れない（統一メニューへ戻す）
+      if (!me.body.staff.isOwner || me.body.staff.isTerminal) { window.location.href = '/menu.html'; return; }
       await load();
       loadingMsg.style.display = 'none';
       shell.classList.add('ready');
@@ -251,7 +257,7 @@
       const tr = document.createElement('tr');
       if (!s.is_active) tr.className = 'inactive';
       tr.innerHTML = `
-        <td>${esc(s.name)} ${s.is_owner ? '<span class="badge owner">オーナー</span>' : ''}</td>
+        <td>${esc(s.name)} ${s.is_shared_terminal ? '<span class="badge owner">🖥️ サロン端末</span>' : (s.is_owner ? '<span class="badge owner">オーナー</span>' : '')}</td>
         <td>${esc(s.nickname || '')}</td>
         <td>${esc(s.role)}</td>
         <td>${(() => { const c = colorOf(s.color || s.effective_color); return c ? `<span class="color-dot" style="background:${c.border};"></span>${esc(c.label)}${s.color ? '' : '（未設定）'}` : '—'; })()}</td>
@@ -276,6 +282,9 @@
     document.getElementById('fNightRestrict').checked = false;
     document.getElementById('fIsOwner').checked = false;
     document.getElementById('fIsActive').checked = true;
+    document.getElementById('fIsTerminal').checked = false;
+    document.getElementById('fIsTerminal').disabled = false;
+    syncTerminalFields();
     document.getElementById('fPin').value = '';
     document.getElementById('pinLabel').textContent = 'ログインPIN（4桁・必須）';
     document.getElementById('pinHint').textContent = '';
@@ -298,6 +307,10 @@
     document.getElementById('fNightRestrict').checked = !!s.night_restrict;
     document.getElementById('fIsOwner').checked = !!s.is_owner;
     document.getElementById('fIsActive').checked = !!s.is_active;
+    document.getElementById('fIsTerminal').checked = !!s.is_shared_terminal;
+    // ログイン中の自分自身の端末設定は切り替えられない（サーバー側でも拒否）
+    document.getElementById('fIsTerminal').disabled = (id === myStaffId);
+    syncTerminalFields();
     document.getElementById('fPin').value = '';
     document.getElementById('pinLabel').textContent = 'ログインPIN（4桁・変更する場合のみ入力）';
     document.getElementById('pinHint').textContent = s.has_pin ? '空欄のままにすると、現在のPINを変更しません。' : 'PIN未設定です。ログインさせるには設定してください。';
@@ -309,6 +322,21 @@
     // 自分自身は在籍中フラグを外せない（誰もログインできなくなる事故防止）
     document.getElementById('fIsActive').disabled = (id === myStaffId);
   }
+
+  // サロン端末ONのときは、サーバー側で強制される値（オーナー権限あり・予約フォーム非表示）に
+  //   チェックを揃えて操作できなくする
+  function syncTerminalFields() {
+    const on = document.getElementById('fIsTerminal').checked;
+    ['fIsOwner', 'fShowInBooking', 'fOptSupport', 'fNightRestrict'].forEach((fid) => { document.getElementById(fid).disabled = on; });
+    if (on) {
+      document.getElementById('fIsOwner').checked = true;
+      document.getElementById('fShowInBooking').checked = false;
+      document.getElementById('fOptSupport').checked = false;
+      document.getElementById('fNightRestrict').checked = false;
+      document.getElementById('fRole').value = 'サロン端末';
+    }
+  }
+  document.getElementById('fIsTerminal').addEventListener('change', syncTerminalFields);
 
   document.getElementById('newStaffBtn').addEventListener('click', openNew);
   document.getElementById('modalCancelBtn').addEventListener('click', () => {
@@ -327,6 +355,7 @@
       nightRestrict: document.getElementById('fNightRestrict').checked,
       isOwner: document.getElementById('fIsOwner').checked,
       isActive: document.getElementById('fIsActive').checked,
+      isSharedTerminal: document.getElementById('fIsTerminal').checked,
       pin: document.getElementById('fPin').value.trim(),
       color: selectedColor
     };

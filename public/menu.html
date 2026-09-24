@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>メニュー</title>
+<style>
+  /* ============================================================
+     ★2026-09-24追加：GAS版 top_page.html（ログイン後の統一タイルメニュー）のNode移植版。
+     ログインした人の権限に応じて、GAS版と同じ3段階でタイルを出し分ける：
+       ①全員（一般スタッフ含む）…カレンダー（koyomi）・サロンダッシュボード
+       ②isOwner（サロン端末も含む）…＋顧客マスタ閲覧・予約データ閲覧
+       ③isOwnerかつサロン端末でない（GAS版 staffId !== 'ST099'）…＋オーナー設定・スタッフ管理
+     各タイルはGAS版と同じく別タブ（target=_blank）で開く。GAS版はリンクURLに
+     staffId・tokenを付けて認証していたが、Node版はCookieのセッションを全タブで共有する
+     ため、URLに認証情報は付けない（README 57章参照）。
+     配色はログイン画面（GAS版login_modal_partial.html）のローズ系に揃える。
+     ============================================================ */
+  :root{
+    --bg:#F5F4EF; --ink:#333; --ink-soft:#75746C; --line:#E4E2D9;
+    --rose:#d4a5a5; --rose-dark:#c99aa4;
+    --staff:#FFF9F9; --staff-line:#F0DCDC;
+    --view:#F3F6F4; --view-line:#D5E2DA; --view-ink:#3D6B5C;
+    --owner:#F5EBE3; --owner-line:#E6D2C3; --owner-ink:#8A5A3C;
+  }
+  *{box-sizing:border-box; margin:0; padding:0; font-family:'Hiragino Sans','Yu Gothic',sans-serif;}
+  body{background:var(--bg); min-height:100vh; color:var(--ink);}
+  .header{background:linear-gradient(135deg, var(--rose) 0%, var(--rose-dark) 100%); color:#fff; padding:16px 18px;}
+  .header-top{display:flex; justify-content:space-between; align-items:center; gap:10px; max-width:720px; margin:0 auto;}
+  .header h1{font-size:17px; font-weight:700;}
+  .header-sub{font-size:12px; opacity:.92; margin-top:2px;}
+  .header-user{font-size:12.5px; text-align:right; line-height:1.5;}
+  .header-user button{background:none; border:none; color:#fff; font-size:11.5px; text-decoration:underline; cursor:pointer; font-family:inherit;}
+  .wrap{max-width:720px; margin:0 auto; padding:20px 16px 40px; display:none;}
+  .wrap.ready{display:block;}
+  #loadingMsg{text-align:center; color:var(--ink-soft); font-size:13px; padding:60px 16px;}
+  .section-title{font-size:12px; font-weight:700; color:var(--ink-soft); margin:18px 0 8px;}
+  .section-title:first-child{margin-top:0;}
+  .grid{display:grid; grid-template-columns:repeat(auto-fill, minmax(150px, 1fr)); gap:12px;}
+  .tile{
+    display:flex; flex-direction:column; justify-content:center; gap:4px; min-height:108px;
+    border-radius:14px; padding:14px 12px; text-decoration:none; color:var(--ink);
+    border:1.5px solid var(--staff-line); background:var(--staff); box-shadow:0 2px 8px rgba(0,0,0,0.04);
+  }
+  .tile:hover, .tile:focus{border-color:var(--rose); outline:none;}
+  .tile .ic{font-size:26px; line-height:1;}
+  .tile .nm{font-size:14.5px; font-weight:700;}
+  .tile .ds{font-size:11.5px; color:var(--ink-soft); line-height:1.45;}
+  .tile.view{background:var(--view); border-color:var(--view-line);}
+  .tile.view .nm{color:var(--view-ink);}
+  .tile.owner{background:var(--owner); border-color:var(--owner-line);}
+  .tile.owner .nm{color:var(--owner-ink);}
+  .role-note{font-size:11.5px; color:var(--ink-soft); background:#fff; border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin-top:20px; line-height:1.6;}
+</style>
+</head>
+<body>
+  <div class="header">
+    <div class="header-top">
+      <div>
+        <h1>🌸 メニュー</h1>
+        <div class="header-sub" id="storeName"></div>
+      </div>
+      <div class="header-user">
+        <div id="userName"></div>
+        <button type="button" id="logoutBtn">ログアウト</button>
+      </div>
+    </div>
+  </div>
+  <div id="loadingMsg">読み込み中...</div>
+  <div class="wrap" id="wrap">
+    <div id="sections"></div>
+    <div class="role-note" id="roleNote"></div>
+  </div>
+
+<script>
+(function(){
+  // タイル定義：tier = 'all'（全員）／'owner'（isOwner。サロン端末も含む）／'trueOwner'（サロン端末を除くオーナー）
+  const TILES = [
+    // ★2026-09-24修正：GAS版の「カレンダー（koyomi）」（p=koyomi）は、サロン端末（ST099）が日常使う
+    //   全スタッフ共有のカレンダー画面そのもの（社長確認済み）。Node版では44章の/staff/calendar.html
+    { tier: 'all', cls: '', icon: '📅', name: 'カレンダー（koyomi）', desc: '全スタッフの予約を担当者別に色分けした共有カレンダー（週・月表示・登録）', href: '/staff/calendar.html' },
+    { tier: 'all', cls: '', icon: '🗓️', name: 'サロンダッシュボード', desc: '予約確認・シフト管理（スタッフダッシュボード）', href: '/staff/dashboard.html' },
+    { tier: 'owner', cls: 'view', icon: '👤', name: '顧客マスタ閲覧', desc: '顧客情報の確認（閲覧専用）', href: '/admin/customers-view.html' },
+    { tier: 'owner', cls: 'view', icon: '📋', name: '予約データ閲覧', desc: '予約データの確認（閲覧専用）', href: '/admin/reservations-view.html' },
+    { tier: 'trueOwner', cls: 'owner', icon: '⚙️', name: 'オーナー設定', desc: '店舗設定・顧客/予約の編集・シフト管理など', href: '/admin/index.html' },
+    { tier: 'trueOwner', cls: 'owner', icon: '👥', name: 'スタッフ管理', desc: 'スタッフの登録・PIN・権限の設定', href: '/admin/staff.html' }
+  ];
+  const SECTION_TITLES = { all: '日々の業務', owner: '閲覧', trueOwner: 'オーナー専用' };
+
+  function esc(v) { return String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+
+  // GAS版top_page.htmlと同じ3段階の出し分け
+  function visibleTiers(me) {
+    const tiers = ['all'];
+    if (me.isOwner) tiers.push('owner');
+    if (me.isOwner && !me.isTerminal) tiers.push('trueOwner');
+    return tiers;
+  }
+
+  async function init() {
+    let me;
+    try {
+      const res = await fetch('/api/auth/me');
+      if (res.status === 401) {
+        window.location.href = '/admin/login.html?next=' + encodeURIComponent('/menu.html');
+        return;
+      }
+      me = (await res.json()).staff;
+    } catch (e) {
+      document.getElementById('loadingMsg').textContent = '読み込みに失敗しました: ' + e.message;
+      return;
+    }
+    try {
+      const storeRes = await fetch('/api/store?store=' + encodeURIComponent(me.storeId));
+      const storeData = await storeRes.json();
+      document.getElementById('storeName').textContent = (storeData.store && storeData.store.name) || '';
+    } catch (_) { /* 店舗名が取れなくてもメニュー自体は使える */ }
+
+    document.getElementById('userName').textContent = me.isTerminal ? '🖥️ ' + me.name : me.name + (me.isOwner ? '（オーナー）' : '');
+    document.getElementById('roleNote').textContent = me.isTerminal
+      ? 'サロン端末でログイン中です。カレンダー上の予約はすべて編集できます（フロント業務用）。顧客・予約データは閲覧専用で、オーナー設定・スタッフ管理はオーナーのPINでログインしてください。'
+      : (me.isOwner
+        ? 'オーナーでログイン中です。すべてのメニューを利用できます。'
+        : 'カレンダー・サロンダッシュボードでは、ご自身の担当と「未定」の予約を編集できます。');
+
+    const tiers = visibleTiers(me);
+    document.getElementById('sections').innerHTML = tiers.map((tier) => {
+      const tiles = TILES.filter((t) => t.tier === tier);
+      return `<div class="section-title">${SECTION_TITLES[tier]}</div><div class="grid">` +
+        tiles.map((t) => `<a class="tile ${t.cls}" href="${t.href}" target="_blank" rel="noopener" data-tier="${tier}">
+          <span class="ic">${t.icon}</span><span class="nm">${esc(t.name)}</span><span class="ds">${esc(t.desc)}</span></a>`).join('') +
+        '</div>';
+    }).join('');
+    document.getElementById('loadingMsg').style.display = 'none';
+    document.getElementById('wrap').classList.add('ready');
+  }
+
+  document.getElementById('logoutBtn').addEventListener('click', async () => {
+    try { await fetch('/api/auth/logout', { method: 'POST' }); } catch (_) {}
+    window.location.href = '/admin/login.html';
+  });
+
+  init();
+})();
+</script>
+</body>
+</html>

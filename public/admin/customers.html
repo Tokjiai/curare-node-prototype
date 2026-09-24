@@ -300,7 +300,9 @@
   async function init() {
     try {
       const me = await adminFetch('/api/auth/me');
-      if (!me.staff.isOwner) { window.location.href = '/staff/dashboard.html'; return; }
+      // ★2026-09-24変更：一般スタッフ・サロン端末（GAS版ST099相当）はオーナー専用画面に入れないため、
+      //   統一タイルメニュー（GAS版top_page.html相当）へ戻す
+      if (!me.staff.isOwner || me.staff.isTerminal) { window.location.href = '/menu.html'; return; }
       await load();
       await loadMergeCandidates();
       loadingMsg.style.display = 'none';

@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>オーナー管理画面 - ログイン</title>
+<title>スタッフログイン</title>
 <style>
   /* ============================================================
-     実際のGAS版 login_modal_partial.html のログインカード
+     実際のGAS版 login_modal_partial.html のログインカード（2026-09-24からは名前タイル→PINの2段階も移植）
      （白いカード・角丸14px・淡いローズ系アクセント・グラデーションボタン）
      の配色・質感を移植。背景は owner_ui.html のクリーム系トーンに合わせる。
      ============================================================ */
@@ -35,11 +35,27 @@
   input:focus{border-color:var(--rose);}
   #pinInput{font-size:22px; letter-spacing:8px; text-align:center;}
 
-  button#loginBtn{
+  .btn-main{
     width:100%; padding:12px; border:none; border-radius:8px; font-size:15px; font-weight:600;
     cursor:pointer; color:#fff; margin-top:20px;
     background:linear-gradient(135deg, var(--rose) 0%, var(--rose-dark) 100%);
   }
+  .btn-main:disabled{opacity:.6; cursor:default;}
+  .btn-link{background:none; border:none; color:var(--ink-soft); font-size:12px; cursor:pointer; text-decoration:underline; font-family:inherit; margin-top:14px;}
+
+  /* ★2026-09-24追加：GAS版login_modal_partial.htmlのスタッフ名タイル（グリッド表示） */
+  .store-name{font-size:13px; font-weight:700; color:#8A5A3C; text-align:center; margin-bottom:4px;}
+  .staff-grid{display:grid; grid-template-columns:repeat(auto-fill, minmax(96px, 1fr)); gap:10px; margin-top:6px;}
+  .staff-tile{
+    background:#FFF9F9; border:1.5px solid #F0DCDC; border-radius:12px; padding:14px 6px;
+    font-size:14px; font-weight:600; color:#333; cursor:pointer; text-align:center; font-family:inherit;
+    min-height:56px; word-break:break-all;
+  }
+  .staff-tile:hover, .staff-tile:focus{border-color:var(--rose); background:#FCEFEF; outline:none;}
+  .staff-tile.terminal{background:#F3F6F4; border-color:#D5E2DA; color:#3D6B5C;}
+  .selected-staff{font-size:17px; font-weight:700; text-align:center; margin:4px 0 2px;}
+  .step{display:none;}
+  .step.active{display:block;}
 
   .err{display:block; color:#c0392b; font-size:13px; text-align:center; margin-top:12px;}
   .note{font-size:12px; color:var(--ink-faint,#999); margin-top:16px; line-height:1.6; text-align:center;}
@@ -48,26 +64,46 @@
 <body>
   <div class="login-box">
     <div class="login-badge">PROTOTYPE</div>
-    <div class="login-title">👤 オーナー管理画面</div>
-    <div class="login-sub">店舗識別子とPIN（4桁）を入力してください</div>
+    <div class="login-title">🌸 スタッフログイン</div>
 
-    <!-- ★2026-09-19追加：<form>で囲む。
-         以前はinputが素のまま置かれており、ブラウザのコンソールに
-         「Password field is not contained in a form」という警告が出ていた。
-         これが原因で、一部のパスワード管理系ブラウザ拡張機能がPIN欄に誤って介入し、
-         入力した数字がそばから消えてしまう不具合が起きていたと考えられるため、
-         正式な<form>構造にして、パスワードマネージャー向けの無効化属性も付与する。 -->
-    <form id="loginForm" autocomplete="off">
-      <label for="storeInput">店舗（slugまたはID）</label>
-      <input type="text" id="storeInput" name="curare_store" placeholder="例：1 または kurare-kotobuki" autocomplete="off" data-lpignore="true" data-1p-ignore>
+    <!-- ★2026-09-24変更：GAS版login_modal_partial.htmlと同じ2段階方式に作り替えた。
+         ①自店のスタッフ名タイルから本人を選ぶ → ②4桁PINを入力、の順。
+         店舗はURLの ?store=slugまたはID か、前回ログインした店舗（この端末に記憶）で決まる。
+         どちらも無い初回だけ、店舗を入力する画面（step0）を出す。 -->
 
-      <label for="pinInput">PIN（4桁）</label>
-      <input type="text" id="pinInput" name="curare_pin" placeholder="例：5678" maxlength="4" inputmode="numeric" pattern="[0-9]*" autocomplete="off" data-lpignore="true" data-1p-ignore>
+    <!-- step0：店舗の指定（初回のみ） -->
+    <div class="step" id="stepStore">
+      <div class="login-sub">店舗を入力してください（次回からはこの端末に記憶されます）</div>
+      <form id="storeForm" autocomplete="off">
+        <label for="storeInput">店舗（slugまたはID）</label>
+        <input type="text" id="storeInput" name="curare_store" placeholder="例：1 または kurare-kotobuki" autocomplete="off" data-lpignore="true" data-1p-ignore>
+        <button class="btn-main" type="submit">スタッフ一覧を表示</button>
+      </form>
+    </div>
 
-      <button id="loginBtn" type="submit">ログイン</button>
-    </form>
+    <!-- step1：スタッフ名タイル（GAS版getStaffLoginList相当） -->
+    <div class="step" id="stepStaff">
+      <div class="store-name" id="storeName"></div>
+      <div class="login-sub">お名前を選んでください</div>
+      <div class="staff-grid" id="staffGrid"></div>
+      <div style="text-align:center;"><button class="btn-link" id="changeStoreBtn" type="button">別の店舗を選ぶ</button></div>
+    </div>
+
+    <!-- step2：PIN入力（GAS版loginStaff_相当）
+         ★2026-09-19の対策を継続：<form>で囲み、パスワードマネージャー向けの無効化属性を付ける
+         （素のinputだと一部のブラウザ拡張がPIN欄に介入して入力が消える不具合があったため） -->
+    <div class="step" id="stepPin">
+      <div class="selected-staff" id="selectedStaffName"></div>
+      <div class="login-sub">PIN（4桁）を入力してください</div>
+      <form id="loginForm" autocomplete="off">
+        <input type="text" id="pinInput" name="curare_pin" placeholder="例：5678" maxlength="4" inputmode="numeric" pattern="[0-9]*" autocomplete="off" data-lpignore="true" data-1p-ignore aria-label="PIN（4桁）">
+        <button class="btn-main" id="loginBtn" type="submit">ログイン</button>
+      </form>
+      <div style="text-align:center;"><button class="btn-link" id="backToStaffBtn" type="button">← 名前を選び直す</button></div>
+    </div>
+
     <div class="err" id="loginErr" style="display:none;"></div>
-    <div class="note">スタッフの電話番号の下4桁がPINです（実運用と同じ方式）。<br>このプロトタイプ段階ではオーナー権限のスタッフのみログインできます。</div>
+    <div class="note">スタッフの電話番号の下4桁がPINです（実運用と同じ方式）。</div>
   </div>
 
 <script>
@@ -75,61 +111,126 @@
   const storeInput = document.getElementById('storeInput');
   const pinInput = document.getElementById('pinInput');
   const loginErr = document.getElementById('loginErr');
+  const steps = { store: document.getElementById('stepStore'), staff: document.getElementById('stepStaff'), pin: document.getElementById('stepPin') };
+  let currentStore = '';   // ログイン対象の店舗（slugまたはID）
+  let selectedStaff = null; // { id, name, isTerminal }
 
-  // ★2026-09-19追加：
-  //   ①「顧客マスタ」等を開こうとしてセッション切れでこの画面に飛ばされた場合、
-  //     ログイン後に元のページへ戻れるよう next パラメータを覚えておく（無ければダッシュボード）。
-  //   ②店舗欄が毎回空欄だと、PINだけ入力して送信 → 「店舗とPINを入力してください」で
-  //     何も起きずこの画面に留まり続ける、という「ループしているように見える」現象の
-  //     原因になっていたため、前回ログイン時の店舗をブラウザに記憶して自動入力する。
+  // ★2026-09-19追加（2026-09-24拡張）：セッション切れ等でこの画面に飛ばされた場合、
+  //   ログイン後に元のページへ戻れるよう next パラメータを覚えておく。
+  //   他サイトへ誘導されるオープンリダイレクトを防ぐため、自サイト内の /admin/・/staff/ 配下と
+  //   統一メニュー（/menu.html）だけを許可する。
   const params = new URLSearchParams(window.location.search);
   const requestedNext = params.get('next') || '';
-  // ★他サイトへ誘導されるオープンリダイレクトを防ぐため、/admin/配下のパスのみ許可する
-  const nextPath = requestedNext.startsWith('/admin/') ? requestedNext : '/admin/index.html';
-  try {
-    const savedStore = localStorage.getItem('curare_last_store');
-    if (savedStore) storeInput.value = savedStore;
-  } catch (_) { /* localStorageが使えない環境でも動作に支障はない */ }
-  if (storeInput.value) { pinInput.focus(); } else { storeInput.focus(); }
+  const safeNext = /^\/(admin|staff)\/[\w.-]+\.html$/.test(requestedNext) || requestedNext === '/menu.html' ? requestedNext : '';
+  // 端末（サロン端末）が入れる/admin/配下は閲覧専用2画面だけ
+  const TERMINAL_ADMIN_PAGES = ['/admin/customers-view.html', '/admin/reservations-view.html'];
+
+  function showStep(name) {
+    Object.keys(steps).forEach((k) => steps[k].classList.toggle('active', k === name));
+    hideErr();
+  }
+  function showErr(msg) { loginErr.textContent = msg; loginErr.style.display = 'block'; }
+  function hideErr() { loginErr.style.display = 'none'; }
+  function esc(v) { return String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+
+  // ログイン後の行き先：GAS版と同じく統一タイルメニュー（/menu.html）が基本。
+  //   next があり、その人の権限で開けるページなら直接そこへ戻す。
+  function destinationFor(data) {
+    if (!safeNext || safeNext === '/menu.html') return '/menu.html';
+    if (safeNext.startsWith('/staff/')) return safeNext;
+    if (!data.isOwner) return '/menu.html';
+    if (data.isTerminal && !TERMINAL_ADMIN_PAGES.includes(safeNext)) return '/menu.html';
+    return safeNext;
+  }
+
+  async function loadStaffTiles(store) {
+    hideErr();
+    try {
+      const res = await fetch('/api/auth/login-staff?store=' + encodeURIComponent(store));
+      const data = await res.json();
+      if (!data.success) {
+        showStep('store');
+        storeInput.value = store;
+        showErr(data.message || '店舗が見つかりません');
+        return;
+      }
+      currentStore = store;
+      try { localStorage.setItem('curare_last_store', store); } catch (_) {}
+      document.getElementById('storeName').textContent = data.store.name;
+      const grid = document.getElementById('staffGrid');
+      grid.innerHTML = data.staff.length
+        ? data.staff.map((s) => `<button type="button" class="staff-tile${s.isTerminal ? ' terminal' : ''}" data-id="${s.id}">${s.isTerminal ? '🖥️ ' : ''}${esc(s.name)}</button>`).join('')
+        : '<div class="login-sub" style="grid-column:1/-1;">ログインできるスタッフが登録されていません</div>';
+      grid.querySelectorAll('.staff-tile').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          selectedStaff = data.staff.find((s) => String(s.id) === btn.dataset.id);
+          document.getElementById('selectedStaffName').textContent = (selectedStaff.isTerminal ? '🖥️ ' : '') + selectedStaff.name + (selectedStaff.isTerminal ? '' : ' さん');
+          pinInput.value = '';
+          showStep('pin');
+          pinInput.focus();
+        });
+      });
+      showStep('staff');
+    } catch (e) {
+      showErr('サーバーエラー: ' + e.message);
+    }
+  }
 
   async function doLogin() {
-    loginErr.style.display = 'none';
-    const store = storeInput.value.trim();
+    hideErr();
     const pin = pinInput.value.trim();
-    if (!store || !pin) {
-      loginErr.textContent = '店舗とPINを入力してください';
-      loginErr.style.display = 'block';
-      return;
-    }
+    if (!selectedStaff) { showStep('staff'); return; }
+    if (!/^\d{4}$/.test(pin)) { showErr('PINは4桁の数字で入力してください'); return; }
+    const btn = document.getElementById('loginBtn');
+    if (btn.disabled) return; // 4桁自動送信とEnterキーの二重送信を防ぐ
+    btn.disabled = true;
     try {
       const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ store, pin })
+        body: JSON.stringify({ staffId: selectedStaff.id, pin, store: currentStore })
       });
       const data = await res.json();
       if (data.success) {
-        try { localStorage.setItem('curare_last_store', store); } catch (_) {}
-        // ★2026-09-20追加：一般スタッフ（isOwner=false）のログインを解放したことに伴い、
-        //   一般スタッフはオーナー用/admin/*配下（nextPathの行き先）ではなく、
-        //   専用のスタッフダッシュボードへ送る。オーナーは従来どおりnextPath（元々
-        //   行こうとしていた/admin/配下のページ、無ければダッシュボード）へ進む。
-        window.location.href = data.isOwner ? nextPath : '/staff/dashboard.html';
+        window.location.href = destinationFor(data);
       } else {
-        loginErr.textContent = data.message || 'ログインに失敗しました';
-        loginErr.style.display = 'block';
+        pinInput.value = '';
+        pinInput.focus();
+        showErr(data.message || 'ログインに失敗しました');
       }
     } catch (e) {
-      loginErr.textContent = 'サーバーエラー: ' + e.message;
-      loginErr.style.display = 'block';
+      showErr('サーバーエラー: ' + e.message);
+    } finally {
+      btn.disabled = false;
     }
   }
 
-  // ★フォーム化に伴い、送信はsubmitイベントで一本化する（Enterキーでの送信もこれで自然に効く）
-  document.getElementById('loginForm').addEventListener('submit', (e) => {
+  document.getElementById('storeForm').addEventListener('submit', (e) => {
     e.preventDefault();
-    doLogin();
+    const store = storeInput.value.trim();
+    if (!store) { showErr('店舗を入力してください'); return; }
+    loadStaffTiles(store);
   });
+  // ★フォーム化に伴い、送信はsubmitイベントで一本化する（Enterキーでの送信もこれで自然に効く）
+  document.getElementById('loginForm').addEventListener('submit', (e) => { e.preventDefault(); doLogin(); });
+  // 4桁入力し終えたら自動で送信する（GAS版と同じくPIN入力だけで完結させる）
+  pinInput.addEventListener('input', () => {
+    pinInput.value = pinInput.value.replace(/\D/g, '').slice(0, 4);
+    if (pinInput.value.length === 4) doLogin();
+  });
+  document.getElementById('backToStaffBtn').addEventListener('click', () => { selectedStaff = null; showStep('staff'); });
+  document.getElementById('changeStoreBtn').addEventListener('click', () => {
+    storeInput.value = '';
+    showStep('store');
+    storeInput.focus();
+  });
+
+  // 起動：?store= を最優先し、無ければ前回の店舗、どちらも無ければ店舗入力から
+  let initialStore = params.get('store') || '';
+  if (!initialStore) {
+    try { initialStore = localStorage.getItem('curare_last_store') || ''; } catch (_) { /* localStorageが使えない環境でも動作に支障はない */ }
+  }
+  if (initialStore) { loadStaffTiles(initialStore); } else { showStep('store'); storeInput.focus(); }
 })();
 </script>
 </body>

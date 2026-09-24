@@ -351,7 +351,7 @@
       const me = await staffFetch('/api/auth/me');
       ME = me.staff;
       const storeData = await staffFetch('/api/store');
-      document.getElementById('headerInfo').textContent = `${storeData.store.name} ／ ${ME.name}${ME.isOwner ? '（オーナー）' : ''}`;
+      document.getElementById('headerInfo').textContent = `${storeData.store.name} ／ ${ME.isTerminal ? '🖥️ ' : ''}${ME.name}${!ME.isTerminal && ME.isOwner ? '（オーナー）' : ''}`;
       staffList = storeData.staffList || [];
       // ★2026-09-22追加：以前はメインメニュー（1択）しか参照していなかったが、GAS版
       //   （reservation_form_assets.html buildMenuValue()）・お客様向け予約フォーム

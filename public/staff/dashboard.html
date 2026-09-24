@@ -162,6 +162,7 @@
       </div>
       <div class="header-sub" id="headerStoreName"></div>
       <div class="header-links">
+        <a href="/menu.html">🏠 メニュー</a>
         <a href="/staff/calendar.html">🗓️ サロンダッシュボード</a>
         <a href="/admin/customers-view.html" id="customerViewLink" style="display:none;">👤 顧客マスタ（閲覧）</a>
         <button type="button" class="refresh" id="refreshBtn" title="最新の情報に更新">🔄</button>
@@ -325,7 +326,7 @@
     try {
       const me = await api('/api/auth/me');
       ME = me.staff;
-      document.getElementById('headerStaffName').textContent = ME.name + (ME.isOwner ? '（オーナー）' : '');
+      document.getElementById('headerStaffName').textContent = (ME.isTerminal ? '🖥️ ' + ME.name : ME.name + (ME.isOwner ? '（オーナー）' : ''));
       if (ME.isOwner) document.getElementById('customerViewLink').style.display = '';
       const storeData = await api('/api/store');
       document.getElementById('headerStoreName').textContent = storeData.store.name;
