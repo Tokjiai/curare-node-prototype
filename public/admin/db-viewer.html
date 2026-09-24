@@ -55,6 +55,32 @@
   .pager button:disabled{opacity:0.4; cursor:not-allowed;}
 
   .err-box{background:#FDEDEA; color:var(--warn); border:1px solid #F3C9BC; border-radius:10px; padding:10px 14px; font-size:12.5px; margin-bottom:10px;}
+
+  /* ★2026-09-24追加：管理者ログイン時だけの編集機能（README 59章） */
+  .tab-btn.admin-only{border-style:dashed; color:#4A3F6B;}
+  .tab-btn.admin-only.active{background:#4A3F6B; border-color:#4A3F6B; color:#fff;}
+  .admin-note{background:#EFEDF3; color:#4A3F6B; border:1px solid #D9D5E2; border-radius:10px; padding:9px 14px; font-size:12px; margin-bottom:10px; line-height:1.6;}
+  td.edit-cell{position:sticky; left:0; background:inherit; z-index:1;}
+  .edit-btn{padding:3px 8px; border-radius:6px; border:1px solid #D9D5E2; background:#fff; color:#4A3F6B; font-size:12px; cursor:pointer; font-family:inherit;}
+  .modal-bg{position:fixed; inset:0; background:rgba(0,0,0,0.35); display:none; align-items:center; justify-content:center; z-index:9000; padding:16px;}
+  .modal-bg.open{display:flex;}
+  .modal{background:#fff; border-radius:14px; width:100%; max-width:560px; max-height:88vh; overflow:auto; padding:20px 22px; box-shadow:0 10px 30px rgba(0,0,0,0.2);}
+  .modal h3{font-size:15px; margin-bottom:4px;}
+  .modal .sub{font-size:12px; color:var(--ink-soft); margin-bottom:14px;}
+  .field{margin-bottom:10px;}
+  .field label{display:block; font-size:12px; font-weight:700; color:var(--ink-soft); margin-bottom:4px;}
+  .field input, .field select, .field textarea{width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:8px; font-size:13px; font-family:inherit;}
+  .field textarea{min-height:70px; resize:vertical;}
+  .field.changed input, .field.changed select, .field.changed textarea{border-color:#4A3F6B; background:#F7F5FB;}
+  .modal-actions{display:flex; justify-content:flex-end; gap:8px; margin-top:14px;}
+  .modal-actions button{padding:9px 16px; border-radius:8px; border:1px solid var(--line); background:#fff; font-size:13px; cursor:pointer; font-family:inherit;}
+  .modal-actions .primary{background:#4A3F6B; color:#fff; border-color:#4A3F6B; font-weight:700;}
+  .modal-err{display:none; background:#FDEDEA; color:var(--warn); border-radius:8px; padding:8px 12px; font-size:12.5px; margin-top:10px;}
+  table.diff{width:100%; border-collapse:collapse; font-size:12.5px; margin-top:6px;}
+  table.diff th, table.diff td{border-bottom:1px solid var(--line); padding:6px 8px; text-align:left; vertical-align:top; word-break:break-all;}
+  table.diff td.old{color:var(--warn); text-decoration:line-through;}
+  table.diff td.new{color:#2E6B3F; font-weight:700;}
+  .toast{position:fixed; left:50%; bottom:24px; transform:translateX(-50%); background:#2B2B27; color:#fff; padding:9px 16px; border-radius:8px; font-size:13px; z-index:9500; display:none;}
 </style>
 </head>
 <body>
@@ -62,8 +88,8 @@
 <div class="wrap" id="wrap">
   <div class="page-head">
     <div>
-      <h1>🗂️ DB一覧ビューア（閲覧専用）</h1>
-      <p>店舗の全データをスプレットシートのように横断的に確認できます。編集はできません（変更は各管理画面から行ってください）。</p>
+      <h1 id="pageTitle">🗂️ DB一覧ビューア（閲覧専用）</h1>
+      <p id="pageSub">店舗の全データをスプレットシートのように横断的に確認できます。編集はできません（変更は各管理画面から行ってください）。</p>
     </div>
     <div style="display:flex; gap:8px; align-items:center;">
       <span class="view-badge" id="viewBadge"></span>
@@ -72,6 +98,7 @@
   </div>
 
   <div class="tabs" id="tabs"></div>
+  <div class="admin-note" id="adminNote" style="display:none;"></div>
   <div class="err-box" id="errBox" style="display:none;"></div>
 
   <div class="toolbar">
@@ -94,6 +121,34 @@
   </div>
 </div>
 
+<!-- ★2026-09-24追加：管理者ログイン時の編集モーダル（①編集→②変更内容の確認→③保存の2段階） -->
+<div class="modal-bg" id="editModal">
+  <div class="modal">
+    <div id="editStep">
+      <h3 id="editTitle"></h3>
+      <div class="sub">編集できる項目だけが表示されています（id・作成日時・紐付けキー・PIN・権限などは編集できません）。</div>
+      <div id="editFields"></div>
+      <div class="modal-err" id="editErr"></div>
+      <div class="modal-actions">
+        <button type="button" id="editCancelBtn">キャンセル</button>
+        <button type="button" class="primary" id="editReviewBtn">変更内容を確認</button>
+      </div>
+    </div>
+    <div id="confirmStep" style="display:none;">
+      <h3>⚠️ この内容で保存しますか？</h3>
+      <div class="sub" id="confirmSub"></div>
+      <table class="diff"><thead><tr><th>カラム</th><th>変更前</th><th>変更後</th></tr></thead><tbody id="diffBody"></tbody></table>
+      <div class="sub" style="margin-top:10px;">保存すると、変更前・変更後の値が「編集ログ」タブに記録されます。予約の重複チェックなど各管理画面の業務ルールは通らず、値がそのまま書き込まれます。</div>
+      <div class="modal-err" id="confirmErr"></div>
+      <div class="modal-actions">
+        <button type="button" id="confirmBackBtn">← 戻って修正</button>
+        <button type="button" class="primary" id="confirmSaveBtn">この内容で保存</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
 <script>
 (function(){
   const loadingMsg = document.getElementById('loadingMsg');
@@ -107,6 +162,9 @@
   const searchInput = document.getElementById('searchInput');
 
   let tables = [];
+  let isAdmin = false;
+  let currentRows = [];
+  let editing = null; // { table, row, pending: { col: newValue } }
   let state = { table: null, sort: null, dir: 'DESC', q: '', offset: 0, limit: 100 };
   let searchDebounce = null;
 
@@ -126,7 +184,13 @@
         loadingMsg.textContent = 'この画面はオーナー権限のみ利用できます（サロン端末では利用できません）';
         return;
       }
-      document.getElementById('viewBadge').textContent = '👤 ' + me.staff.name + '（オーナー）';
+      isAdmin = !!me.staff.isAdmin;
+      document.getElementById('viewBadge').textContent = isAdmin ? '🛡️ 管理者' : '👤 ' + me.staff.name + '（オーナー）';
+      if (isAdmin) {
+        document.getElementById('pageTitle').textContent = '🗂️ DB一覧ビューア（管理者：編集可）';
+        document.getElementById('pageSub').textContent = '管理者ログイン中のため、各行の「✏️」から許可された項目を編集できます。保存前に変更内容の確認があり、変更は「編集ログ」タブに記録されます。';
+        document.title = 'DB一覧ビューア（管理者）';
+      }
       const tdata = await adminFetch('/api/admin/db-viewer/tables');
       tables = tdata.tables;
       renderTabs();
@@ -145,7 +209,7 @@
 
   function renderTabs() {
     tabsEl.innerHTML = tables.map(t =>
-      `<button class="tab-btn" data-key="${t.key}">${esc(t.label)}</button>`
+      `<button class="tab-btn${t.adminOnly ? ' admin-only' : ''}" data-key="${t.key}">${esc(t.label)}</button>`
     ).join('');
     tabsEl.querySelectorAll('.tab-btn').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -157,10 +221,20 @@
     });
   }
 
+  function currentTableDef() { return tables.find((t) => t.key === state.table) || {}; }
+
   function updateTabActive() {
     tabsEl.querySelectorAll('.tab-btn').forEach(btn => {
       btn.classList.toggle('active', btn.dataset.key === state.table);
     });
+    const def = currentTableDef();
+    const note = document.getElementById('adminNote');
+    if (!isAdmin) { note.style.display = 'none'; return; }
+    note.style.display = '';
+    if (state.table === 'db_edit_log') note.textContent = '🛡️ DB一覧ビューアで行った編集の記録です（1カラム1行、閲覧専用。記録の編集・削除はできません）。';
+    else if (state.table === 'webhook_log') note.textContent = '🛡️ LINE webhookで受信したイベントの記録です（閲覧専用）。スタッフのPIN送信は「****」にマスクしています。90日より古い記録は日次メンテナンスで自動削除されます。';
+    else if (def.editable) note.textContent = '🛡️ 編集できる項目：' + Object.keys(def.editable).join('、');
+    else note.textContent = '🛡️ このテーブルは閲覧専用です。';
   }
 
   async function loadRows() {
@@ -190,12 +264,13 @@
   }
 
   function renderHead(columns) {
-    theadRow.innerHTML = columns.map(c => {
+    const editCol = isAdmin && currentTableDef().editable ? '<th style="cursor:default;">編集</th>' : '';
+    theadRow.innerHTML = editCol + columns.map(c => {
       const isSorted = c === state.sort;
       const arrow = isSorted ? (state.dir === 'ASC' ? '▲' : '▼') : '';
       return `<th data-col="${esc(c)}">${esc(c)}<span class="arrow">${arrow}</span></th>`;
     }).join('');
-    theadRow.querySelectorAll('th').forEach(th => {
+    theadRow.querySelectorAll('th[data-col]').forEach(th => {
       th.addEventListener('click', () => {
         const col = th.dataset.col;
         if (state.sort === col) {
@@ -210,14 +285,104 @@
   }
 
   function renderRows(columns, rows) {
+    currentRows = rows;
+    const editable = isAdmin && currentTableDef().editable;
     if (!rows.length) {
-      tbody.innerHTML = `<tr class="empty-row"><td colspan="${columns.length}">データがありません</td></tr>`;
+      tbody.innerHTML = `<tr class="empty-row"><td colspan="${columns.length + (editable ? 1 : 0)}">データがありません</td></tr>`;
       return;
     }
-    tbody.innerHTML = rows.map(r =>
-      '<tr>' + columns.map(c => `<td title="${esc(r[c])}">${esc(r[c])}</td>`).join('') + '</tr>'
+    tbody.innerHTML = rows.map((r, i) =>
+      '<tr>' + (editable ? `<td class="edit-cell"><button class="edit-btn" data-idx="${i}" type="button">✏️</button></td>` : '') +
+      columns.map(c => `<td title="${esc(r[c])}">${esc(r[c])}</td>`).join('') + '</tr>'
     ).join('');
+    tbody.querySelectorAll('.edit-btn').forEach((btn) => {
+      btn.addEventListener('click', () => openEdit(currentRows[Number(btn.dataset.idx)]));
+    });
   }
+
+  // ---------- ★2026-09-24追加：管理者の編集（①編集→②確認→③保存） ----------
+  const LONG_TEXT = ['note', 'memo', 'body', 'closing', 'text', 'address'];
+  function valText(v) { return v == null ? '' : String(v); }
+  function inputFor(col, spec, value) {
+    const v = valText(value);
+    if (spec.type === 'bool') {
+      return `<select data-col="${esc(col)}"><option value="1"${v === '1' ? ' selected' : ''}>1（はい）</option><option value="0"${v !== '1' ? ' selected' : ''}>0（いいえ）</option></select>`;
+    }
+    if (spec.type === 'enum') {
+      const opts = spec.options.includes(v) ? spec.options : [v].concat(spec.options);
+      return `<select data-col="${esc(col)}">` + opts.map((o) => `<option value="${esc(o)}"${o === v ? ' selected' : ''}>${esc(o)}</option>`).join('') + '</select>';
+    }
+    if (spec.type === 'date') return `<input type="date" data-col="${esc(col)}" value="${esc(v)}">`;
+    if (spec.type === 'time') return `<input type="time" data-col="${esc(col)}" value="${esc(v)}">`;
+    if (spec.type === 'int') return `<input type="number" step="1"${spec.min != null ? ` min="${spec.min}"` : ''} data-col="${esc(col)}" value="${esc(v)}">`;
+    if (LONG_TEXT.includes(col)) return `<textarea data-col="${esc(col)}">${esc(v)}</textarea>`;
+    return `<input type="text" data-col="${esc(col)}" value="${esc(v)}">`;
+  }
+  function openEdit(row) {
+    const def = currentTableDef();
+    editing = { table: state.table, row, pending: {} };
+    document.getElementById('editTitle').textContent = `✏️ ${def.label}　id=${row.id} を編集`;
+    document.getElementById('editFields').innerHTML = Object.entries(def.editable).map(([col, spec]) =>
+      `<div class="field" data-field="${esc(col)}"><label>${esc(col)}${spec.required ? '（必須）' : ''}</label>${inputFor(col, spec, row[col])}</div>`
+    ).join('');
+    document.querySelectorAll('#editFields [data-col]').forEach((el) => {
+      el.addEventListener('input', () => {
+        el.closest('.field').classList.toggle('changed', el.value !== valText(row[el.dataset.col]));
+      });
+    });
+    document.getElementById('editErr').style.display = 'none';
+    document.getElementById('editStep').style.display = '';
+    document.getElementById('confirmStep').style.display = 'none';
+    document.getElementById('editModal').classList.add('open');
+  }
+  function closeEdit() { document.getElementById('editModal').classList.remove('open'); editing = null; }
+  function showModalErr(id, msg) { const el = document.getElementById(id); el.textContent = msg; el.style.display = 'block'; }
+
+  document.getElementById('editCancelBtn').addEventListener('click', closeEdit);
+  document.getElementById('editReviewBtn').addEventListener('click', () => {
+    const row = editing.row;
+    const pending = {};
+    document.querySelectorAll('#editFields [data-col]').forEach((el) => {
+      if (el.value !== valText(row[el.dataset.col])) pending[el.dataset.col] = el.value;
+    });
+    if (!Object.keys(pending).length) { showModalErr('editErr', '変更された項目がありません'); return; }
+    editing.pending = pending;
+    document.getElementById('confirmSub').textContent = `${currentTableDef().label}　id=${row.id}　／　${Object.keys(pending).length}項目を変更します`;
+    document.getElementById('diffBody').innerHTML = Object.entries(pending).map(([col, nv]) =>
+      `<tr><td>${esc(col)}</td><td class="old">${esc(valText(row[col])) || '（空）'}</td><td class="new">${esc(nv) || '（空）'}</td></tr>`
+    ).join('');
+    document.getElementById('confirmErr').style.display = 'none';
+    document.getElementById('editStep').style.display = 'none';
+    document.getElementById('confirmStep').style.display = '';
+  });
+  document.getElementById('confirmBackBtn').addEventListener('click', () => {
+    document.getElementById('confirmStep').style.display = 'none';
+    document.getElementById('editStep').style.display = '';
+  });
+  document.getElementById('confirmSaveBtn').addEventListener('click', async () => {
+    const btn = document.getElementById('confirmSaveBtn');
+    const expected = {};
+    Object.keys(editing.pending).forEach((c) => { expected[c] = editing.row[c]; });
+    btn.disabled = true;
+    try {
+      const res = await fetch(`/api/admin/db-viewer/${encodeURIComponent(editing.table)}/${editing.row.id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ changes: editing.pending, expected })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) { showModalErr('confirmErr', data.message || data.error || ('保存に失敗しました: ' + res.status)); return; }
+      closeEdit();
+      const toast = document.getElementById('toast');
+      toast.textContent = `✅ ${data.changed.length}項目を保存し、編集ログに記録しました`;
+      toast.style.display = 'block';
+      setTimeout(() => { toast.style.display = 'none'; }, 2500);
+      loadRows();
+    } catch (e) {
+      showModalErr('confirmErr', 'サーバーエラー: ' + e.message);
+    } finally {
+      btn.disabled = false;
+    }
+  });
 
   searchInput.addEventListener('input', () => {
     clearTimeout(searchDebounce);
@@ -241,5 +406,7 @@
   init();
 })();
 </script>
+<!-- ★2026-09-24追加：管理者ログイン中だけ右下に「🛡️ 管理者モード」バッジを出す（README 59章） -->
+<script src="/admin/admin-mode.js"></script>
 </body>
 </html>

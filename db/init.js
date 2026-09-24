@@ -42,6 +42,8 @@ function seedData() {
     DELETE FROM zones;
     DELETE FROM menu_items;
     DELETE FROM booking_notices;
+    DELETE FROM db_edit_log;
+    DELETE FROM webhook_log;
     DELETE FROM staff;
     DELETE FROM stores;
   `);
@@ -130,9 +132,10 @@ function seedData() {
   insertZone.run({ store_id: storeId, zone_key: 'ev', label: '夜',   start_time: '17:00', end_time: '22:30', fixed_target: 1, fixed_start: '19:30', fixed_interval_min: 90 });
 
   // --- メニューマスタ：それまでpublic/index.htmlに直接ハードコードされていた4件を初期データとして投入 ---
+  // ★2026-09-24追加：ここで投入する行は「初期メニュー」（is_initial=1）。名称・カテゴリは管理者のみ変更可
   const insertMenu = db.prepare(`
-    INSERT INTO menu_items (store_id, category, name, duration_min, price, target, is_active, display_order)
-    VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+    INSERT INTO menu_items (store_id, category, name, duration_min, price, target, is_active, display_order, is_initial)
+    VALUES (?, ?, ?, ?, ?, ?, 1, ?, 1)
   `);
   insertMenu.run(storeId, 'メインメニュー', 'フェイシャル(60分)', 60, 6000, '全員', 1);
   insertMenu.run(storeId, 'メインメニュー', 'フェイシャル(90分)', 90, 8500, '全員', 2);

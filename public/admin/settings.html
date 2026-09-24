@@ -43,6 +43,8 @@
   }
   .rule-value-input{width:80px;}
   .zone-time-input{width:92px;}
+  /* ★2026-09-24追加：オーナーログイン時にロックする初期メニューの名称・カテゴリ欄 */
+  #menuBody input:disabled, #menuBody select:disabled{background:#F3F2EE; color:#8A887F; cursor:not-allowed;}
   .btn{background:var(--accent); color:#fff; border:none; border-radius:8px; padding:7px 14px; font-size:12.5px; font-weight:600; cursor:pointer; font-family:inherit;}
   .btn.secondary{background:#fff; color:var(--ink); border:1px solid var(--line);}
   .btn.danger{background:#fff; color:var(--warn); border:1px solid var(--warn);}
@@ -111,6 +113,8 @@
       <div class="panel">
         <h2>メニューマスタ</h2>
         <div class="desc">お客様予約フォームに表示するメニュー・料金・所要時間を管理します</div>
+        <!-- ★2026-09-24追加：GAS版owner_ui.htmlと同じ権限分岐の案内（管理者ログイン時は文言が変わる） -->
+        <div class="hint" id="menuLockHint" style="font-size:11.5px; color:var(--ink-soft); margin:-6px 0 12px;"></div>
         <div class="event-form" id="menuAddForm" style="display:none;">
           <div>
             <label>カテゴリ</label>
@@ -210,6 +214,11 @@
       <div class="panel">
         <h2>営業時間帯（ゾーン）</h2>
         <div class="desc">午前・午後・夜の3枠を基本に、開始/終了時刻や夜間固定枠の間隔を設定できます</div>
+        <!-- ★2026-09-24追加：GAS版owner_ui.htmlの「営業時間帯（ゾーン）」パネルと同じ説明書き -->
+        <ul class="hint" style="font-size:11.5px; color:var(--ink-soft); margin:-6px 0 12px 18px; line-height:1.7;">
+          <li>ゾーンの判定は予約の開始時刻がどのゾーンに属するかで決まります（例：12:45スタートは午前ゾーン、13:00スタートは午後ゾーン）</li>
+          <li>スタッフ用の予約枠は15分単位、お客様予約フォームは30分単位で作成されます</li>
+        </ul>
         <table>
           <thead><tr><th>ゾーン</th><th>開始</th><th>終了</th><th>受付中</th><th>夜間固定枠</th><th>固定開始/間隔(分)</th><th></th></tr></thead>
           <tbody id="zonesBody"></tbody>
@@ -408,6 +417,12 @@
     fillSelect(document.getElementById('menuAddCategory'), menuCategories, menuCategories[0]);
     fillSelect(document.getElementById('menuAddTarget'), menuTargets, menuTargets[0]);
 
+    // ★2026-09-24追加：初期メニュー（is_initial=1）の名称・カテゴリは管理者ログイン時のみ編集可
+    //   （GAS版owner_ui.htmlと同じ）。オーナーは所要時間・料金・対象・表示だけ変更できる
+    const canEditInitial = !!data.canEditInitialNameCategory;
+    document.getElementById('menuLockHint').textContent = canEditInitial
+      ? '🛡️ 管理者ログイン中のため、「初期」マークのメニューも名称・カテゴリを含めて全項目編集できます。'
+      : '「初期」マークのメニュー（店舗の初期データ）は、名称・カテゴリを変更できません（所要時間・料金・対象・表示は変更できます）。ご自身で追加したメニューは全項目編集できます。';
     const tbody = document.getElementById('menuBody');
     tbody.innerHTML = '';
     (data.items || []).forEach((m) => {
@@ -426,8 +441,19 @@
       const activeChk = document.createElement('input');
       activeChk.type = 'checkbox'; activeChk.checked = !!m.is_active;
 
+      const lockNameCat = !!m.is_initial && !canEditInitial;
+      catSel.disabled = lockNameCat;
+      nameInput.disabled = lockNameCat;
+      if (lockNameCat) { catSel.title = nameInput.title = '初期メニューの名称・カテゴリは管理者のみ変更できます'; }
+
       const tdCat = document.createElement('td'); tdCat.appendChild(catSel);
       const tdName = document.createElement('td'); tdName.appendChild(nameInput);
+      if (m.is_initial) {
+        const badge = document.createElement('span');
+        badge.textContent = '初期';
+        badge.style.cssText = 'display:inline-block; margin-left:6px; font-size:10.5px; font-weight:700; padding:2px 6px; border-radius:6px; background:#EFEBE4; color:#8A5A3C;';
+        tdName.appendChild(badge);
+      }
       const tdDur = document.createElement('td'); tdDur.appendChild(durInput); tdDur.appendChild(document.createTextNode(' 分'));
       const tdPrice = document.createElement('td'); tdPrice.appendChild(document.createTextNode('¥')); tdPrice.appendChild(priceInput);
       const tdTarget = document.createElement('td'); tdTarget.appendChild(targetSel);
@@ -919,5 +945,7 @@
   init();
 })();
 </script>
+<!-- ★2026-09-24追加：管理者ログイン中だけ右下に「🛡️ 管理者モード」バッジを出す（README 59章） -->
+<script src="/admin/admin-mode.js"></script>
 </body>
 </html>

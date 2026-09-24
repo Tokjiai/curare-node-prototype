@@ -314,6 +314,10 @@ CREATE TABLE IF NOT EXISTS menu_items (
   target         VARCHAR(20) NOT NULL DEFAULT '全員',  -- '全員' / '初回' / 'キープメンバー' / 'ビジター'
   is_active      INTEGER NOT NULL DEFAULT 1,
   display_order  INTEGER NOT NULL DEFAULT 0,
+  is_initial     INTEGER NOT NULL DEFAULT 0,     -- ★2026-09-24追加：店舗の初期データとして投入されたメニューか。
+                                                 --   GAS版owner_ui.htmlと同じく、初期メニューの名称・カテゴリは
+                                                 --   管理者ログイン時のみ変更でき、オーナーは所要時間・料金・対象・
+                                                 --   有効/無効だけ変更できる（オーナー自身が追加した行は全項目可）
   created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -381,3 +385,45 @@ CREATE INDEX IF NOT EXISTS idx_events_store_date          ON events(store_id, ev
 --     シミュレーション動作。実チャネルのトークンをDBに設定すれば実送信に切り替わる。
 --   詳しくは README_PROTOTYPE.md の「LINE連携（Messaging API）」セクションを参照。
 -- ============================================================================
+
+-- ============================================================================
+-- ★2026-09-24追加：DB一覧ビューアの編集ログ（監査ログ）
+--   管理者ログイン時だけ使えるDB一覧ビューアの編集機能で、どのテーブルの、どの行の、
+--   どのカラムを、いつ、誰が、旧値→新値でどう変えたかを1カラム1行で記録する。
+--   ログ自体の編集・削除APIは用意しない（改ざん防止）。DB一覧ビューアの1タブで閲覧する。
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS db_edit_log (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  store_id     INTEGER NOT NULL REFERENCES stores(id),
+  table_name   VARCHAR(50) NOT NULL,
+  row_id       INTEGER NOT NULL,
+  column_name  VARCHAR(50) NOT NULL,
+  old_value    TEXT,
+  new_value    TEXT,
+  edited_by    VARCHAR(50) NOT NULL,   -- 管理者は相野様お一人のため「管理者」で固定
+  edited_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_db_edit_log_store ON db_edit_log(store_id, edited_at);
+
+-- ============================================================================
+-- ★2026-09-24追加：LINE webhookの受信ログ（GAS版webhook_logシート相当）
+--   受信したイベントの種別・送信先チャネル（destination）・userId・本文・処理結果を
+--   1イベント1行で記録する。管理者ログイン時だけDB一覧ビューアで閲覧できる（閲覧専用）。
+--   お客様のメッセージ本文を含むため、日次メンテナンスで90日より古い行を自動削除する。
+--   スタッフが送る4桁PIN（LINE userId自動登録用）は平文で残さないよう、本文・生データとも
+--   マスクしてから保存する（routes/lineWebhook.js参照）。
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS webhook_log (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  store_id      INTEGER REFERENCES stores(id),
+  received_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+  event_type    VARCHAR(30),            -- follow / unfollow / message / postback ... （署名NG等は '(request)'）
+  message_type  VARCHAR(30),            -- text / sticker / image ...（message以外は空）
+  destination   VARCHAR(64),            -- 受信したLINEチャネル（ボットのuserId）
+  source_type   VARCHAR(20),            -- user / group / room
+  user_id       VARCHAR(64),
+  body          TEXT,                   -- テキスト本文・スタンプID・postbackデータ等（4桁PINはマスク）
+  result        VARCHAR(200),           -- 処理結果（例：顧客マスタ登録／PIN登録／キーワード応答／対象外）
+  raw_json      TEXT                    -- イベントの生データ（JSON。4桁PINはマスク）
+);
+CREATE INDEX IF NOT EXISTS idx_webhook_log_store ON webhook_log(store_id, received_at);
