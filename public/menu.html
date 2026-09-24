@@ -76,8 +76,10 @@
 (function(){
   // タイル定義：tier = 'all'（全員）／'owner'（isOwner。サロン端末も含む）／'trueOwner'（サロン端末を除くオーナー）
   const TILES = [
-    { tier: 'all', cls: '', icon: '📅', name: 'カレンダー（koyomi）', desc: '予約確認・シフト管理（スタッフダッシュボード）', href: '/staff/dashboard.html' },
-    { tier: 'all', cls: '', icon: '🗓️', name: 'サロンダッシュボード', desc: '全スタッフの予約を週・月のカレンダーで表示・登録', href: '/staff/calendar.html' },
+    // ★2026-09-24修正：GAS版の「カレンダー（koyomi）」（p=koyomi）は、サロン端末（ST099）が日常使う
+    //   全スタッフ共有のカレンダー画面そのもの（社長確認済み）。Node版では44章の/staff/calendar.html
+    { tier: 'all', cls: '', icon: '📅', name: 'カレンダー（koyomi）', desc: '全スタッフの予約を担当者別に色分けした共有カレンダー（週・月表示・登録）', href: '/staff/calendar.html' },
+    { tier: 'all', cls: '', icon: '🗓️', name: 'サロンダッシュボード', desc: '予約確認・シフト管理（スタッフダッシュボード）', href: '/staff/dashboard.html' },
     { tier: 'owner', cls: 'view', icon: '👤', name: '顧客マスタ閲覧', desc: '顧客情報の確認（閲覧専用）', href: '/admin/customers-view.html' },
     { tier: 'owner', cls: 'view', icon: '📋', name: '予約データ閲覧', desc: '予約データの確認（閲覧専用）', href: '/admin/reservations-view.html' },
     { tier: 'trueOwner', cls: 'owner', icon: '⚙️', name: 'オーナー設定', desc: '店舗設定・顧客/予約の編集・シフト管理など', href: '/admin/index.html' },

@@ -2875,6 +2875,8 @@ async function main() {
     const page = await fetch(BASE + '/menu.html').then((r) => r.text());
     assert(page.includes("tier: 'all'") && page.includes("tier: 'owner'") && page.includes("tier: 'trueOwner'") &&
       page.includes('me.isOwner && !me.isTerminal'), '統一タイルメニュー（/menu.html）が存在し、全員／isOwner／isOwnerかつ端末以外の3段階で出し分ける');
+    // GAS版の「カレンダー（koyomi）」＝サロン端末が日常使う全スタッフ共有カレンダー（README 57-7）
+    assert(/name: 'カレンダー（koyomi）'[^}]*href: '\/staff\/calendar\.html'/.test(page), '「カレンダー（koyomi）」タイルは共有カレンダー（/staff/calendar.html）を開く');
     const login = await fetch(BASE + '/admin/login.html').then((r) => r.text());
     assert(login.includes('/api/auth/login-staff') && login.includes('staffId: selectedStaff.id') && login.includes("'/menu.html'"),
       'ログイン画面は名前タイル→PINの2段階で、ログイン後は統一メニューへ進む');
