@@ -12,6 +12,7 @@
 //   GET  /api/admin/reservations 【オーナー管理画面】予約データ検索（要ログインセッション・オーナー権限）
 //   GET  /api/admin/dashboard    【オーナー管理画面】ダッシュボード集計（要ログインセッション・オーナー権限）
 //   GET  /api/auth/login-staff   ログイン画面の名前タイル一覧（GAS版getStaffLoginList相当）
+//   POST /api/auth/admin-login   管理者（相野様）専用ログイン（環境変数PLATFORM_ADMIN_PASSWORDと照合）
 //   POST /api/auth/login         スタッフPINログイン（タイルで選んだstaffId＋4桁PIN。GAS版loginStaff_相当）
 //   POST /api/auth/logout        ログアウト（セッション破棄）
 //   GET  /api/auth/me            現在のログイン状態確認
@@ -673,6 +674,101 @@ app.post('/api/auth/login', (req, res) => {
     res.status(500).json({ success: false, message: e.message });
   }
 });
+
+// ============================================================================
+// ★2026-09-24追加：管理者（相野様お一人・GAS版control_panel.html／platform_admin.gs相当）
+//   専用ログイン（フェーズA：単一店舗の枠内で完結する管理者権限）
+//
+//   【認証方式】環境変数 PLATFORM_ADMIN_PASSWORD（12文字以上）と照合する。
+//   ・店舗のスタッフマスタ（staffテーブルのPIN）とは完全に独立させ、特定の店舗の
+//     スタッフには紐付けない。DBに保存しないので、Render無料プランの再デプロイで
+//     DBが初期化されても消えず、コードやDBが漏れてもパスワードは漏れない
+//   ・未設定（または12文字未満）の場合は管理者ログイン自体を無効にする。旧
+//     ADMIN_PASSWORD のような既定値は持たない（既定値はGitHub上のコードから誰でも読めるため）
+//   ・起動時にscryptでハッシュ化し、照合は lib/auth.js の定数時間比較で行う
+//   ・連続して5回失敗したら15分間ロックする（ブルートフォース対策）。管理者は1人なので、
+//     接続元ごとではなく管理者ログイン全体で数える
+//   【ログイン後】既存のオーナー用管理画面にオーナーと同じ権限で入れるうえ、
+//     session.staff.isAdmin が付き、管理者専用機能（初期メニューの名称・カテゴリ編集、
+//     DB一覧ビューアの編集・編集ログ・LINE webhook受信ログ）が解禁される。
+//   【対象店舗】フェーズAは単一店舗（クラーレ寿）で完結させるため、環境変数
+//     PLATFORM_ADMIN_STORE（slugまたはID、既定は店舗ID 1）の店舗に固定する。
+//     複数店舗の切り替え（フェーズB）は別途設計する。
+// ============================================================================
+const PLATFORM_ADMIN_MIN_LENGTH = 12;
+const PLATFORM_ADMIN_MAX_FAILURES = 5;
+const PLATFORM_ADMIN_LOCK_MS = 15 * 60 * 1000;
+const PLATFORM_ADMIN_NAME = '管理者';
+const platformAdminPassword = process.env.PLATFORM_ADMIN_PASSWORD || '';
+const platformAdminHash = platformAdminPassword.length >= PLATFORM_ADMIN_MIN_LENGTH ? createPinHash(platformAdminPassword) : null;
+if (!platformAdminHash) {
+  console.warn(platformAdminPassword
+    ? `⚠️  PLATFORM_ADMIN_PASSWORD が${PLATFORM_ADMIN_MIN_LENGTH}文字未満のため、管理者ログインを無効にしています。`
+    : 'ℹ️  PLATFORM_ADMIN_PASSWORD 環境変数が未設定のため、管理者ログインは無効です（必要な場合のみ設定してください）。');
+}
+const platformAdminLock = { failures: 0, lockedUntil: 0 };
+
+// POST /api/auth/admin-login : { password } → { success, isAdmin, storeId, name }
+app.post('/api/auth/admin-login', (req, res) => {
+  try {
+    if (!platformAdminHash) {
+      return res.status(503).json({ success: false, message: '管理者ログインは設定されていません（PLATFORM_ADMIN_PASSWORD 未設定）' });
+    }
+    const now = Date.now();
+    if (platformAdminLock.lockedUntil > now) {
+      const minutes = Math.ceil((platformAdminLock.lockedUntil - now) / 60000);
+      return res.status(429).json({ success: false, message: `ログインに続けて失敗したため、あと約${minutes}分間ロックされています` });
+    }
+    const password = String((req.body && req.body.password) || '');
+    if (!password || !verifyPin(password, platformAdminHash.salt, platformAdminHash.hash)) {
+      platformAdminLock.failures++;
+      if (platformAdminLock.failures >= PLATFORM_ADMIN_MAX_FAILURES) {
+        platformAdminLock.failures = 0;
+        platformAdminLock.lockedUntil = now + PLATFORM_ADMIN_LOCK_MS;
+        console.warn('⚠️  管理者ログインに5回続けて失敗したため、15分間ロックしました');
+      }
+      return res.status(401).json({ success: false, message: 'パスワードが正しくありません' });
+    }
+    const storeId = resolveStoreIdStrict_(process.env.PLATFORM_ADMIN_STORE || DEFAULT_STORE_ID);
+    if (!storeId) {
+      return res.status(500).json({ success: false, message: 'PLATFORM_ADMIN_STORE の店舗が見つかりません' });
+    }
+    platformAdminLock.failures = 0;
+    // ★既存の管理画面・APIはすべて session.staff を前提にしているため、同じ形で持たせる。
+    //   id は特定の店舗スタッフに紐付けないため null（スタッフ管理の「自分自身」判定等に
+    //   引っかからない）。isOwner:true でオーナーの全機能、isAdmin:true で管理者専用機能。
+    req.session.staff = {
+      id: null,
+      storeId,
+      name: PLATFORM_ADMIN_NAME,
+      role: PLATFORM_ADMIN_NAME,
+      isOwner: true,
+      isTerminal: false,
+      isAdmin: true
+    };
+    req.session.save((err) => {
+      if (err) {
+        console.error('セッション保存エラー:', err);
+        return res.status(500).json({ success: false, message: 'セッションの保存に失敗しました' });
+      }
+      res.json({ success: true, isAdmin: true, isOwner: true, storeId, name: PLATFORM_ADMIN_NAME });
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// requireAdminSession : 管理者専用API（DB一覧ビューアの編集・監査ログ・webhookログ等）を守る
+function requireAdminSession(req, res, next) {
+  if (!req.session || !req.session.staff) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  if (!req.session.staff.isAdmin) {
+    return res.status(403).json({ error: 'admin_only', message: 'この操作は管理者ログイン時のみ利用できます' });
+  }
+  next();
+}
 
 // ----------------------------------------------------------------------------
 // POST /api/auth/logout : セッション破棄
@@ -2902,7 +2998,9 @@ app.get('/api/admin/settings/menu', requireOwnerSession, (req, res) => {
   try {
     const storeId = req.session.staff.storeId;
     const items = db.prepare('SELECT * FROM menu_items WHERE store_id = ? ORDER BY display_order ASC, id ASC').all(storeId);
-    res.json({ items, categories: MENU_CATEGORIES, targets: MENU_TARGETS });
+    // ★2026-09-24追加：初期メニュー（is_initial=1）の名称・カテゴリを編集できるかどうか
+    //   （管理者ログイン時のみtrue）。画面側はこれを見て2項目をロックする
+    res.json({ items, categories: MENU_CATEGORIES, targets: MENU_TARGETS, canEditInitialNameCategory: !!req.session.staff.isAdmin });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: e.message });
@@ -2976,6 +3074,14 @@ app.put('/api/admin/settings/menu/:id', requireOwnerSession, (req, res) => {
     }
     if (isNaN(price) || price < 0) {
       return res.status(400).json({ success: false, message: '料金は0以上の数値で指定してください' });
+    }
+    // ★2026-09-24追加：GAS版owner_ui.htmlと同じ権限分岐。初期メニュー（is_initial=1）の
+    //   名称・カテゴリは管理者ログイン時のみ変更でき、オーナーは所要時間・料金・対象・
+    //   有効/無効だけ変更できる。オーナー自身が追加したメニュー（is_initial=0）は全項目可。
+    //   画面は現在の値をそのまま送ってくるので、「値が変わる場合だけ」拒否する。
+    if (existing.is_initial && !req.session.staff.isAdmin &&
+        (data.name.trim() !== existing.name || data.category !== existing.category)) {
+      return res.status(403).json({ success: false, message: '初期メニューの名称・カテゴリは管理者のみ変更できます（所要時間・料金・対象・有効/無効は変更できます）' });
     }
 
     db.prepare(`
@@ -3469,81 +3575,188 @@ app.post('/api/admin/reports/staff-tomorrow-schedule', requireOwnerSession, asyn
 //   一覧に含めない（LINE連携情報を生のまま扱わない、という既存の方針を踏襲）。
 //   閲覧専用（編集・削除は今回のスコープ外。既存のCRUD用APIで対応する）。
 // ============================================================================
+// ★2026-09-24追加：管理者ログイン時だけ、editable に挙げたカラムを1行ずつ編集できる
+//   （社長の要望 v56 の設計方針：①編集可能カラムのホワイトリスト化 ②変更ログ（監査ログ）
+//   の記録 ③保存前の確認ダイアログ必須）。行の追加・削除はできない（各管理画面の既存機能で行う）。
+//   editable から外しているもの：id・created_at・updated_at（自動）・店舗ID・顧客IDなどの
+//   紐付けキー・認証情報（PIN）・権限系（is_owner・is_shared_terminal・is_active（スタッフ））・
+//   統合済みフラグ（is_deleted）・スタッフの氏名（予約・シフトの担当者名と文字列で紐付いており、
+//   変更時はスタッフ管理画面のシフト初期値の整理処理を通す必要があるため）・シフトの担当者名。
+//   型：text（required:trueなら空不可）／int／bool（0・1）／date（YYYY-MM-DD）／time（HH:MM）／enum
+//   adminOnly:true のテーブル（編集ログ・LINE webhook受信ログ）は管理者だけが閲覧でき、編集はできない。
 const DB_VIEWER_TABLES = {
   reservations: {
     label: '予約 (reservations)',
-    columns: ['id', 'realname', 'kana', 'line_name', 'staff_name', 'menu', 'reservation_date', 'reservation_time', 'note', 'editor', 'line_sent', 'done', 'customer_id', 'status', 'created_at', 'updated_at'],
+    columns: ['id', 'realname', 'kana', 'line_name', 'staff_name', 'menu', 'reservation_date', 'reservation_time', 'note', 'editor', 'line_sent', 'reminder_sent', 'done', 'customer_id', 'status', 'created_at', 'updated_at'],
     defaultSort: 'reservation_date', defaultDir: 'DESC',
-    searchColumns: ['realname', 'kana', 'staff_name', 'menu', 'note']
+    searchColumns: ['realname', 'kana', 'staff_name', 'menu', 'note'],
+    editable: {
+      realname: { type: 'text', required: true }, kana: { type: 'text' }, line_name: { type: 'text' },
+      staff_name: { type: 'text', required: true }, menu: { type: 'text' },
+      reservation_date: { type: 'date', required: true }, reservation_time: { type: 'time', required: true },
+      note: { type: 'text' }, line_sent: { type: 'bool' }, reminder_sent: { type: 'bool' }, done: { type: 'bool' },
+      status: { type: 'enum', options: ['確定', '仮予約'] }
+    }
   },
   customers: {
     label: '顧客 (customers)',
     columns: ['id', 'customer_id', 'realname', 'kana', 'phone', 'address', 'line_name', 'birthday', 'first_visit_date', 'last_visit_date', 'total_visits', 'memo', 'status', 'staff_name', 'is_keep_member', 'opt_support', 'booking_blocked', 'notify_enabled', 'is_deleted', 'created_at', 'updated_at'],
     defaultSort: 'last_visit_date', defaultDir: 'DESC',
-    searchColumns: ['realname', 'kana', 'phone', 'memo']
+    searchColumns: ['realname', 'kana', 'phone', 'memo'],
+    editable: {
+      realname: { type: 'text', required: true }, kana: { type: 'text' }, phone: { type: 'text' }, address: { type: 'text' },
+      line_name: { type: 'text' }, birthday: { type: 'date' }, first_visit_date: { type: 'date' }, last_visit_date: { type: 'date' },
+      total_visits: { type: 'int', min: 0 }, memo: { type: 'text' }, status: { type: 'enum', options: ['active', 'inactive'] },
+      staff_name: { type: 'text' }, is_keep_member: { type: 'bool' }, opt_support: { type: 'bool' },
+      booking_blocked: { type: 'bool' }, notify_enabled: { type: 'bool' }
+    }
   },
   staff: {
     label: 'スタッフ (staff)',
-    columns: ['id', 'name', 'nickname', 'role', 'color', 'opt_support', 'night_restrict', 'show_in_booking', 'is_active', 'is_owner', 'created_at'],
+    columns: ['id', 'name', 'nickname', 'role', 'color', 'opt_support', 'night_restrict', 'show_in_booking', 'is_active', 'is_owner', 'is_shared_terminal', 'created_at'],
     defaultSort: 'id', defaultDir: 'ASC',
-    searchColumns: ['name', 'nickname', 'role']
+    searchColumns: ['name', 'nickname', 'role'],
+    editable: {
+      nickname: { type: 'text' }, role: { type: 'enum', options: ['オーナー', 'スタッフ', '見習い', 'サロン端末'] },
+      opt_support: { type: 'bool' }, night_restrict: { type: 'bool' }, show_in_booking: { type: 'bool' }
+    }
   },
   shift_master: {
     label: 'シフトマスタ (shift_master)',
     columns: ['id', 'staff_name', 'shift_date', 'start_time', 'end_time', 'is_active', 'created_at'],
     defaultSort: 'shift_date', defaultDir: 'DESC',
-    searchColumns: ['staff_name']
+    searchColumns: ['staff_name'],
+    editable: {
+      shift_date: { type: 'date', required: true }, start_time: { type: 'time', required: true },
+      end_time: { type: 'time', required: true }, is_active: { type: 'bool' }
+    }
   },
   shift_templates: {
     label: 'シフト初期値 (shift_templates)',
     columns: ['id', 'staff_name', 'day_of_week', 'start_time', 'end_time', 'is_active', 'created_at'],
     defaultSort: 'staff_name', defaultDir: 'ASC',
-    searchColumns: ['staff_name']
+    searchColumns: ['staff_name'],
+    editable: {
+      start_time: { type: 'time', required: true }, end_time: { type: 'time', required: true }, is_active: { type: 'bool' }
+    }
   },
   events: {
     label: 'イベント／休業日 (events)',
     columns: ['id', 'title', 'event_date', 'start_time', 'end_time', 'restrict_booking', 'block_start_time', 'block_end_time', 'is_active', 'created_at'],
     defaultSort: 'event_date', defaultDir: 'DESC',
-    searchColumns: ['title']
+    searchColumns: ['title'],
+    editable: {
+      title: { type: 'text', required: true }, event_date: { type: 'date', required: true },
+      start_time: { type: 'time', required: true }, end_time: { type: 'time', required: true },
+      restrict_booking: { type: 'bool' }, block_start_time: { type: 'time' }, block_end_time: { type: 'time' }, is_active: { type: 'bool' }
+    }
   },
   menu_items: {
     label: 'メニュー (menu_items)',
-    columns: ['id', 'category', 'name', 'duration_min', 'price', 'target', 'is_active', 'display_order', 'created_at'],
+    columns: ['id', 'category', 'name', 'duration_min', 'price', 'target', 'is_active', 'display_order', 'is_initial', 'created_at'],
     defaultSort: 'display_order', defaultDir: 'ASC',
-    searchColumns: ['category', 'name']
+    searchColumns: ['category', 'name'],
+    editable: {
+      category: { type: 'enum', options: ['メインメニュー', '施術系オプション', 'オプション'] }, name: { type: 'text', required: true },
+      duration_min: { type: 'int', min: 0 }, price: { type: 'int', min: 0 },
+      target: { type: 'enum', options: ['全員', '初回', 'キープメンバー', 'ビジター'] },
+      is_active: { type: 'bool' }, display_order: { type: 'int', min: 0 }, is_initial: { type: 'bool' }
+    }
   },
   rules: {
     label: '店舗設定値 (rules)',
     columns: ['id', 'rule_id', 'memo', 'value'],
     defaultSort: 'rule_id', defaultDir: 'ASC',
-    searchColumns: ['rule_id', 'memo']
+    searchColumns: ['rule_id', 'memo'],
+    editable: { memo: { type: 'text' }, value: { type: 'text', required: true } }
   },
   zones: {
     label: 'ゾーン設定 (zones)',
     columns: ['id', 'zone_key', 'label', 'start_time', 'end_time', 'fixed_target', 'fixed_start', 'fixed_interval_min', 'is_active'],
     defaultSort: 'zone_key', defaultDir: 'ASC',
-    searchColumns: ['zone_key', 'label']
+    searchColumns: ['zone_key', 'label'],
+    editable: {
+      label: { type: 'text', required: true }, start_time: { type: 'time', required: true }, end_time: { type: 'time', required: true },
+      fixed_target: { type: 'bool' }, fixed_start: { type: 'time' }, fixed_interval_min: { type: 'int', min: 0 }, is_active: { type: 'bool' }
+    }
   },
   message_templates: {
     label: 'メッセージテンプレート (message_templates)',
     columns: ['id', 'msg_key', 'body', 'closing', 'updated_at'],
     defaultSort: 'msg_key', defaultDir: 'ASC',
-    searchColumns: ['msg_key', 'body']
+    searchColumns: ['msg_key', 'body'],
+    editable: { body: { type: 'text' }, closing: { type: 'text' } }
   },
   booking_notices: {
     label: 'お知らせ (booking_notices)',
     columns: ['id', 'target', 'text', 'is_active', 'created_at', 'updated_at'],
     defaultSort: 'id', defaultDir: 'DESC',
-    searchColumns: ['text']
+    searchColumns: ['text'],
+    editable: { target: { type: 'enum', options: ['全員', '初回', 'リピーター'] }, text: { type: 'text', required: true }, is_active: { type: 'bool' } }
+  },
+  db_edit_log: {
+    label: '🛡️ 編集ログ (db_edit_log)',
+    adminOnly: true,
+    columns: ['id', 'edited_at', 'edited_by', 'table_name', 'row_id', 'column_name', 'old_value', 'new_value'],
+    defaultSort: 'id', defaultDir: 'DESC',
+    searchColumns: ['table_name', 'column_name', 'old_value', 'new_value']
+  },
+  webhook_log: {
+    label: '🛡️ LINE webhook受信ログ (webhook_log)',
+    adminOnly: true,
+    columns: ['id', 'received_at', 'event_type', 'message_type', 'destination', 'source_type', 'user_id', 'body', 'result', 'raw_json'],
+    defaultSort: 'id', defaultDir: 'DESC',
+    searchColumns: ['event_type', 'message_type', 'user_id', 'body', 'result']
   }
 };
+const DB_EDIT_TEXT_MAX = 2000;
+
+// 編集値の型チェック・正規化（NGならエラーメッセージを返す）
+function normalizeDbEditValue_(spec, value) {
+  const str = value == null ? '' : String(value);
+  switch (spec.type) {
+    case 'int': {
+      if (!/^-?\d+$/.test(str.trim())) return { error: '整数で入力してください' };
+      const n = Number(str.trim());
+      if (spec.min != null && n < spec.min) return { error: `${spec.min}以上で入力してください` };
+      return { value: n };
+    }
+    case 'bool':
+      if (!['0', '1', 'true', 'false'].includes(str)) return { error: '0か1で指定してください' };
+      return { value: (str === '1' || str === 'true') ? 1 : 0 };
+    case 'date':
+      if (!str) return spec.required ? { error: '必須項目です' } : { value: null };
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(str) || isNaN(new Date(str + 'T00:00:00').getTime())) return { error: 'YYYY-MM-DD形式で入力してください' };
+      return { value: str };
+    case 'time':
+      if (!str) return spec.required ? { error: '必須項目です' } : { value: null };
+      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(str)) return { error: 'HH:MM形式で入力してください' };
+      return { value: str };
+    case 'enum':
+      if (!spec.options.includes(str)) return { error: '選択肢の中から指定してください' };
+      return { value: str };
+    default:
+      if (spec.required && !str.trim()) return { error: '必須項目です' };
+      if (str.length > DB_EDIT_TEXT_MAX) return { error: `${DB_EDIT_TEXT_MAX}文字以内で入力してください` };
+      return { value: str };
+  }
+}
+// 旧値・新値の比較と監査ログ用に、値を文字列（nullはnull）にそろえる
+function dbEditValueToText_(v) { return v == null ? null : String(v); }
 
 // GET /api/admin/db-viewer/tables : 閲覧可能なテーブルの一覧とカラム定義を返す
 app.get('/api/admin/db-viewer/tables', requireOwnerSession, (req, res) => {
-  const tables = Object.entries(DB_VIEWER_TABLES).map(([key, def]) => ({
-    key, label: def.label, columns: def.columns
-  }));
-  res.json({ tables });
+  // ★2026-09-24追加：管理者ログイン時だけ、管理者専用タブ（編集ログ・webhook受信ログ）と
+  //   各テーブルの編集可能カラム（editable）を返す。オーナーには従来どおり閲覧用の情報だけ
+  const isAdmin = !!req.session.staff.isAdmin;
+  const tables = Object.entries(DB_VIEWER_TABLES)
+    .filter(([, def]) => isAdmin || !def.adminOnly)
+    .map(([key, def]) => ({
+      key, label: def.label, columns: def.columns,
+      adminOnly: !!def.adminOnly,
+      editable: isAdmin && def.editable ? def.editable : null
+    }));
+  res.json({ tables, isAdmin });
 });
 
 // GET /api/admin/db-viewer/:table : 指定テーブルの行を返す（自店舗のみ・閲覧専用）
@@ -3555,6 +3768,9 @@ app.get('/api/admin/db-viewer/:table', requireOwnerSession, (req, res) => {
     const def = DB_VIEWER_TABLES[tableKey];
     if (!def) {
       return res.status(400).json({ success: false, message: '対象のテーブルではありません' });
+    }
+    if (def.adminOnly && !req.session.staff.isAdmin) {
+      return res.status(403).json({ success: false, error: 'admin_only', message: 'このテーブルは管理者ログイン時のみ閲覧できます' });
     }
     const limit = Math.min(Number(req.query.limit) || 100, 500);
     const offset = Math.max(Number(req.query.offset) || 0, 0);
@@ -3581,6 +3797,86 @@ app.get('/api/admin/db-viewer/:table', requireOwnerSession, (req, res) => {
     `).all(...params, limit, offset);
 
     res.json({ table: tableKey, label: def.label, columns: def.columns, total, limit, offset, sort: sortCol, dir: sortDir, rows });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// ★2026-09-24追加：PUT /api/admin/db-viewer/:table/:id （管理者のみ）
+//   { changes: { カラム名: 新しい値 }, expected: { カラム名: 画面に表示されていた旧値 } }
+//   → { success, changed: [{ column, oldValue, newValue }] }
+//   ・editable（ホワイトリスト）に無いカラム、自店舗以外の行は拒否する
+//   ・expected（画面で確認ダイアログに出した旧値）とDBの現在値が食い違う場合は、
+//     別の画面等で先に変更されたとみなし409で拒否する（古い画面のまま上書きする事故を防ぐ）
+//   ・値が実際に変わるカラムだけを更新し、1カラム1行で db_edit_log に記録する
+//     （更新と記録は1トランザクション。記録できなければ更新もしない）
+//   ・編集ログ・webhook受信ログ（adminOnly）は編集できない（改ざん防止）
+// ----------------------------------------------------------------------------
+app.put('/api/admin/db-viewer/:table/:id', requireAdminSession, (req, res) => {
+  try {
+    const storeId = req.session.staff.storeId;
+    const tableKey = req.params.table;
+    const def = DB_VIEWER_TABLES[tableKey];
+    if (!def || !def.editable) {
+      return res.status(400).json({ success: false, message: 'このテーブルは編集できません' });
+    }
+    const id = Number(req.params.id);
+    const changes = (req.body && req.body.changes) || {};
+    const expected = (req.body && req.body.expected) || {};
+    const cols = Object.keys(changes);
+    if (!Number.isInteger(id) || !cols.length) {
+      return res.status(400).json({ success: false, message: '変更内容がありません' });
+    }
+    const errors = [];
+    const normalized = {};
+    cols.forEach((c) => {
+      const spec = def.editable[c];
+      if (!spec) { errors.push(`${c}：編集できないカラムです`); return; }
+      const r = normalizeDbEditValue_(spec, changes[c]);
+      if (r.error) errors.push(`${c}：${r.error}`); else normalized[c] = r.value;
+    });
+    if (errors.length) {
+      return res.status(400).json({ success: false, message: errors.join(' / '), errors });
+    }
+
+    const tableCols = new Set(db.prepare(`PRAGMA table_info(${tableKey})`).all().map((r) => r.name));
+    const run = db.transaction(() => {
+      const current = db.prepare(`SELECT * FROM ${tableKey} WHERE id = ? AND store_id = ?`).get(id, storeId);
+      if (!current) return { status: 404, body: { success: false, message: '対象の行が見つかりません（他店舗のデータは編集できません）' } };
+      const conflicts = cols.filter((c) => Object.prototype.hasOwnProperty.call(expected, c) &&
+        dbEditValueToText_(expected[c] === '' ? null : expected[c]) !== dbEditValueToText_(current[c] === '' ? null : current[c]));
+      if (conflicts.length) {
+        return { status: 409, body: { success: false, message: '画面を開いた後に別の操作でこの行が変更されています。再読み込みしてからやり直してください', conflicts } };
+      }
+      const changed = cols
+        .filter((c) => dbEditValueToText_(current[c]) !== dbEditValueToText_(normalized[c]))
+        .map((c) => ({ column: c, oldValue: dbEditValueToText_(current[c]), newValue: dbEditValueToText_(normalized[c]) }));
+      if (!changed.length) return { status: 200, body: { success: true, changed: [] } };
+      const setSql = changed.map((ch) => `"${ch.column}" = @${ch.column}`).join(', ') +
+        (tableCols.has('updated_at') ? ', updated_at = CURRENT_TIMESTAMP' : '');
+      const params = { id, store_id: storeId };
+      changed.forEach((ch) => { params[ch.column] = normalized[ch.column]; });
+      db.prepare(`UPDATE ${tableKey} SET ${setSql} WHERE id = @id AND store_id = @store_id`).run(params);
+      const insLog = db.prepare(`
+        INSERT INTO db_edit_log (store_id, table_name, row_id, column_name, old_value, new_value, edited_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `);
+      changed.forEach((ch) => insLog.run(storeId, tableKey, id, ch.column, ch.oldValue, ch.newValue, req.session.staff.name));
+      return { status: 200, body: { success: true, changed } };
+    });
+    let result;
+    try {
+      result = run();
+    } catch (dbErr) {
+      // UNIQUE制約（二重予約防止など）・NOT NULL制約に触れる値は400で返す（何も書き込まれない）
+      if (String(dbErr.code || '').startsWith('SQLITE_CONSTRAINT')) {
+        return res.status(400).json({ success: false, message: 'DBの制約に反するため保存できません（重複や必須項目の空欄など）: ' + dbErr.message });
+      }
+      throw dbErr;
+    }
+    res.status(result.status).json(result.body);
   } catch (e) {
     console.error(e);
     res.status(500).json({ success: false, error: e.message });

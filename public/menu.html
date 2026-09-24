@@ -50,6 +50,8 @@
   .tile.view .nm{color:var(--view-ink);}
   .tile.owner{background:var(--owner); border-color:var(--owner-line);}
   .tile.owner .nm{color:var(--owner-ink);}
+  .tile.admin{background:#EFEDF3; border-color:#D9D5E2;}
+  .tile.admin .nm{color:#4A3F6B;}
   .role-note{font-size:11.5px; color:var(--ink-soft); background:#fff; border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin-top:20px; line-height:1.6;}
 </style>
 </head>
@@ -84,9 +86,11 @@
     { tier: 'owner', cls: 'view', icon: '👤', name: '顧客マスタ閲覧', desc: '顧客情報の確認（閲覧専用）', href: '/admin/customers-view.html' },
     { tier: 'owner', cls: 'view', icon: '📋', name: '予約データ閲覧', desc: '予約データの確認（閲覧専用）', href: '/admin/reservations-view.html' },
     { tier: 'trueOwner', cls: 'owner', icon: '⚙️', name: 'オーナー設定', desc: '店舗設定・顧客/予約の編集・シフト管理など', href: '/admin/index.html' },
-    { tier: 'trueOwner', cls: 'owner', icon: '👥', name: 'スタッフ管理', desc: 'スタッフの登録・PIN・権限の設定', href: '/admin/staff.html' }
+    { tier: 'trueOwner', cls: 'owner', icon: '👥', name: 'スタッフ管理', desc: 'スタッフの登録・PIN・権限の設定', href: '/admin/staff.html' },
+    // ★2026-09-24追加：管理者（相野様）ログイン時だけ出すタイル（README 59章）
+    { tier: 'admin', cls: 'admin', icon: '🛡️', name: 'DB一覧ビューア（編集）', desc: '全テーブルの閲覧・編集、編集ログ、LINE webhook受信ログ', href: '/admin/db-viewer.html' }
   ];
-  const SECTION_TITLES = { all: '日々の業務', owner: '閲覧', trueOwner: 'オーナー専用' };
+  const SECTION_TITLES = { all: '日々の業務', owner: '閲覧', trueOwner: 'オーナー専用', admin: '管理者専用' };
 
   function esc(v) { return String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
@@ -95,6 +99,7 @@
     const tiers = ['all'];
     if (me.isOwner) tiers.push('owner');
     if (me.isOwner && !me.isTerminal) tiers.push('trueOwner');
+    if (me.isAdmin) tiers.push('admin');
     return tiers;
   }
 
@@ -117,8 +122,10 @@
       document.getElementById('storeName').textContent = (storeData.store && storeData.store.name) || '';
     } catch (_) { /* 店舗名が取れなくてもメニュー自体は使える */ }
 
-    document.getElementById('userName').textContent = me.isTerminal ? '🖥️ ' + me.name : me.name + (me.isOwner ? '（オーナー）' : '');
-    document.getElementById('roleNote').textContent = me.isTerminal
+    document.getElementById('userName').textContent = me.isAdmin ? '🛡️ ' + me.name : (me.isTerminal ? '🖥️ ' + me.name : me.name + (me.isOwner ? '（オーナー）' : ''));
+    document.getElementById('roleNote').textContent = me.isAdmin
+      ? '管理者でログイン中です。オーナーのすべてのメニューに加え、管理者専用の機能（DB一覧ビューアの編集、初期メニューの名称・カテゴリ変更など）を利用できます。'
+      : me.isTerminal
       ? 'サロン端末でログイン中です。カレンダー上の予約はすべて編集できます（フロント業務用）。顧客・予約データは閲覧専用で、オーナー設定・スタッフ管理はオーナーのPINでログインしてください。'
       : (me.isOwner
         ? 'オーナーでログイン中です。すべてのメニューを利用できます。'
@@ -144,5 +151,7 @@
   init();
 })();
 </script>
+<!-- ★2026-09-24追加：管理者ログイン中だけ右下に「🛡️ 管理者モード」バッジを出す（README 59章） -->
+<script src="/admin/admin-mode.js"></script>
 </body>
 </html>

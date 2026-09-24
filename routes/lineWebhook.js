@@ -93,8 +93,9 @@ function resolveStoreIdForWebhook(secretUsed) {
 //   - 既に line_user_id が設定済みの場合：上書きしない（誤操作でのなりすまし登録を防ぐ）。
 // ----------------------------------------------------------------------------
 function handleStaffPinRegistration(storeId, lineUserId, text) {
-  if (!/^\d{4}$/.test(text)) return;
-  if (storeId == null) return;
+  // ★2026-09-24追加：webhook_log の「処理結果」欄に残すため、結果を短い文字列で返す（対象外はnull）
+  if (!/^\d{4}$/.test(text)) return null;
+  if (storeId == null) return null;
 
   const candidates = db.prepare(
     // ★2026-09-24追加：サロン端末（共有ログイン）は個人のLINEと紐づけない
@@ -102,15 +103,16 @@ function handleStaffPinRegistration(storeId, lineUserId, text) {
   ).all(storeId);
 
   const matched = candidates.find((s) => verifyPin(text, s.pin_salt, s.pin_hash));
-  if (!matched) return; // 一致なし：無反応（総当たり対策・GAS版仕様踏襲）
+  if (!matched) return 'PIN不一致（無反応）'; // 一致なし：無反応（総当たり対策・GAS版仕様踏襲）
 
   if (matched.line_user_id) {
     console.log(`ℹ️  スタッフ「${matched.name}」はLINE userId登録済みのため、更新をスキップしました（既に登録済みです）`);
-    return;
+    return `スタッフPIN一致（${matched.name}・登録済みのためスキップ）`;
   }
 
   db.prepare('UPDATE staff SET line_user_id = ? WHERE id = ?').run(lineUserId, matched.id);
   console.log(`✅ スタッフ「${matched.name}」のLINE userIdを自動登録しました（userId=${lineUserId}）`);
+  return `スタッフ「${matched.name}」のLINE userIdを登録`;
 }
 
 // ----------------------------------------------------------------------------
@@ -145,10 +147,11 @@ async function handleFollow(storeId, lineUserId, replyToken) {
   const displayName = await getLineDisplayName(token, lineUserId);
   const result = findOrCreateCustomerFromLine(db, storeId, lineUserId, displayName);
   console.log(`👤 LINE友だち登録: userId=${lineUserId} customerId=${result.customerId} isNew=${result.isNew}`);
+  const custResult = `顧客マスタ${result.isNew ? '新規登録' : '既存'}（${result.customerId}）`;
 
   if (!hasFeature(store.plan, 'lineNotify')) {
     console.log('ℹ️ 店舗のプランはLINE通知対象外のため、あいさつメッセージの送信をスキップしました');
-    return;
+    return custResult + '・あいさつ送信なし（プラン対象外）';
   }
 
   let template = { body: 'ご登録ありがとうございます！', closing: '' };
@@ -160,6 +163,7 @@ async function handleFollow(storeId, lineUserId, replyToken) {
   const body = renderMessageBody(template.body, { NICKNAME: displayName || 'お客様' });
   const text = template.closing ? `${body}\n\n${template.closing}` : body;
   await replyMessage(token, replyToken, text, null);
+  return custResult + '・あいさつ返信';
 }
 
 // handleSticker(storeId, replyToken)
@@ -169,6 +173,7 @@ async function handleSticker(storeId, replyToken) {
   const token = getCustomerChannelToken(store);
   const text = 'スタンプありがとうございます😊\nご予約の方法は下のメニューの「予約」ボタンを押してください。';
   await replyMessage(token, replyToken, text, null);
+  return 'スタンプへの定型返信';
 }
 
 // handleReservationKeyword(storeId, lineUserId, text, replyToken)
@@ -176,7 +181,7 @@ async function handleSticker(storeId, replyToken) {
 //   返信する（GAS版handleTextMessage_相当）。PUBLIC_BASE_URL未設定の場合は
 //   ボタンなしのテキストのみにフォールバックする。
 async function handleReservationKeyword(storeId, lineUserId, text, replyToken) {
-  if (text !== 'エステ予約したい') return;
+  if (text !== 'エステ予約したい') return null;
   const store = db.prepare('SELECT * FROM stores WHERE id = ?').get(storeId);
   if (!store) return;
   const token = getCustomerChannelToken(store);
@@ -190,6 +195,7 @@ async function handleReservationKeyword(storeId, lineUserId, text, replyToken) {
     console.warn('⚠️ PUBLIC_BASE_URL未設定のため、予約リンクのボタンは付けずテキストのみ返信します');
   }
   await replyMessage(token, replyToken, 'ご予約はこちらからどうぞ👇', reserveUrl);
+  return '予約キーワードに予約フォームのリンクを返信';
 }
 
 // ----------------------------------------------------------------------------
@@ -209,6 +215,58 @@ function summarizeEvent(event) {
     }
   }
   console.log(`📩 LINE Webhookイベント受信: type=${type} userId=${userId}${extra}`);
+}
+
+// ----------------------------------------------------------------------------
+// ★2026-09-24追加：LINE webhookの受信ログ（webhook_logテーブル、GAS版webhook_logシート相当）
+//   管理者がDB一覧ビューアで「webhookから収集されるデータ」を細部まで確認できるよう、
+//   1イベント1行で種別・destination・userId・本文・処理結果・生データを記録する。
+//   ・スタッフがLINE userId登録のために送る4桁PINは、本文・生データとも「****」にマスクする
+//     （PINを平文でDBに残さないため）
+//   ・ログの書き込みに失敗しても、LINEへの200応答やイベント処理には影響させない
+//   ・90日より古い行は日次メンテナンス（lib/maintenance.js）で自動削除する
+// ----------------------------------------------------------------------------
+const PIN_MASK = '****（4桁PIN・マスク済み）';
+function maskPinText_(text) {
+  return /^\s*\d{4}\s*$/.test(String(text)) ? PIN_MASK : text;
+}
+function webhookEventBody_(event) {
+  if (event.type === 'message' && event.message) {
+    const m = event.message;
+    if (m.type === 'text') return maskPinText_(m.text);
+    if (m.type === 'sticker') return `packageId=${m.packageId || ''} stickerId=${m.stickerId || ''}`;
+    return `(${m.type})`;
+  }
+  if (event.type === 'postback' && event.postback) return event.postback.data || '';
+  return '';
+}
+function writeWebhookLog_(entry) {
+  try {
+    db.prepare(`
+      INSERT INTO webhook_log (store_id, event_type, message_type, destination, source_type, user_id, body, result, raw_json)
+      VALUES (@store_id, @event_type, @message_type, @destination, @source_type, @user_id, @body, @result, @raw_json)
+    `).run(Object.assign({
+      store_id: null, event_type: null, message_type: null, destination: null,
+      source_type: null, user_id: null, body: null, result: null, raw_json: null
+    }, entry));
+  } catch (e) {
+    console.error('webhook_logへの記録に失敗しました（処理は続行）:', e.message);
+  }
+}
+function logWebhookEvent_(storeId, destination, event, result) {
+  const masked = JSON.parse(JSON.stringify(event));
+  if (masked.message && masked.message.type === 'text') masked.message.text = maskPinText_(masked.message.text);
+  writeWebhookLog_({
+    store_id: storeId,
+    event_type: event.type || '(unknown)',
+    message_type: (event.message && event.message.type) || null,
+    destination: destination || null,
+    source_type: (event.source && event.source.type) || null,
+    user_id: (event.source && event.source.userId) || null,
+    body: webhookEventBody_(event),
+    result,
+    raw_json: JSON.stringify(masked)
+  });
 }
 
 // ----------------------------------------------------------------------------
@@ -236,6 +294,8 @@ function registerLineWebhook(app) {
         verified = verifyLineSignature(rawBody, signature, LINE_CHANNEL_SECRET);
         if (!verified) {
           console.error('❌ LINE Webhook署名検証に失敗しました。不正なリクエストの可能性があるため拒否します。');
+          // ★2026-09-24追加：なりすましの疑いがある受信も管理者が確認できるよう記録する（本文は残さない）
+          writeWebhookLog_({ store_id: resolveStoreIdForWebhook(null), event_type: '(request)', result: '署名検証NGのため拒否（401）' });
           return res.status(401).send('invalid signature');
         }
       }
@@ -245,6 +305,7 @@ function registerLineWebhook(app) {
         payload = JSON.parse(rawBody.toString('utf8'));
       } catch (e) {
         console.error('❌ LINE WebhookボディのJSONパースに失敗しました:', e.message);
+        writeWebhookLog_({ store_id: resolveStoreIdForWebhook(null), event_type: '(request)', result: 'JSONパース失敗: ' + e.message });
         return res.status(200).send('OK'); // パース失敗でもLINEには200を返す（再送ループ防止）
       }
 
@@ -257,25 +318,30 @@ function registerLineWebhook(app) {
       //   待たないため、テスト等で「Webhook応答が返った時点でDB更新が完了している」
       //   ことを保証できなくなってしまう）。1件のイベント処理で例外が起きても、
       //   他のイベント処理やLINEへの200応答には影響させない。
+      const destination = payload.destination || null;
       for (const event of events) {
+        let result = '対象外（処理なし）';
         try {
           summarizeEvent(event);
           const userId = event.source && event.source.userId;
 
           if (event.type === 'follow' && userId && event.replyToken) {
-            await handleFollow(storeId, userId, event.replyToken);
+            result = (await handleFollow(storeId, userId, event.replyToken)) || result;
           } else if (event.type === 'message' && event.message && event.message.type === 'sticker' && event.replyToken) {
-            await handleSticker(storeId, event.replyToken);
+            result = (await handleSticker(storeId, event.replyToken)) || result;
           } else if (event.type === 'message' && event.message && event.message.type === 'text' && userId) {
             const text = event.message.text.trim();
-            handleStaffPinRegistration(storeId, userId, text);
+            const parts = [handleStaffPinRegistration(storeId, userId, text)];
             if (event.replyToken) {
-              await handleReservationKeyword(storeId, userId, text, event.replyToken);
+              parts.push(await handleReservationKeyword(storeId, userId, text, event.replyToken));
             }
+            result = parts.filter(Boolean).join('／') || result;
           }
         } catch (eventErr) {
           console.error('LINE Webhookイベント処理中にエラー（このイベントのみスキップ）:', eventErr);
+          result = 'エラー: ' + eventErr.message;
         }
+        logWebhookEvent_(storeId, destination, event, result);
       }
 
       res.status(200).send('OK');

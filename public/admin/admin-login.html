@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex, nofollow">
+<title>管理者ログイン</title>
+<style>
+  /* ============================================================
+     ★2026-09-24追加：管理者（相野様お一人）専用ログイン画面。
+     スタッフのログイン画面（名前タイル→PIN）からはリンクしない専用URL
+     （/admin/admin-login.html）で、ブックマークして使う想定。
+     パスワードはサーバーの環境変数 PLATFORM_ADMIN_PASSWORD と照合する（README 59章）。
+     スタッフのログイン画面（ローズ系）と見分けがつくよう、紫系の配色にしている。
+     ============================================================ */
+  :root{ --bg:#EFEDF3; --ink:#333; --ink-soft:#6E6A78; --line:#D9D5E2; --admin:#4A3F6B; --admin-dark:#372F52; }
+  *{box-sizing:border-box; margin:0; padding:0; font-family:'Hiragino Sans','Yu Gothic',sans-serif;}
+  body{background:var(--bg); min-height:100vh; color:var(--ink); display:flex; align-items:center; justify-content:center; padding:20px;}
+  .login-box{background:#fff; border-radius:14px; padding:28px 24px; width:100%; max-width:360px; box-shadow:0 8px 24px rgba(0,0,0,0.12); border-top:5px solid var(--admin);}
+  .login-title{font-size:18px; font-weight:700; text-align:center; margin-bottom:6px;}
+  .login-sub{font-size:12.5px; color:var(--ink-soft); text-align:center; margin-bottom:20px; line-height:1.6;}
+  label{display:block; font-size:12px; color:var(--ink-soft); font-weight:600; margin-bottom:5px;}
+  input{width:100%; padding:12px; border:1px solid var(--line); border-radius:8px; font-size:15px; font-family:inherit; outline:none;}
+  input:focus{border-color:var(--admin);}
+  button{width:100%; padding:12px; border:none; border-radius:8px; font-size:15px; font-weight:600; cursor:pointer; color:#fff; margin-top:18px; background:linear-gradient(135deg, var(--admin) 0%, var(--admin-dark) 100%); font-family:inherit;}
+  button:disabled{opacity:.6; cursor:default;}
+  .err{display:none; color:#c0392b; font-size:13px; text-align:center; margin-top:12px;}
+  .note{font-size:11.5px; color:var(--ink-soft); margin-top:16px; line-height:1.6; text-align:center;}
+  .note a{color:var(--ink-soft);}
+</style>
+</head>
+<body>
+  <div class="login-box">
+    <div class="login-title">🛡️ 管理者ログイン</div>
+    <div class="login-sub">管理者専用の画面です。<br>店舗スタッフの方は <a href="/admin/login.html">スタッフログイン</a> をご利用ください。</div>
+    <form id="adminForm" autocomplete="off">
+      <label for="pw">管理者パスワード</label>
+      <input type="password" id="pw" name="curare_admin_password" autocomplete="current-password" required>
+      <button type="submit" id="loginBtn">ログイン</button>
+    </form>
+    <div class="err" id="err"></div>
+    <div class="note">5回続けて失敗すると15分間ログインできなくなります。</div>
+  </div>
+<script>
+(function(){
+  const form = document.getElementById('adminForm');
+  const pw = document.getElementById('pw');
+  const err = document.getElementById('err');
+  const btn = document.getElementById('loginBtn');
+  pw.focus();
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    err.style.display = 'none';
+    btn.disabled = true;
+    try {
+      const res = await fetch('/api/auth/admin-login', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: pw.value })
+      });
+      const data = await res.json();
+      if (data.success) {
+        window.location.href = '/admin/index.html';
+        return;
+      }
+      pw.value = '';
+      pw.focus();
+      err.textContent = data.message || 'ログインに失敗しました';
+      err.style.display = 'block';
+    } catch (ex) {
+      err.textContent = 'サーバーエラー: ' + ex.message;
+      err.style.display = 'block';
+    } finally {
+      btn.disabled = false;
+    }
+  });
+})();
+</script>
+</body>
+</html>

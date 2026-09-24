@@ -5,7 +5,9 @@
 // 実行前提：
 //   1. `node db/init.js` でDBを作り直す（ダミーデータ投入）
 //   2. `node scripts/seed_test_store2.js` でテスト用2店舗目を追加投入
-//   3. `SKIP_SEED=1 node server.js` でサーバーを起動する（1・2の投入結果を消さないため）
+//   3. `PLATFORM_ADMIN_PASSWORD=test-admin-password-2026 SKIP_SEED=1 node server.js` でサーバーを起動する
+//      （1・2の投入結果を消さないため。★2026-09-24：46章の管理者ログインのテストのため、
+//      管理者パスワードの環境変数も指定する。別の値にする場合はテスト側にも同じ値を渡す）
 //   4. `node scripts/integration_test.js` を実行する
 //
 // このスクリプトはテストフレームワークを使わず、Node標準機能のみで書いている
@@ -3011,6 +3013,247 @@ async function main() {
     const self = await owner45.putJson(`/api/admin/staff/${tile45('寿子').id}`, { name: '寿子', role: 'オーナー', isOwner: true, isActive: true, isSharedTerminal: true });
     const selfRow = db.prepare('SELECT is_shared_terminal FROM staff WHERE id = ?').get(tile45('寿子').id);
     assert(self.status === 400 && selfRow.is_shared_terminal === 0, 'ログイン中の自分自身をサロン端末に切り替えることはできない（オーナー画面に入れなくなる事故防止）');
+  }
+
+  // --------------------------------------------------------------------------
+  // 46. 管理者専用機能 フェーズA（管理者ログイン・初期メニューの名称/カテゴリ・DB一覧ビューアの編集と
+  //     編集ログ・LINE webhook受信ログ）とゾーン設定の説明文（README 59章）
+  // --------------------------------------------------------------------------
+  console.log('--- 46. 管理者専用機能 フェーズA ---');
+  const ADMIN_PW = process.env.PLATFORM_ADMIN_PASSWORD || 'test-admin-password-2026';
+  const admin46 = makeSession();
+  const owner46 = makeSession();
+  const staff46 = makeSession();
+  const term46 = makeSession();
+  await owner46.loginAs('1', '寿子', '5678');
+  await staff46.loginAs('1', '花子', '6789');
+  await term46.loginAs('1', 'サロン端末', '0000');
+
+  // ---- ① 管理者ログイン ----
+  {
+    const page = await fetch(BASE + '/admin/admin-login.html').then((r) => r.text());
+    const staffLogin = await fetch(BASE + '/admin/login.html').then((r) => r.text());
+    assert(page.includes('/api/auth/admin-login') && !staffLogin.includes('admin-login'),
+      '管理者ログインは専用URL（/admin/admin-login.html）で、スタッフのログイン画面からはリンクしない');
+    const r0 = await makeSession().postJson('/api/auth/admin-login', {});
+    const r1 = await makeSession().postJson('/api/auth/admin-login', { password: ADMIN_PW + 'x' });
+    assert(r0.status === 401 && r1.status === 401, 'パスワードが空・誤りの管理者ログインは401');
+    const r2 = await makeSession().postJson('/api/auth/admin-login', { password: '5678', store: '1' });
+    assert(r2.status === 401, 'オーナーのPINでは管理者ログインできない（スタッフのPIN認証とは独立）');
+    const ok = await admin46.postJson('/api/auth/admin-login', { password: ADMIN_PW });
+    assert(ok.status === 200 && ok.body.success === true && ok.body.isAdmin === true && ok.body.storeId === 1,
+      '正しい管理者パスワードでログインでき、フェーズAの対象店舗（店舗1＝クラーレ寿）に入る');
+    const me = await admin46.get('/api/auth/me');
+    assert(me.status === 200 && me.body.staff.isAdmin === true && me.body.staff.isOwner === true && me.body.staff.id === null && me.body.staff.name === '管理者',
+      '管理者セッションはisAdmin:true・isOwner:trueで、特定のスタッフには紐付かない（id:null）');
+    const meO = await owner46.get('/api/auth/me');
+    assert(!meO.body.staff.isAdmin, '通常のオーナーログインにはisAdminが付かない');
+    const tiles = await makeSession().get('/api/auth/login-staff?store=1');
+    assert(!(tiles.body.staff || []).some((t) => t.name === '管理者'), '管理者はスタッフの名前タイルに出ない（スタッフマスタに存在しない）');
+    const a1 = await admin46.get('/api/admin/staff');
+    const a2 = await admin46.get('/api/admin/dashboard');
+    const a3 = await admin46.get('/api/staff/calendar/week?start=' + fmtDate_(new Date()));
+    assert(a1.status === 200 && a2.status === 200 && a3.status === 200, '管理者は既存のオーナー用管理画面・カレンダーのAPIをそのまま使える');
+  }
+  {
+    const menuPage = await fetch(BASE + '/menu.html').then((r) => r.text());
+    const badgeJs = await fetch(BASE + '/admin/admin-mode.js').then((r) => r.text());
+    const settingsPage = await fetch(BASE + '/admin/settings.html').then((r) => r.text());
+    assert(menuPage.includes("tier: 'admin'") && menuPage.includes("if (me.isAdmin) tiers.push('admin')"), '統一メニューに管理者ログイン時だけのタイル（DB一覧ビューア）がある');
+    assert(badgeJs.includes('data.staff.isAdmin') && settingsPage.includes('/admin/admin-mode.js') && menuPage.includes('/admin/admin-mode.js'),
+      '管理者ログイン中は各画面に「管理者モード」バッジを出す仕組みが読み込まれている（通常のオーナーと見分けがつく）');
+  }
+
+  // ---- ② メニューマスタ：初期メニューの名称・カテゴリ ----
+  {
+    const lo = await owner46.get('/api/admin/settings/menu');
+    const la = await admin46.get('/api/admin/settings/menu');
+    const init = (lo.body.items || []).find((m) => m.name === 'フェイシャル(60分)');
+    assert(lo.body.canEditInitialNameCategory === false && la.body.canEditInitialNameCategory === true, 'メニュー一覧APIは管理者のときだけ初期メニューの名称・カテゴリ編集可を返す');
+    const seeded = (lo.body.items || []).filter((m) => m.id <= 8);
+    const ownerAdded = (lo.body.items || []).filter((m) => m.name === '統合テストメニュー（改）');
+    assert(!!init && seeded.length === 8 && seeded.every((m) => m.is_initial === 1) && ownerAdded.length === 1 && ownerAdded[0].is_initial === 0,
+      'シードで投入した8件は初期メニュー（is_initial=1）、オーナーが画面から追加したメニューは初期メニューではない（0）');
+    const base = { category: init.category, name: init.name, durationMin: init.duration_min, price: init.price, target: init.target, isActive: true };
+    const rName = await owner46.putJson(`/api/admin/settings/menu/${init.id}`, Object.assign({}, base, { name: 'オーナー改名46' }));
+    const rCat = await owner46.putJson(`/api/admin/settings/menu/${init.id}`, Object.assign({}, base, { category: 'オプション' }));
+    const after = db.prepare('SELECT name, category FROM menu_items WHERE id = ?').get(init.id);
+    assert(rName.status === 403 && rCat.status === 403 && after.name === 'フェイシャル(60分)' && after.category === 'メインメニュー',
+      'オーナーは初期メニューの名称・カテゴリを変更できない（403・DBも変わらない）');
+    const rOk = await owner46.putJson(`/api/admin/settings/menu/${init.id}`, Object.assign({}, base, { durationMin: 65, price: 6500, target: '初回', isActive: false }));
+    const after2 = db.prepare('SELECT duration_min, price, target, is_active FROM menu_items WHERE id = ?').get(init.id);
+    assert(rOk.status === 200 && after2.duration_min === 65 && after2.price === 6500 && after2.target === '初回' && after2.is_active === 0,
+      'オーナーは初期メニューの所要時間・料金・対象・有効/無効は変更できる（GAS版と同じ）');
+    const add = await owner46.postJson('/api/admin/settings/menu', { category: 'オプション', name: 'オーナー追加46', durationMin: 10, price: 500, target: '全員' });
+    const rOwn = await owner46.putJson(`/api/admin/settings/menu/${add.body.menuItemId}`, { category: 'メインメニュー', name: 'オーナー追加46改', durationMin: 20, price: 800, target: '全員', isActive: true });
+    const own = db.prepare('SELECT name, category, is_initial FROM menu_items WHERE id = ?').get(add.body.menuItemId);
+    assert(rOwn.status === 200 && own.is_initial === 0 && own.name === 'オーナー追加46改' && own.category === 'メインメニュー',
+      'オーナー自身が追加したメニューは名称・カテゴリも含めて全項目変更できる');
+    const rAdm = await admin46.putJson(`/api/admin/settings/menu/${init.id}`, Object.assign({}, base, { name: '管理者改名46', category: '施術系オプション' }));
+    const after3 = db.prepare('SELECT name, category FROM menu_items WHERE id = ?').get(init.id);
+    assert(rAdm.status === 200 && after3.name === '管理者改名46' && after3.category === '施術系オプション', '管理者は初期メニューの名称・カテゴリも変更できる');
+    db.prepare(`UPDATE menu_items SET name = 'フェイシャル(60分)', category = 'メインメニュー', duration_min = 60, price = 6000, target = '全員', is_active = 1 WHERE id = ?`).run(init.id);
+    db.prepare('DELETE FROM menu_items WHERE id = ?').run(add.body.menuItemId);
+    const page = await fetch(BASE + '/admin/settings.html').then((r) => r.text());
+    assert(page.includes('canEditInitialNameCategory') && page.includes('nameInput.disabled = lockNameCat'), '設定画面は通常のオーナーログインでは初期メニューの名称・カテゴリ欄をロックする');
+  }
+
+  // ---- ③ DB一覧ビューアの編集・編集ログ ----
+  const cust46 = db.prepare(`SELECT id, memo, total_visits, customer_id FROM customers WHERE store_id = 1 AND is_deleted = 0 ORDER BY id LIMIT 1`).get();
+  {
+    const to = await owner46.get('/api/admin/db-viewer/tables');
+    const ta = await admin46.get('/api/admin/db-viewer/tables');
+    const keysO = (to.body.tables || []).map((t) => t.key);
+    const keysA = (ta.body.tables || []).map((t) => t.key);
+    assert(!keysO.includes('db_edit_log') && !keysO.includes('webhook_log') && (to.body.tables || []).every((t) => t.editable === null),
+      'オーナーのDB一覧ビューアは従来どおり閲覧のみ（管理者専用タブ・編集可能カラムの情報は返さない）');
+    assert(keysA.includes('db_edit_log') && keysA.includes('webhook_log') && ta.body.isAdmin === true, '管理者のDB一覧ビューアには編集ログ・webhook受信ログのタブが加わる');
+    const ct = (ta.body.tables || []).find((t) => t.key === 'customers');
+    const st = (ta.body.tables || []).find((t) => t.key === 'staff');
+    assert(!!ct.editable.memo && !ct.editable.customer_id && !ct.editable.id && !ct.editable.is_deleted && !ct.editable.created_at,
+      '顧客テーブルの編集可能カラムはホワイトリスト（id・作成日時・顧客ID・統合済みフラグは対象外）');
+    assert(!st.editable.name && !st.editable.is_owner && !st.editable.is_shared_terminal && !st.editable.pin_hash && !st.editable.is_active,
+      'スタッフテーブルは氏名・権限・在籍・PINなどを編集対象から外している');
+    const logT = (ta.body.tables || []).find((t) => t.key === 'db_edit_log');
+    assert(logT.editable === null, '編集ログ自体は編集できない（改ざん防止）');
+    const oLog = await owner46.get('/api/admin/db-viewer/db_edit_log');
+    const oWh = await owner46.get('/api/admin/db-viewer/webhook_log');
+    assert(oLog.status === 403 && oWh.status === 403, 'オーナーは編集ログ・webhook受信ログを閲覧できない（403）');
+  }
+  {
+    const body = { changes: { memo: '管理者メモ46' }, expected: { memo: cust46.memo } };
+    const rO = await owner46.putJson(`/api/admin/db-viewer/customers/${cust46.id}`, body);
+    const rS = await staff46.putJson(`/api/admin/db-viewer/customers/${cust46.id}`, body);
+    const rT = await term46.putJson(`/api/admin/db-viewer/customers/${cust46.id}`, body);
+    const rN = await makeSession().putJson(`/api/admin/db-viewer/customers/${cust46.id}`, body);
+    assert(rO.status === 403 && rS.status === 403 && rT.status === 403 && rN.status === 401,
+      'DB一覧ビューアの編集は管理者のみ（オーナー・一般スタッフ・サロン端末は403、未ログインは401）');
+    assert(db.prepare('SELECT memo FROM customers WHERE id = ?').get(cust46.id).memo === cust46.memo, '管理者以外の編集要求ではデータが変わらない');
+  }
+  {
+    const logBefore = db.prepare('SELECT COUNT(*) AS c FROM db_edit_log').get().c;
+    const r = await admin46.putJson(`/api/admin/db-viewer/customers/${cust46.id}`, {
+      changes: { memo: '管理者メモ46', total_visits: String(cust46.total_visits + 1) },
+      expected: { memo: cust46.memo, total_visits: cust46.total_visits }
+    });
+    const row = db.prepare('SELECT memo, total_visits FROM customers WHERE id = ?').get(cust46.id);
+    assert(r.status === 200 && r.body.success === true && r.body.changed.length === 2 && row.memo === '管理者メモ46' && row.total_visits === cust46.total_visits + 1,
+      '管理者はホワイトリストのカラムを編集でき、複数カラムを一度に保存できる');
+    const logs = db.prepare(`SELECT * FROM db_edit_log WHERE table_name = 'customers' AND row_id = ? ORDER BY id DESC LIMIT 2`).all(cust46.id);
+    const memoLog = logs.find((l) => l.column_name === 'memo');
+    assert(db.prepare('SELECT COUNT(*) AS c FROM db_edit_log').get().c === logBefore + 2 && !!memoLog &&
+      memoLog.old_value === (cust46.memo == null ? null : String(cust46.memo)) && memoLog.new_value === '管理者メモ46' && memoLog.edited_by === '管理者' && memoLog.store_id === 1 && !!memoLog.edited_at,
+      '編集ログに テーブル・行・カラム・旧値→新値・編集者（管理者）・日時 が1カラム1行で記録される');
+    const view = await admin46.get('/api/admin/db-viewer/db_edit_log');
+    assert(view.status === 200 && (view.body.rows || []).some((l) => l.new_value === '管理者メモ46'), '編集ログはDB一覧ビューアの「編集ログ」タブで閲覧できる');
+    const same = await admin46.putJson(`/api/admin/db-viewer/customers/${cust46.id}`, { changes: { memo: '管理者メモ46' }, expected: { memo: '管理者メモ46' } });
+    assert(same.status === 200 && same.body.changed.length === 0 && db.prepare('SELECT COUNT(*) AS c FROM db_edit_log').get().c === logBefore + 2,
+      '値が変わらない保存では何も書き込まず、編集ログも増えない');
+  }
+  {
+    const logBefore = db.prepare('SELECT COUNT(*) AS c FROM db_edit_log').get().c;
+    const bad = [
+      ['customers', cust46.id, { customer_id: 'X999' }, '紐付けキー（customer_id）'],
+      ['staff', 1, { pin_hash: 'x' }, '認証情報（pin_hash）'],
+      ['staff', 1, { is_owner: '0' }, '権限（is_owner）'],
+      ['customers', cust46.id, { total_visits: 'abc' }, '整数欄に文字'],
+      ['customers', cust46.id, { birthday: '2026/01/01' }, '日付の形式違い'],
+      ['customers', cust46.id, { booking_blocked: '2' }, '0/1以外のフラグ'],
+      ['customers', cust46.id, { status: 'deleted' }, '選択肢に無い値'],
+      ['customers', cust46.id, { realname: '  ' }, '必須項目の空欄'],
+      ['reservations', 1, { reservation_time: '25:00' }, '時刻の範囲外'],
+      ['db_edit_log', 1, { new_value: '改ざん' }, '編集ログ自体の書き換え']
+    ];
+    const results = [];
+    for (const [t, id, changes, label] of bad) {
+      const r = await admin46.putJson(`/api/admin/db-viewer/${t}/${id}`, { changes });
+      results.push([label, r.status]);
+    }
+    const ng = results.filter((x) => x[1] !== 400);
+    assert(ng.length === 0, 'ホワイトリスト外のカラム・型の合わない値・編集ログの書き換えはすべて400' + (ng.length ? ' ' + JSON.stringify(ng) : ''));
+    assert(db.prepare('SELECT COUNT(*) AS c FROM db_edit_log').get().c === logBefore, '拒否された編集は編集ログにも記録されない');
+    const iw = db.prepare(`SELECT id FROM customers WHERE customer_id = 'IW001'`).get();
+    const rOther = await admin46.putJson(`/api/admin/db-viewer/customers/${iw.id}`, { changes: { memo: '他店46' } });
+    assert(rOther.status === 404, '管理者でも（フェーズAでは）他店舗の行は編集できない');
+    const rConf = await admin46.putJson(`/api/admin/db-viewer/customers/${cust46.id}`, { changes: { memo: '古い画面から46' }, expected: { memo: '画面を開いた時の古い値' } });
+    assert(rConf.status === 409 && db.prepare('SELECT memo FROM customers WHERE id = ?').get(cust46.id).memo === '管理者メモ46',
+      '確認画面に出した旧値とDBの現在値が食い違う（別の操作で先に変更された）場合は409で上書きしない');
+    db.prepare('UPDATE customers SET memo = ?, total_visits = ? WHERE id = ?').run(cust46.memo, cust46.total_visits, cust46.id);
+  }
+  {
+    const menuRow = db.prepare(`SELECT id FROM menu_items WHERE store_id = 1 AND name = 'ハンドパック'`).get();
+    const r = await admin46.putJson(`/api/admin/db-viewer/menu_items/${menuRow.id}`, { changes: { price: '1200', is_active: '0' } });
+    const row = db.prepare('SELECT price, is_active, updated_at FROM menu_items WHERE id = ?').get(menuRow.id);
+    assert(r.status === 200 && row.price === 1200 && row.is_active === 0, '整数・フラグの値は正しい型に変換して保存される（メニューの料金・表示）');
+    db.prepare('UPDATE menu_items SET price = 1000, is_active = 1 WHERE id = ?').run(menuRow.id);
+    const page = await fetch(BASE + '/admin/db-viewer.html').then((r2) => r2.text());
+    assert(page.includes('この内容で保存しますか') && page.includes('confirmSaveBtn') && page.includes('expected'),
+      'DB一覧ビューアの画面は保存前に変更内容（旧値→新値）の確認ダイアログを必ず挟む');
+  }
+
+  // ---- ④ LINE webhook受信ログ ----
+  {
+    const hanakoLine = db.prepare(`SELECT line_user_id FROM staff WHERE store_id = 1 AND name = '花子'`).get().line_user_id;
+    db.prepare(`UPDATE staff SET line_user_id = NULL WHERE store_id = 1 AND name = '花子'`).run();
+    const before = db.prepare('SELECT MAX(id) AS m FROM webhook_log').get().m || 0;
+    const post = (events) => fetch(BASE + '/webhook/line', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ destination: 'Udest46', events }) });
+    await post([{ type: 'follow', replyToken: 'r46-1', source: { type: 'user', userId: 'U_wh46' }, timestamp: Date.now() }]);
+    await post([
+      { type: 'message', message: { type: 'text', text: '6789' }, replyToken: 'r46-2', source: { type: 'user', userId: 'U_wh46_staff' }, timestamp: Date.now() },
+      { type: 'message', message: { type: 'text', text: 'エステ予約したい' }, replyToken: 'r46-3', source: { type: 'user', userId: 'U_wh46' }, timestamp: Date.now() },
+      { type: 'message', message: { type: 'sticker', packageId: '11537', stickerId: '52002734' }, replyToken: 'r46-4', source: { type: 'user', userId: 'U_wh46' }, timestamp: Date.now() },
+      { type: 'unfollow', source: { type: 'user', userId: 'U_wh46' }, timestamp: Date.now() }
+    ]);
+    const logs = db.prepare('SELECT * FROM webhook_log WHERE id > ? ORDER BY id').all(before);
+    const byType = (t, mt) => logs.find((l) => l.event_type === t && (mt === undefined || l.message_type === mt));
+    const fol = byType('follow');
+    assert(logs.length === 5 && !!fol && fol.destination === 'Udest46' && fol.user_id === 'U_wh46' && fol.source_type === 'user' && fol.store_id === 1 && /顧客マスタ/.test(fol.result),
+      '受信イベントが1件1行で記録される（種別・destination・userId・送信元種別・店舗・処理結果）');
+    const pinLog = logs.find((l) => l.user_id === 'U_wh46_staff');
+    assert(!!pinLog && !pinLog.body.includes('6789') && !pinLog.raw_json.includes('6789') && pinLog.body.includes('****') && /花子/.test(pinLog.result),
+      'スタッフの4桁PINは本文・生データともマスクして記録し、処理結果（PINによるLINE userId登録）は残す');
+    const kw = logs.find((l) => l.body === 'エステ予約したい');
+    const stk = byType('message', 'sticker');
+    const unf = byType('unfollow');
+    assert(!!kw && /予約フォーム/.test(kw.result) && !!stk && stk.body.includes('stickerId=52002734') && /スタンプ/.test(stk.result) && !!unf && unf.result === '対象外（処理なし）',
+      'テキスト本文・スタンプID・処理結果（予約キーワード応答／スタンプ返信／対象外）が記録される');
+    assert(JSON.parse(kw.raw_json).replyToken === 'r46-3', '生データ（raw_json）にイベント全体がJSONで残る');
+    const va = await admin46.get('/api/admin/db-viewer/webhook_log?q=U_wh46');
+    assert(va.status === 200 && va.body.total >= 5, '管理者はDB一覧ビューアの「LINE webhook受信ログ」タブで閲覧・検索できる');
+    const ve = await admin46.putJson(`/api/admin/db-viewer/webhook_log/${fol.id}`, { changes: { result: '改ざん' } });
+    assert(ve.status === 400, 'webhook受信ログは閲覧専用（編集できない）');
+    db.prepare(`UPDATE staff SET line_user_id = ? WHERE store_id = 1 AND name = '花子'`).run(hanakoLine);
+    db.prepare(`DELETE FROM customers WHERE store_id = 1 AND user_id = 'U_wh46'`).run();
+  }
+  {
+    const oldId = db.prepare(`INSERT INTO webhook_log (store_id, event_type, result, received_at) VALUES (1, 'message', '古いログ46', datetime('now', '-100 days'))`).run().lastInsertRowid;
+    const midId = db.prepare(`INSERT INTO webhook_log (store_id, event_type, result, received_at) VALUES (1, 'message', '80日前ログ46', datetime('now', '-80 days'))`).run().lastInsertRowid;
+    const r = await owner46.postJson('/api/admin/maintenance/run-daily', {});
+    const oldRow = db.prepare('SELECT id FROM webhook_log WHERE id = ?').get(oldId);
+    const midRow = db.prepare('SELECT id FROM webhook_log WHERE id = ?').get(midId);
+    assert(r.status === 200 && r.body.webhookLogsDeleted >= 1 && !oldRow && !!midRow, '日次メンテナンスで90日より古いwebhook受信ログだけが自動削除される');
+    db.prepare('DELETE FROM webhook_log WHERE id = ?').run(midId);
+  }
+
+  // ---- ⑤ 営業時間帯（ゾーン）の説明文 ----
+  {
+    const page = await fetch(BASE + '/admin/settings.html').then((r) => r.text());
+    assert(page.includes('ゾーンの判定は予約の開始時刻がどのゾーンに属するかで決まります（例：12:45スタートは午前ゾーン、13:00スタートは午後ゾーン）') &&
+      page.includes('スタッフ用の予約枠は15分単位、お客様予約フォームは30分単位で作成されます'),
+      '店舗設定の「営業時間帯（ゾーン）」パネルにGAS版と同じ説明書き2点が表示される');
+  }
+
+  // ---- ログアウト・連続失敗ロック（ロックすると以降の管理者ログインが15分できないため最後に行う）----
+  {
+    await admin46.postJson('/api/auth/logout', {});
+    const me = await admin46.get('/api/auth/me');
+    const ed = await admin46.putJson(`/api/admin/db-viewer/customers/${cust46.id}`, { changes: { memo: 'x' } });
+    assert(me.status === 401 && ed.status === 401, '管理者もログアウトすると管理者専用APIを使えない');
+    const lockS = makeSession();
+    const st = [];
+    for (let i = 0; i < 5; i++) st.push((await lockS.postJson('/api/auth/admin-login', { password: 'wrong-password-' + i })).status);
+    const after = await lockS.postJson('/api/auth/admin-login', { password: ADMIN_PW });
+    assert(st.every((x) => x === 401) && after.status === 429, '管理者ログインに5回続けて失敗するとロックされ、正しいパスワードでも一定時間ログインできない');
   }
 
   // --------------------------------------------------------------------------
