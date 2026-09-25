@@ -53,9 +53,14 @@
 
   .checkbox-row{display:flex; align-items:center; gap:6px;}
 
-  .event-form{display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:10px; margin-bottom:14px; align-items:end;}
+  .event-type-row{display:flex; gap:16px; flex-wrap:wrap; margin-bottom:12px;}
+  .radio-opt{display:flex; align-items:center; gap:5px; font-size:12.5px; font-weight:600; cursor:pointer;}
+  .radio-opt-note{font-weight:400; color:var(--ink-soft); font-size:11.5px;}
+  .event-form{display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:10px; margin-bottom:10px; align-items:end;}
   .event-form label{display:block; font-size:11px; color:var(--ink-soft); margin-bottom:4px;}
   .event-form .checkbox-row{margin-top:8px;}
+  #evTimeRow{display:none; gap:10px;}
+  #evRestrictRow{margin-bottom:12px;}
   .err{color:var(--warn); font-size:12.5px; margin-top:8px;}
   .empty{color:var(--ink-soft); font-size:13px; padding:14px 0; text-align:center;}
 
@@ -228,6 +233,11 @@
       <div class="panel">
         <h2>休業日・特別イベント</h2>
         <div class="desc">臨時休業日やイベントで予約枠をブロックしたい日を登録します</div>
+        <div class="event-type-row">
+          <label class="radio-opt"><input type="radio" name="evType" value="closed" checked> 🚫終日休み<span class="radio-opt-note">（予約を受け付けない）</span></label>
+          <label class="radio-opt"><input type="radio" name="evType" value="allday_open"> 📌終日の行事<span class="radio-opt-note">（開始/終了時刻なし・予約は通常通り可能）</span></label>
+          <label class="radio-opt"><input type="radio" name="evType" value="timed"> 🕐時間を指定<span class="radio-opt-note">（この時間帯だけ予約をブロック可能）</span></label>
+        </div>
         <div class="event-form">
           <div>
             <label>タイトル</label>
@@ -237,25 +247,28 @@
             <label>日付</label>
             <input type="date" id="evDate">
           </div>
-          <div>
-            <label>開始時刻</label>
-            <input type="time" id="evStart" value="09:00">
-          </div>
-          <div>
-            <label>終了時刻</label>
-            <input type="time" id="evEnd" value="23:00">
+          <div id="evTimeRow" style="display:none;">
+            <div>
+              <label>開始時刻</label>
+              <input type="time" id="evStart" value="09:00">
+            </div>
+            <div>
+              <label>終了時刻</label>
+              <input type="time" id="evEnd" value="23:00">
+            </div>
           </div>
           <div>
             <button class="btn" id="evAddBtn" type="button">追加する</button>
+            <button class="btn secondary" id="evCancelEditBtn" type="button" style="display:none;">編集をキャンセル</button>
           </div>
-          <div class="checkbox-row">
-            <input type="checkbox" id="evRestrict" checked>
-            <label for="evRestrict" style="margin:0;">この時間帯の予約枠をブロックする</label>
-          </div>
+        </div>
+        <div class="checkbox-row" id="evRestrictRow" style="display:none;">
+          <input type="checkbox" id="evRestrict" checked>
+          <label for="evRestrict" style="margin:0;">この時間帯の予約枠をブロックする（施術の前後準備時間として、開始時刻の90分前〜終了時刻の60分後も自動的にブロックされます）</label>
         </div>
         <div class="err" id="evErr" style="display:none;"></div>
         <table>
-          <thead><tr><th>日付</th><th>タイトル</th><th>時間帯</th><th>予約ブロック</th><th></th></tr></thead>
+          <thead><tr><th>日付</th><th>タイトル</th><th>種別／時間帯</th><th>予約ブロック</th><th></th></tr></thead>
           <tbody id="eventsBody"></tbody>
         </table>
         <div class="empty" id="eventsEmpty" style="display:none;">登録されている休業日・イベントはありません</div>
@@ -697,6 +710,58 @@
   }
 
   // ---------- 休業日・特別イベント ----------
+  // ★2026-09-25追加：GAS版owner_ui.html／calendar_dashboard_functions.gsの調査で判明した
+  //   行事の3種別（README 61章参照）。allday（終日）はstart_time='00:00'・end_time='23:59'
+  //   （staff/calendar.htmlの行事管理モーダルと同じ規約）で表現し、restrict_bookingの
+  //   有無だけで「終日休み」と「終日の行事」を区別する。
+  let evEditingId = null;
+
+  function eventTypeOf(ev) {
+    const isAllDay = !ev.start_time || !ev.end_time || (ev.start_time === '00:00' && ev.end_time === '23:59');
+    if (!isAllDay) return 'timed';
+    return ev.restrict_booking ? 'closed' : 'allday_open';
+  }
+  function currentEvType() {
+    const el = document.querySelector('input[name=evType]:checked');
+    return el ? el.value : 'closed';
+  }
+  function applyEvTypeUI() {
+    const isTimed = currentEvType() === 'timed';
+    document.getElementById('evTimeRow').style.display = isTimed ? 'flex' : 'none';
+    document.getElementById('evRestrictRow').style.display = isTimed ? 'flex' : 'none';
+  }
+  document.querySelectorAll('input[name=evType]').forEach((el) => el.addEventListener('change', applyEvTypeUI));
+
+  function resetEventForm() {
+    evEditingId = null;
+    document.getElementById('evTitle').value = '';
+    document.getElementById('evDate').value = '';
+    document.querySelector('input[name=evType][value=closed]').checked = true;
+    document.getElementById('evStart').value = '09:00';
+    document.getElementById('evEnd').value = '23:00';
+    document.getElementById('evRestrict').checked = true;
+    document.getElementById('evErr').style.display = 'none';
+    document.getElementById('evAddBtn').textContent = '追加する';
+    document.getElementById('evCancelEditBtn').style.display = 'none';
+    applyEvTypeUI();
+  }
+  function startEditEvent(ev) {
+    evEditingId = ev.id;
+    document.getElementById('evTitle').value = ev.title || '';
+    document.getElementById('evDate').value = ev.event_date;
+    const type = eventTypeOf(ev);
+    document.querySelector(`input[name=evType][value="${type}"]`).checked = true;
+    document.getElementById('evStart').value = type === 'timed' ? ev.start_time : '09:00';
+    document.getElementById('evEnd').value = type === 'timed' ? ev.end_time : '23:00';
+    document.getElementById('evRestrict').checked = !!ev.restrict_booking;
+    applyEvTypeUI();
+    document.getElementById('evErr').style.display = 'none';
+    document.getElementById('evAddBtn').textContent = '変更を保存する';
+    document.getElementById('evCancelEditBtn').style.display = 'inline-block';
+    document.getElementById('evTitle').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+  document.getElementById('evCancelEditBtn').addEventListener('click', resetEventForm);
+
   async function loadEvents() {
     const data = await adminFetch('/api/admin/events');
     const tbody = document.getElementById('eventsBody');
@@ -704,18 +769,30 @@
     const rows = data.events || [];
     document.getElementById('eventsEmpty').style.display = rows.length === 0 ? 'block' : 'none';
     rows.forEach((ev) => {
+      const type = eventTypeOf(ev);
+      const typeLabel = type === 'closed' ? '🚫終日休み'
+        : type === 'allday_open' ? '📌終日の行事'
+        : `🕐 ${esc(ev.start_time)} 〜 ${esc(ev.end_time)}`;
+      const blockLabel = !ev.restrict_booking ? 'ブロックしない'
+        : type === 'timed' ? `ブロックする（${esc(ev.block_start_time || ev.start_time)}〜${esc(ev.block_end_time || ev.end_time)}）`
+        : 'ブロックする（終日）';
       const tr = document.createElement('tr');
       tr.innerHTML = `
         <td>${esc(ev.event_date)}</td>
         <td>${esc(ev.title || '')}</td>
-        <td>${esc(ev.start_time)} 〜 ${esc(ev.end_time)}</td>
-        <td>${ev.restrict_booking ? 'ブロックする' : 'ブロックしない'}</td>
-        <td><button class="btn danger small" type="button" data-id="${ev.id}">削除</button></td>
+        <td>${typeLabel}</td>
+        <td>${blockLabel}</td>
+        <td>
+          <button class="btn secondary small" type="button" data-act="edit">編集</button>
+          <button class="btn danger small" type="button" data-act="del">削除</button>
+        </td>
       `;
-      tr.querySelector('button').addEventListener('click', async () => {
+      tr.querySelector('[data-act=edit]').addEventListener('click', () => startEditEvent(ev));
+      tr.querySelector('[data-act=del]').addEventListener('click', async () => {
         if (!confirm(`「${ev.title}」（${ev.event_date}）を削除しますか？`)) return;
         try {
           await adminFetch('/api/admin/events/' + ev.id, { method: 'DELETE' });
+          if (evEditingId === ev.id) resetEventForm();
           loadEvents();
         } catch (err) { alert(err.message); }
       });
@@ -726,29 +803,46 @@
   document.getElementById('evAddBtn').addEventListener('click', async () => {
     const errBox = document.getElementById('evErr');
     errBox.style.display = 'none';
+    const type = currentEvType();
     const title = document.getElementById('evTitle').value.trim();
     const date = document.getElementById('evDate').value;
-    const startTime = document.getElementById('evStart').value;
-    const endTime = document.getElementById('evEnd').value;
-    const restrictBooking = document.getElementById('evRestrict').checked;
-    if (!title || !date || !startTime || !endTime) {
-      errBox.textContent = 'タイトル・日付・開始/終了時刻は必須です';
+    if (!title || !date) {
+      errBox.textContent = 'タイトル・日付は必須です';
       errBox.style.display = 'block';
       return;
     }
+    let startTime, endTime, restrictBooking;
+    if (type === 'timed') {
+      startTime = document.getElementById('evStart').value;
+      endTime = document.getElementById('evEnd').value;
+      restrictBooking = document.getElementById('evRestrict').checked;
+      if (!startTime || !endTime) {
+        errBox.textContent = '時間を指定する場合は開始/終了時刻が必須です';
+        errBox.style.display = 'block';
+        return;
+      }
+    } else {
+      // ★終日（終日休み／終日の行事）はstaff/calendar.htmlの行事管理モーダルと同じ規約で
+      //   00:00〜23:59として保存する（開始/終了時刻の入力欄自体は出さない）
+      startTime = '00:00';
+      endTime = '23:59';
+      restrictBooking = (type === 'closed');
+    }
     try {
-      await adminFetch('/api/admin/events', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title, date, startTime, endTime, restrictBooking })
-      });
-      document.getElementById('evTitle').value = '';
-      document.getElementById('evDate').value = '';
+      const body = JSON.stringify({ title, date, startTime, endTime, restrictBooking });
+      if (evEditingId) {
+        await adminFetch('/api/admin/events/' + evEditingId, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body });
+      } else {
+        await adminFetch('/api/admin/events', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+      }
+      resetEventForm();
       await loadEvents();
     } catch (err) {
       errBox.textContent = err.message;
       errBox.style.display = 'block';
     }
   });
+  applyEvTypeUI();
 
   // ---------- ログイン管理（強制ログアウト） ----------
   async function loadSessionStaffList() {

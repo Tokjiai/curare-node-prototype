@@ -1928,6 +1928,7 @@ app.put('/api/admin/events/:id', requireOwnerSession, (req, res) => {
     if (data.startTime >= data.endTime) {
       return res.status(400).json({ success: false, message: '終了時刻は開始時刻より後にしてください' });
     }
+    const { blockStart, blockEnd } = computeEventBlockTimes_(data.startTime, data.endTime, data.blockStartTime, data.blockEndTime);
     db.prepare(`
       UPDATE events SET title = ?, event_date = ?, start_time = ?, end_time = ?,
         restrict_booking = ?, block_start_time = ?, block_end_time = ?
@@ -1935,8 +1936,8 @@ app.put('/api/admin/events/:id', requireOwnerSession, (req, res) => {
     `).run(
       data.title, data.date, data.startTime, data.endTime,
       data.restrictBooking ? 1 : 0,
-      data.restrictBooking ? (data.blockStartTime || null) : null,
-      data.restrictBooking ? (data.blockEndTime || null) : null,
+      data.restrictBooking ? blockStart : null,
+      data.restrictBooking ? blockEnd : null,
       id
     );
     res.json({ success: true });
@@ -3033,6 +3034,25 @@ app.get('/api/admin/events', requireOwnerSession, (req, res) => {
 });
 
 // ----------------------------------------------------------------------------
+// ★2026-09-25追加：GAS版owner_ui.html／calendar_dashboard_functions.gsの調査で判明した
+//   「時間を指定（timed）」タイプの予約ブロック仕様に合わせ、実際にブロックされる範囲
+//   （開始時刻の90分前〜終了時刻の60分後、施術の前後準備時間の確保が目的）を明示的に
+//   計算してblock_start_time/block_end_timeへ保存する。
+//   ・呼び出し側（DB一覧ビューア等）が既に値を指定していればそれを優先する
+//   ・終日（allday、start_time='00:00'かつend_time='23:59'）の行事は対象外（getCalendarData_と同じ判定）
+//   ・この計算値が無くても getCalendarData_ / getBlockedEventSlots_ 側に同じ-90分/+60分の
+//     フォールバック計算が既にあるため実際の予約可否は変わらないが、GAS版と同じく
+//     「実際にブロックされる時刻」をDB上にも明示して分かりやすくする
+function computeEventBlockTimes_(startTime, endTime, blockStartTime, blockEndTime) {
+  const isAllDay = !startTime || !endTime || (startTime === '00:00' && endTime === '23:59');
+  if (isAllDay) return { blockStart: null, blockEnd: null };
+  const minToHHMM = (m) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+  const blockStart = blockStartTime || minToHHMM(Math.max(0, engine.toMin_(startTime) - 90));
+  const blockEnd = blockEndTime || minToHHMM(Math.min(1439, engine.toMin_(endTime) + 60));
+  return { blockStart, blockEnd };
+}
+
+// ----------------------------------------------------------------------------
 // POST /api/admin/events
 //   { title, date, startTime, endTime, restrictBooking, blockStartTime, blockEndTime }
 // ----------------------------------------------------------------------------
@@ -3046,14 +3066,15 @@ app.post('/api/admin/events', requireOwnerSession, (req, res) => {
     if (data.startTime >= data.endTime) {
       return res.status(400).json({ success: false, message: '終了時刻は開始時刻より後にしてください' });
     }
+    const { blockStart, blockEnd } = computeEventBlockTimes_(data.startTime, data.endTime, data.blockStartTime, data.blockEndTime);
     const info = db.prepare(`
       INSERT INTO events (store_id, title, event_date, is_active, start_time, end_time, restrict_booking, block_start_time, block_end_time)
       VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?)
     `).run(
       storeId, data.title, data.date, data.startTime, data.endTime,
       data.restrictBooking ? 1 : 0,
-      data.restrictBooking ? (data.blockStartTime || null) : null,
-      data.restrictBooking ? (data.blockEndTime || null) : null
+      data.restrictBooking ? blockStart : null,
+      data.restrictBooking ? blockEnd : null
     );
     res.json({ success: true, eventId: info.lastInsertRowid });
   } catch (e) {
