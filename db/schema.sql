@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS stores (
                                                  --   未設定＝朝/夕方レポート等スタッフ向けプッシュ通知はシミュレーションのみ）
   phone                        VARCHAR(20),     -- ★2026-09-20追加：店舗の電話番号（お客様予約フォームに表示。rule2「基本情報」カード相当、この画面からは編集不可）
   booking_period_info_days     INTEGER NOT NULL DEFAULT 14, -- ★2026-09-20追加：予約受付期間の「お知らせ用」表示日数（rule1のBOOKING_LIMIT_DAYSとは別枠の、お客様への案内表示専用の値）
+  is_active                    BOOLEAN NOT NULL DEFAULT 1, -- ★2026-09-25追加：稼働状況（複数店舗プラットフォーム管理画面の一覧表示用。0でも既存データ・ログインは動き続ける、単なる目印）
   created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 

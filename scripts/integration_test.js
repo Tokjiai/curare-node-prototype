@@ -3243,6 +3243,128 @@ async function main() {
       '店舗設定の「営業時間帯（ゾーン）」パネルにGAS版と同じ説明書き2点が表示される');
   }
 
+  // --------------------------------------------------------------------------
+  // 47. 複数店舗プラットフォーム管理画面 フェーズB（管理者セッションの店舗切替・店舗一覧・
+  //     稼働状況の切替）（README 60章）
+  // --------------------------------------------------------------------------
+  console.log('--- 47. 複数店舗プラットフォーム管理画面 フェーズB ---');
+  const admin47 = makeSession();
+  const owner47 = makeSession();
+  await admin47.postJson('/api/auth/admin-login', { password: ADMIN_PW });
+  await owner47.loginAs('1', '寿子', '5678');
+
+  // ---- ① 店舗一覧の取得 ----
+  {
+    const rN = await makeSession().get('/api/admin/platform/stores');
+    const rO = await owner47.get('/api/admin/platform/stores');
+    assert(rN.status === 401 && rO.status === 403, '店舗一覧APIは管理者のみ（未ログインは401、オーナーは403）');
+
+    const expStaff1 = db.prepare(`SELECT COUNT(*) AS c FROM staff WHERE store_id = 1 AND is_active = 1`).get().c;
+    const expCust1 = db.prepare(`SELECT COUNT(*) AS c FROM customers WHERE store_id = 1 AND is_deleted = 0`).get().c;
+    const expStaff2 = db.prepare(`SELECT COUNT(*) AS c FROM staff WHERE store_id = 2 AND is_active = 1`).get().c;
+    const expCust2 = db.prepare(`SELECT COUNT(*) AS c FROM customers WHERE store_id = 2 AND is_deleted = 0`).get().c;
+
+    const r = await admin47.get('/api/admin/platform/stores');
+    const s1 = (r.body.stores || []).find((s) => s.id === 1);
+    const s2 = (r.body.stores || []).find((s) => s.id === 2);
+    assert(r.status === 200 && r.body.currentStoreId === 1 && !!s1 && !!s2,
+      '管理者は全店舗（クラーレ寿・テスト用2店舗目）の一覧を取得できる（機密情報は含まない件数のみ）');
+    assert(s1.name === 'クラーレ寿' && s1.isCurrent === true && s1.staffCount === expStaff1 && s1.customerCount === expCust1,
+      '店舗一覧には店舗名・現在操作中フラグ・スタッフ数・顧客数が正しく含まれる（店舗1）');
+    assert(s2.slug === 'iwatamachi-test' && s2.isCurrent === false && s2.staffCount === expStaff2 && s2.customerCount === expCust2 && s2.isActive === true,
+      '店舗一覧には他店舗（店舗2）の情報も含まれ、稼働状況の初期値は稼働中（true）');
+  }
+
+  // ---- ② 管理者セッションの店舗切替（GAS版のなりすましログインの代わりに、セッションのstoreIdを切り替える方式） ----
+  {
+    const rBad1 = await admin47.postJson('/api/admin/platform/switch-store', { storeId: 9999 });
+    const rBad2 = await admin47.postJson('/api/admin/platform/switch-store', {});
+    assert(rBad1.status === 404 && rBad2.status === 404, '存在しない店舗・storeId未指定の切替は404');
+    const rOwnerSwitch = await owner47.postJson('/api/admin/platform/switch-store', { storeId: 2 });
+    assert(rOwnerSwitch.status === 403, 'オーナーは店舗切替APIを使えない（管理者専用）');
+
+    const r = await admin47.postJson('/api/admin/platform/switch-store', { storeId: 2 });
+    assert(r.status === 200 && r.body.success === true && r.body.storeId === 2 && r.body.storeName === '岩田町店（統合テスト用）',
+      '管理者は店舗2（テスト用2店舗目）に切り替えられる');
+    const me = await admin47.get('/api/auth/me');
+    assert(me.body.staff.storeId === 2 && me.body.staff.storeName === '岩田町店（統合テスト用）' && me.body.staff.isAdmin === true,
+      '切替後はセッションのstoreId・storeNameが新しい店舗に変わり、isAdminは維持される');
+  }
+
+  // ---- ③ 切替後は既存のオーナー用API・DB一覧ビューアがそのまま新しい店舗に対して動く ----
+  const iwCust = db.prepare(`SELECT id, memo FROM customers WHERE store_id = 2 AND customer_id = 'IW001'`).get();
+  {
+    const dash = await admin47.get('/api/admin/dashboard');
+    const list = await admin47.get('/api/admin/db-viewer/customers');
+    assert(dash.status === 200, '切替後は既存のオーナー用ダッシュボードAPIがそのまま店舗2に対して使える（分岐の追加不要）');
+    // ★customer_idは店舗ごとに独立採番されるため他店と重複しうる（例：C0001は店舗1にも店舗2にも存在しうる）。
+    //   ここではDBの店舗1側の実際の顧客IDと突き合わせ、店舗1の行が1件も混ざっていないことを確認する
+    const store1CustIds = new Set(db.prepare(`SELECT id FROM customers WHERE store_id = 1`).all().map((r) => r.id));
+    assert(list.status === 200 && (list.body.rows || []).every((r) => !store1CustIds.has(r.id)) && (list.body.rows || []).some((r) => r.customer_id === 'IW001'),
+      '切替後のDB一覧ビューアは店舗2の顧客だけを返す（店舗1の顧客は含まれない）');
+
+    const logBefore = db.prepare('SELECT COUNT(*) AS c FROM db_edit_log').get().c;
+    const rEdit = await admin47.putJson(`/api/admin/db-viewer/customers/${iwCust.id}`, {
+      changes: { memo: 'フェーズB切替後の編集47' }, expected: { memo: iwCust.memo }
+    });
+    const after = db.prepare('SELECT memo FROM customers WHERE id = ?').get(iwCust.id);
+    assert(rEdit.status === 200 && after.memo === 'フェーズB切替後の編集47', '切替後は店舗2の顧客をDB一覧ビューアから編集できる');
+    const log = db.prepare('SELECT * FROM db_edit_log ORDER BY id DESC LIMIT 1').get();
+    assert(db.prepare('SELECT COUNT(*) AS c FROM db_edit_log').get().c === logBefore + 1 && log.store_id === 2 && log.table_name === 'customers' && log.row_id === iwCust.id,
+      '編集ログには切替後の対象店舗（店舗2）のIDがそのまま記録される（監査ログの仕組みは変更なし）');
+
+    const store1Cust = db.prepare(`SELECT id FROM customers WHERE store_id = 1 LIMIT 1`).get();
+    const rCross = await admin47.putJson(`/api/admin/db-viewer/customers/${store1Cust.id}`, { changes: { memo: '越境編集47' } });
+    assert(rCross.status === 404, '切替中でも、切替先以外の店舗（店舗1）の行は編集できない（依然として店舗をまたいだ操作はできない）');
+  }
+
+  // ---- ④ 元の店舗に戻す ----
+  {
+    const r = await admin47.postJson('/api/admin/platform/switch-store', { storeId: 1 });
+    const me = await admin47.get('/api/auth/me');
+    assert(r.status === 200 && me.body.staff.storeId === 1 && me.body.staff.storeName === 'クラーレ寿', '店舗一覧に戻って別の店舗（店舗1）へ再度切り替えられる');
+    db.prepare('UPDATE customers SET memo = ? WHERE id = ?').run(iwCust.memo, iwCust.id);
+  }
+
+  // ---- ⑤ 稼働状況の切替（表示上の目印。編集ログにも記録される） ----
+  {
+    const rOwnerToggle = await owner47.postJson('/api/admin/platform/stores/2/toggle-active', {});
+    assert(rOwnerToggle.status === 403, 'オーナーは稼働状況の切替APIを使えない（管理者専用）');
+
+    const logBefore = db.prepare('SELECT COUNT(*) AS c FROM db_edit_log').get().c;
+    const rOff = await admin47.postJson('/api/admin/platform/stores/2/toggle-active', {});
+    const listAfterOff = await admin47.get('/api/admin/platform/stores');
+    const s2off = (listAfterOff.body.stores || []).find((s) => s.id === 2);
+    assert(rOff.status === 200 && rOff.body.isActive === false && s2off.isActive === false, '稼働状況を「停止中」に切り替えられ、店舗一覧にも反映される');
+
+    const rOn = await admin47.postJson('/api/admin/platform/stores/2/toggle-active', {});
+    const listAfterOn = await admin47.get('/api/admin/platform/stores');
+    const s2on = (listAfterOn.body.stores || []).find((s) => s.id === 2);
+    assert(rOn.status === 200 && rOn.body.isActive === true && s2on.isActive === true, 'もう一度押すと「稼働中」に戻せる');
+
+    const logs = db.prepare(`SELECT * FROM db_edit_log WHERE table_name = 'stores' AND row_id = 2 ORDER BY id DESC LIMIT 2`).all();
+    assert(db.prepare('SELECT COUNT(*) AS c FROM db_edit_log').get().c === logBefore + 2 &&
+      logs.some((l) => l.old_value === '1' && l.new_value === '0') && logs.some((l) => l.old_value === '0' && l.new_value === '1') &&
+      logs.every((l) => l.column_name === 'is_active' && l.edited_by === '管理者'),
+      '稼働状況の切替も編集ログ（db_edit_log）に記録される');
+
+    const bad = await admin47.postJson('/api/admin/platform/stores/9999/toggle-active', {});
+    assert(bad.status === 404, '存在しない店舗の稼働状況切替は404');
+  }
+
+  // ---- ⑥ 画面（店舗一覧ページ・統一メニュー・サイドバー動的表示）の導線 ----
+  {
+    const page = await fetch(BASE + '/admin/platform-stores.html').then((r) => r.text());
+    assert(page.includes('/api/admin/platform/stores') && page.includes('/api/admin/platform/switch-store') && page.includes('この店舗を管理'),
+      '店舗一覧ページは店舗一覧の取得・切替APIを呼び、「この店舗を管理」ボタンを持つ');
+    const menuPage = await fetch(BASE + '/menu.html').then((r) => r.text());
+    assert(menuPage.includes('/admin/platform-stores.html') && menuPage.includes('店舗一覧（複数店舗管理）'),
+      '統一メニューに管理者ログイン時だけの「店舗一覧」タイルがある');
+    const badgeJs = await fetch(BASE + '/admin/admin-mode.js').then((r) => r.text());
+    assert(badgeJs.includes('staff.storeName') && badgeJs.includes('.store-name') && badgeJs.includes('platform-stores.html'),
+      '各画面のサイドバー店舗名は、セッションの実際の店舗名（切替後の店舗）に合わせて動的に書き換えられる仕組みが読み込まれている');
+  }
+
   // ---- ログアウト・連続失敗ロック（ロックすると以降の管理者ログインが15分できないため最後に行う）----
   {
     await admin46.postJson('/api/auth/logout', {});

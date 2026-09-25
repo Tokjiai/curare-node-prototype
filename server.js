@@ -641,9 +641,13 @@ app.post('/api/auth/login', (req, res) => {
     }
 
     const isTerminal = !!matched.is_shared_terminal;
+    // ★2026-09-25追加：サイドバーの店舗名表示（複数店舗プラットフォーム管理画面フェーズB）を
+    //   常にセッションの実際の店舗に合わせられるよう、ログイン時点の店舗名もセッションへ持たせる
+    const storeRow = db.prepare('SELECT name FROM stores WHERE id = ?').get(matched.store_id);
     req.session.staff = {
       id: matched.id,
       storeId: matched.store_id,
+      storeName: storeRow ? storeRow.name : '',
       name: matched.name,
       role: matched.role,
       // ★サロン端末はGAS版（ST099）と同じくisOwner扱い。カレンダー上の予約編集は
@@ -733,13 +737,17 @@ app.post('/api/auth/admin-login', (req, res) => {
     if (!storeId) {
       return res.status(500).json({ success: false, message: 'PLATFORM_ADMIN_STORE の店舗が見つかりません' });
     }
+    const storeRow = db.prepare('SELECT name FROM stores WHERE id = ?').get(storeId);
     platformAdminLock.failures = 0;
     // ★既存の管理画面・APIはすべて session.staff を前提にしているため、同じ形で持たせる。
     //   id は特定の店舗スタッフに紐付けないため null（スタッフ管理の「自分自身」判定等に
     //   引っかからない）。isOwner:true でオーナーの全機能、isAdmin:true で管理者専用機能。
+    //   ★2026-09-25追加：フェーズB「複数店舗プラットフォーム管理画面」で店舗を切り替えられるよう
+    //   storeName も持たせる（切替は POST /api/admin/platform/switch-store が storeId・storeName を書き換える）
     req.session.staff = {
       id: null,
       storeId,
+      storeName: storeRow ? storeRow.name : '',
       name: PLATFORM_ADMIN_NAME,
       role: PLATFORM_ADMIN_NAME,
       isOwner: true,
@@ -769,6 +777,97 @@ function requireAdminSession(req, res, next) {
   }
   next();
 }
+
+// ============================================================================
+// ★2026-09-25追加：管理者専用「複数店舗プラットフォーム管理画面」（フェーズB、
+//   GAS版control_panel.html／platform_admin.gs相当）
+//
+//   【GAS版との設計の違い（社長確認済み）】GAS版は「店舗ごとのスタッフマスタに管理者用の
+//   行を用意し、その行になりすましてログインし直す」方式だが、Node版の管理者はフェーズAの
+//   時点で既に「特定店舗のスタッフに紐付かない、独立したグローバルセッション」として
+//   実装済み（session.staff.id === null）。フェーズBはこの資産をそのまま複数店舗に
+//   広げる方が自然と判断し、店舗ごとの「管理者ロール」スタッフ行は新設しない
+//   （店舗が増えるたびにスタッフマスタをメンテナンスする必要がなくなる）。
+//
+//   【実現方法】既存の /api/admin/* はすべて req.session.staff.storeId だけを見て
+//   店舗を決めている（78箇所）。そこへ分岐を足すのではなく、管理者セッションの
+//   storeId 自体を「今どの店舗を管理しているか」の状態として切り替える
+//   （POST /api/admin/platform/switch-store）ことで、既存のAPI・画面・
+//   DB一覧ビューアの編集ログ（store_id列に切替後の対象店舗が自動的に入る）を
+//   一切変更せずにそのまま使い回せる。
+// ============================================================================
+
+// GET /api/admin/platform/stores : 全店舗の一覧（店舗ID・店舗名・稼働状況・スタッフ数・顧客数）
+app.get('/api/admin/platform/stores', requireAdminSession, (req, res) => {
+  try {
+    const rows = db.prepare(`
+      SELECT s.id, s.slug, s.name, s.plan, s.is_active,
+        (SELECT COUNT(*) FROM staff st WHERE st.store_id = s.id AND st.is_active = 1) AS staff_count,
+        (SELECT COUNT(*) FROM customers c WHERE c.store_id = s.id AND c.is_deleted = 0) AS customer_count
+      FROM stores s
+      ORDER BY s.id ASC
+    `).all();
+    const stores = rows.map((r) => ({
+      id: r.id, slug: r.slug, name: r.name, plan: r.plan,
+      isActive: !!r.is_active, staffCount: r.staff_count, customerCount: r.customer_count,
+      isCurrent: r.id === req.session.staff.storeId
+    }));
+    res.json({ success: true, currentStoreId: req.session.staff.storeId, stores });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// POST /api/admin/platform/switch-store : { storeId } → 管理者セッションが今後操作する店舗を切り替える
+//   ★オーナー用の管理画面（/admin/index.html等）へディープリンクすれば、以後のAPI呼び出しは
+//   すべてこの新しいstoreIdで動く（PIN再入力は不要。GAS版のなりすましログインに相当する体験）。
+app.post('/api/admin/platform/switch-store', requireAdminSession, (req, res) => {
+  try {
+    const storeId = Number((req.body && req.body.storeId) || 0);
+    const store = Number.isInteger(storeId) ? db.prepare('SELECT id, name FROM stores WHERE id = ?').get(storeId) : null;
+    if (!store) {
+      return res.status(404).json({ success: false, message: '店舗が見つかりません' });
+    }
+    req.session.staff.storeId = store.id;
+    req.session.staff.storeName = store.name;
+    req.session.save((err) => {
+      if (err) {
+        console.error('セッション保存エラー:', err);
+        return res.status(500).json({ success: false, message: 'セッションの保存に失敗しました' });
+      }
+      res.json({ success: true, storeId: store.id, storeName: store.name });
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// POST /api/admin/platform/stores/:id/toggle-active : 店舗一覧の「稼働状況」を切り替える（表示上の目印。
+//   0にしても既存データやスタッフのログインは止まらない）。変更は db_edit_log に記録する
+app.post('/api/admin/platform/stores/:id/toggle-active', requireAdminSession, (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const store = db.prepare('SELECT id, is_active FROM stores WHERE id = ?').get(id);
+    if (!store) {
+      return res.status(404).json({ success: false, message: '店舗が見つかりません' });
+    }
+    const newValue = store.is_active ? 0 : 1;
+    const run = db.transaction(() => {
+      db.prepare('UPDATE stores SET is_active = ? WHERE id = ?').run(newValue, id);
+      db.prepare(`
+        INSERT INTO db_edit_log (store_id, table_name, row_id, column_name, old_value, new_value, edited_by)
+        VALUES (?, 'stores', ?, 'is_active', ?, ?, ?)
+      `).run(id, id, String(store.is_active), String(newValue), req.session.staff.name);
+    });
+    run();
+    res.json({ success: true, storeId: id, isActive: !!newValue });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
 
 // ----------------------------------------------------------------------------
 // POST /api/auth/logout : セッション破棄

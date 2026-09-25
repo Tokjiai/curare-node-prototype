@@ -88,7 +88,9 @@
     { tier: 'trueOwner', cls: 'owner', icon: '⚙️', name: 'オーナー設定', desc: '店舗設定・顧客/予約の編集・シフト管理など', href: '/admin/index.html' },
     { tier: 'trueOwner', cls: 'owner', icon: '👥', name: 'スタッフ管理', desc: 'スタッフの登録・PIN・権限の設定', href: '/admin/staff.html' },
     // ★2026-09-24追加：管理者（相野様）ログイン時だけ出すタイル（README 59章）
-    { tier: 'admin', cls: 'admin', icon: '🛡️', name: 'DB一覧ビューア（編集）', desc: '全テーブルの閲覧・編集、編集ログ、LINE webhook受信ログ', href: '/admin/db-viewer.html' }
+    { tier: 'admin', cls: 'admin', icon: '🛡️', name: 'DB一覧ビューア（編集）', desc: '全テーブルの閲覧・編集、編集ログ、LINE webhook受信ログ', href: '/admin/db-viewer.html' },
+    // ★2026-09-25追加：複数店舗プラットフォーム管理画面フェーズB（README 60章）
+    { tier: 'admin', cls: 'admin', icon: '🏢', name: '店舗一覧（複数店舗管理）', desc: '全店舗の一覧から操作したい店舗を選び、その店舗のオーナー管理画面に切り替える', href: '/admin/platform-stores.html' }
   ];
   const SECTION_TITLES = { all: '日々の業務', owner: '閲覧', trueOwner: 'オーナー専用', admin: '管理者専用' };
 
