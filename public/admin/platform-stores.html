@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>店舗一覧（プラットフォーム管理）</title>
+<style>
+  /* ============================================================
+     ★2026-09-25追加：管理者専用「複数店舗プラットフォーム管理画面」フェーズB
+     （GAS版control_panel.html／platform_admin.gs相当）の新設ページ。
+     全店舗を横断して一覧表示し、「この店舗を管理」ボタンで管理者セッションが
+     操作する店舗を切り替える（PIN再入力なしのディープリンク）。
+     店舗マスタ自体の追加・削除はまだこの画面からはできない（README 60章参照）。
+     ============================================================ */
+  :root{
+    --bg:#F5F4EF; --panel:#ffffff; --ink:#2B2B27; --ink-soft:#75746C; --ink-faint:#A9A79C;
+    --line:#E4E2D9; --accent:#3D6B5C; --accent-soft:#E7EFE9; --admin:#4A3F6B; --admin-soft:#EFEDF3;
+    --warn:#B3542E; --warn-soft:#F7E9E2; --radius:14px;
+  }
+  *{box-sizing:border-box; margin:0; padding:0; font-family:'Hiragino Sans','Yu Gothic',sans-serif;}
+  body{background:var(--bg); color:var(--ink);}
+  .wrap{display:none; padding:28px 32px; max-width:1000px; margin:0 auto;}
+  .wrap.ready{display:block;}
+  #loadingMsg{text-align:center; color:var(--ink-soft); font-size:13px; padding:60px 0;}
+
+  .page-head{margin-bottom:18px;}
+  .page-head h1{font-size:19px; font-weight:700; margin-bottom:4px;}
+  .page-head p{font-size:13px; color:var(--ink-soft); line-height:1.7;}
+  .back-link{display:inline-block; margin-top:10px; font-size:12.5px; color:var(--admin); text-decoration:none; font-weight:700;}
+
+  .panel{background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); overflow:hidden; margin-bottom:16px;}
+  table.store-tbl{border-collapse:collapse; width:100%; font-size:13px;}
+  table.store-tbl thead th{background:var(--admin-soft); color:var(--admin); text-align:left; padding:11px 14px; font-weight:700; font-size:12.5px;}
+  table.store-tbl tbody td{padding:11px 14px; border-top:1px solid var(--line); vertical-align:middle;}
+  table.store-tbl tbody tr.current{background:var(--accent-soft);}
+
+  .badge{display:inline-block; font-size:11px; font-weight:700; padding:4px 10px; border-radius:999px;}
+  .badge.on{background:var(--accent-soft); color:var(--accent);}
+  .badge.off{background:var(--warn-soft); color:var(--warn);}
+  .badge.current{background:var(--admin); color:#fff; margin-left:6px;}
+
+  .btn{padding:7px 13px; border-radius:8px; border:1px solid var(--line); background:#fff; font-size:12.5px; cursor:pointer; font-family:inherit; white-space:nowrap;}
+  .btn.primary{background:var(--admin); color:#fff; border-color:var(--admin); font-weight:700;}
+  .btn.primary:hover{filter:brightness(1.08);}
+  .btn:disabled{opacity:0.5; cursor:default;}
+  .btn-row{display:flex; gap:6px; flex-wrap:wrap;}
+
+  .err-box{background:#FDEDEA; color:var(--warn); border:1px solid #F3C9BC; border-radius:10px; padding:10px 14px; font-size:12.5px; margin-bottom:14px; display:none;}
+  .err-box.show{display:block;}
+  .toast{position:fixed; left:50%; bottom:24px; transform:translateX(-50%); background:#2B2B27; color:#fff; padding:9px 16px; border-radius:8px; font-size:13px; z-index:9500; display:none;}
+</style>
+</head>
+<body>
+<div id="loadingMsg">読み込み中...</div>
+<div class="wrap" id="wrap">
+  <div class="page-head">
+    <h1>🏢 店舗一覧（プラットフォーム管理）</h1>
+    <p>
+      全店舗を横断して一覧表示します。「この店舗を管理」を押すと、管理者セッションを保持したまま
+      その店舗のオーナー管理画面（メニューマスタ・スタッフ管理・店舗設定・DB一覧ビューア等）へ
+      PIN再入力なしで切り替わります。DB一覧ビューアの編集ログには、切替後の店舗IDがそのまま記録されます。
+    </p>
+    <a class="back-link" href="/menu.html">← 統一メニューへ戻る</a>
+  </div>
+
+  <div class="err-box" id="errBox"></div>
+
+  <div class="panel">
+    <table class="store-tbl">
+      <thead>
+        <tr>
+          <th>店舗ID</th><th>店舗名</th><th>スラッグ</th><th>プラン</th><th>稼働状況</th>
+          <th>スタッフ数</th><th>顧客数</th><th>操作</th>
+        </tr>
+      </thead>
+      <tbody id="storeRows"></tbody>
+    </table>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+(function () {
+  const loadingMsg = document.getElementById('loadingMsg');
+  const wrap = document.getElementById('wrap');
+  const errBox = document.getElementById('errBox');
+  const storeRows = document.getElementById('storeRows');
+  const toast = document.getElementById('toast');
+  let toastTimer = null;
+
+  function esc(v) { return String(v == null ? '' : v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+  function showToast(msg) {
+    toast.textContent = msg;
+    toast.style.display = 'block';
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { toast.style.display = 'none'; }, 2600);
+  }
+
+  function showError(msg) {
+    errBox.textContent = msg;
+    errBox.classList.add('show');
+  }
+
+  async function adminFetch(url, opts) {
+    const res = await fetch(url, opts);
+    if (res.status === 401) throw new Error('UNAUTHORIZED');
+    if (res.status === 403) throw new Error('FORBIDDEN');
+    if (!res.ok) {
+      let msg = 'サーバーエラー: ' + res.status;
+      try { const b = await res.json(); if (b && (b.message || b.error)) msg = b.message || b.error; } catch (_) {}
+      throw new Error(msg);
+    }
+    return res.json();
+  }
+
+  async function loadStores() {
+    const data = await adminFetch('/api/admin/platform/stores');
+    storeRows.innerHTML = (data.stores || []).map((s) => `
+      <tr class="${s.isCurrent ? 'current' : ''}">
+        <td>${s.id}</td>
+        <td>${esc(s.name)}${s.isCurrent ? '<span class="badge current">操作中</span>' : ''}</td>
+        <td>${esc(s.slug)}</td>
+        <td>${esc(s.plan)}</td>
+        <td><span class="badge ${s.isActive ? 'on' : 'off'}">${s.isActive ? '稼働中' : '停止中'}</span></td>
+        <td>${s.staffCount}</td>
+        <td>${s.customerCount}</td>
+        <td>
+          <div class="btn-row">
+            <button class="btn primary" data-switch="${s.id}" ${s.isCurrent ? 'disabled' : ''}>この店舗を管理</button>
+            <button class="btn" data-toggle="${s.id}">${s.isActive ? '停止にする' : '稼働にする'}</button>
+          </div>
+        </td>
+      </tr>
+    `).join('') || '<tr><td colspan="8" style="text-align:center;color:var(--ink-faint);padding:30px 0;">店舗がありません</td></tr>';
+  }
+
+  async function init() {
+    try {
+      const me = await adminFetch('/api/auth/me');
+      if (!me.staff.isAdmin) {
+        // ★管理者以外（オーナー・一般スタッフ・サロン端末）が迷い込んだ場合は統一メニューへ戻す
+        window.location.href = '/menu.html';
+        return;
+      }
+      await loadStores();
+      loadingMsg.style.display = 'none';
+      wrap.classList.add('ready');
+    } catch (e) {
+      if (e.message === 'UNAUTHORIZED') {
+        window.location.href = '/admin/login.html?next=' + encodeURIComponent(window.location.pathname);
+      } else {
+        loadingMsg.textContent = '読み込みに失敗しました: ' + e.message;
+      }
+    }
+  }
+
+  storeRows.addEventListener('click', async (e) => {
+    const switchId = e.target.getAttribute('data-switch');
+    const toggleId = e.target.getAttribute('data-toggle');
+    if (switchId) {
+      e.target.disabled = true;
+      try {
+        const r = await fetch('/api/admin/platform/switch-store', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ storeId: Number(switchId) })
+        });
+        const data = await r.json();
+        if (!r.ok || !data.success) throw new Error(data.message || 'サーバーエラー');
+        // ★切替後はそのままオーナー用管理画面へディープリンクする（PIN再入力不要）
+        window.location.href = '/admin/index.html';
+      } catch (err) {
+        showError('切替に失敗しました: ' + err.message);
+        e.target.disabled = false;
+      }
+      return;
+    }
+    if (toggleId) {
+      e.target.disabled = true;
+      try {
+        const r = await fetch(`/api/admin/platform/stores/${toggleId}/toggle-active`, { method: 'POST' });
+        const data = await r.json();
+        if (!r.ok || !data.success) throw new Error(data.message || 'サーバーエラー');
+        showToast(data.isActive ? '稼働中にしました' : '停止中にしました');
+        await loadStores();
+      } catch (err) {
+        showError('切替に失敗しました: ' + err.message);
+      } finally {
+        e.target.disabled = false;
+      }
+    }
+  });
+
+  init();
+})();
+</script>
+<script src="/admin/admin-mode.js"></script>
+</body>
+</html>
