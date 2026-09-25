@@ -4044,3 +4044,53 @@ staff/calendar.htmlの行事管理モーダルの両方が自動的にこの恩�
 🕐時間を指定の3種別をそれぞれ追加し、一覧に意図した種別ラベルと予約ブロック範囲
 （例：10:00〜11:00の時間指定→「ブロックする（08:30〜12:00）」）が表示されること、
 既存行の「編集」ボタンから内容を変更して保存できることを確認した。
+
+## 62. 行事管理モーダルのチェックボックス位置ずれ修正（2026-09-25追加）
+
+社長からのスクリーンショット報告を受け、`public/staff/calendar.html`のサロンダッシュボード
+（週表示カレンダー）で、日付欄の📌+アイコンから開く「行事を管理」モーダルの「終日」チェックボックスと
+「予約枠をブロックする（前後の時間帯も自動的に予約不可にする）」チェックボックスの表示位置が
+ずれ、チェックボックスがラベル文字の真横に来ず上に浮いたような配置になる不具合を修正した。
+行事の登録・保存・ブロック表示ロジック自体は正しく動いており、見た目のみの問題だった。
+
+### 62-1. 原因
+
+`public/staff/calendar.html`のCSSに次の記述があった。
+
+```css
+.modal-field .chk-row{display:flex; align-items:center; gap:6px; font-weight:400; font-size:12.5px;}
+.modal-field .chk-row input{width:auto;}
+```
+
+一方、実際のHTML（「終日」`#emAllday`・「予約枠をブロックする」`#emRestrict`のどちらも）は
+`<div class="modal-field chk-row">`のように`modal-field`と`chk-row`の2つのクラスが**同じ要素**に
+付いている。CSS側の`.modal-field .chk-row`（スペース区切り＝子孫結合子）は「`.modal-field`の
+子孫にある`.chk-row`」という意味で、同じ要素に両方のクラスが付いている今回のケースには一致しない
+（`.modal-field.chk-row`のようにスペース無しで書く必要がある）。そのため`display:flex`等が
+一切適用されず、代わりに汎用の`.modal-field label{display:block; ...}`だけが効いて、
+チェックボックスとラベル文字が横並びにならず崩れていた。
+
+### 62-2. 修正内容
+
+`.modal-field .chk-row`を`.modal-field.chk-row`（複合セレクタ）に直しただけで、レイアウト・
+データの保存ロジックには一切手を入れていない。
+
+```css
+.modal-field.chk-row{display:flex; align-items:center; gap:6px; font-weight:400; font-size:12.5px;}
+.modal-field.chk-row input{width:auto;}
+```
+
+念のため、他の画面（`public/admin/settings.html`等）にも同じ「子孫結合子とスペース無し複合
+セレクタの書き間違い」（`.chk-row`）が無いか確認したが、他の画面には`chk-row`クラス自体が
+存在せず、同種の不具合は無かった。
+
+### 62-3. テスト・検証
+
+見た目のみの修正のため統合テストへの追加は不要と判断した（既存の581件超はすべてパス）。
+代わりにPlaywrightで、修正前・修正後のスクリーンショットと、両チェックボックス（`#emAllday`・
+`#emRestrict`）とそのラベルの実際の描画位置（`getBoundingClientRect`）を比較した。
+修正前は`.chk-row`の`display`が既定値の`block`のままで、チェックボックス（高さ13px）と
+ラベル文字（複数行に折り返され高さ33〜50px）の上端は揃っているが横並びにならず、
+ラベルがチェックボックスの下に回り込んでいた。修正後は`display:flex`が適用され、
+チェックボックスとラベル文字の上端・行の高さが一致し、意図した「チェックボックスの右真横に
+ラベル文字が来る」横並び表示になることを確認した。
