@@ -3365,6 +3365,120 @@ async function main() {
       '各画面のサイドバー店舗名は、セッションの実際の店舗名（切替後の店舗）に合わせて動的に書き換えられる仕組みが読み込まれている');
   }
 
+  // --------------------------------------------------------------------------
+  // 48. 行事管理（events）のGAS版忠実度対応：終日の行事タイプ・予約ブロックの自動バッファ・
+  //     行事の編集機能（README 61章）
+  // --------------------------------------------------------------------------
+  console.log('--- 48. 行事管理（events）のGAS版忠実度対応 ---');
+
+  // ---- ① 終日の行事タイプ（closed／allday_open／timed）の保存内容 ----
+  let closed48Id = null, alldayOpen48Id = null;
+  {
+    const rClosed = await ownerFresh.postJson('/api/admin/events', {
+      title: '終日休みテスト48', date: '2027-01-10', startTime: '00:00', endTime: '23:59', restrictBooking: true
+    });
+    closed48Id = rClosed.body.eventId;
+    const closedRow = db.prepare('SELECT * FROM events WHERE id = ?').get(closed48Id);
+    assert(rClosed.status === 200 && closedRow.is_active === 1 && closedRow.restrict_booking === 1 &&
+      closedRow.start_time === '00:00' && closedRow.end_time === '23:59' && closedRow.block_start_time === null && closedRow.block_end_time === null,
+      '🚫終日休み：is_active=1・restrict_booking=1で保存され、終日のためblock_start/end_timeは不要（null）');
+
+    const rOpen = await ownerFresh.postJson('/api/admin/events', {
+      title: '終日の行事テスト48', date: '2027-01-11', startTime: '00:00', endTime: '23:59', restrictBooking: false
+    });
+    alldayOpen48Id = rOpen.body.eventId;
+    const openRow = db.prepare('SELECT * FROM events WHERE id = ?').get(alldayOpen48Id);
+    assert(rOpen.status === 200 && openRow.is_active === 1 && openRow.restrict_booking === 0 && openRow.block_start_time === null && openRow.block_end_time === null,
+      '📌終日の行事：is_active=1・restrict_booking=0（予約に影響しない）で保存される');
+
+    const dayList = await ownerFresh.get('/api/admin/events?from=2027-01-10&to=2027-01-11');
+    const evClosed = (dayList.body.events || []).find((e) => e.id === closed48Id);
+    const evOpen = (dayList.body.events || []).find((e) => e.id === alldayOpen48Id);
+    assert(!!evClosed && !!evOpen, '一覧APIにも終日休み・終日の行事の両方が含まれる');
+
+    // 一般スタッフは閲覧のみ（作成・変更・削除はオーナー専用、既存の権限モデルを維持）
+    const rStaffView = await hanako.get('/api/staff/calendar/events?date=2027-01-10');
+    const rStaffCreate = await hanako.postJson('/api/admin/events', { title: '一般スタッフ48', date: '2027-01-10', startTime: '00:00', endTime: '23:59', restrictBooking: true });
+    assert(rStaffView.status === 200 && (rStaffView.body.events || []).some((e) => e.label === '終日休みテスト48'),
+      '一般スタッフは休業日・特別イベントを閲覧できる（既存の閲覧のみの権限は維持）');
+    assert(rStaffCreate.status === 401, '一般スタッフは行事を作成できない（オーナー専用、既存の権限は維持）');
+  }
+
+  // ---- ② 予約ブロックの自動バッファ（前90分・後60分）をblock_start_time/block_end_timeへ保存 ----
+  let timed48Id = null;
+  {
+    const r = await ownerFresh.postJson('/api/admin/events', {
+      title: '時間指定バッファテスト48', date: '2027-01-12', startTime: '10:00', endTime: '11:00', restrictBooking: true
+    });
+    timed48Id = r.body.eventId;
+    const row = db.prepare('SELECT * FROM events WHERE id = ?').get(timed48Id);
+    assert(r.status === 200 && row.block_start_time === '08:30' && row.block_end_time === '12:00',
+      'blockStartTime/blockEndTimeを送らなくても、開始時刻の90分前・終了時刻の60分後が自動計算されてDBに保存される（GAS版と同じ仕様）');
+
+    // 日境界のクランプ（0時・24時をまたがない）
+    const rEdge = await ownerFresh.postJson('/api/admin/events', {
+      title: '日境界クランプテスト48', date: '2027-01-13', startTime: '00:30', endTime: '23:30', restrictBooking: true
+    });
+    const edgeRow = db.prepare('SELECT * FROM events WHERE id = ?').get(rEdge.body.eventId);
+    assert(edgeRow.block_start_time === '00:00' && edgeRow.block_end_time === '23:59',
+      '開始時刻の90分前・終了時刻の60分後が日をまたぐ場合は00:00・23:59でクランプされる');
+    db.prepare('DELETE FROM events WHERE id = ?').run(rEdge.body.eventId);
+
+    // 呼び出し側がblockStartTime/blockEndTimeを明示指定した場合は自動計算より優先される
+    const rExplicit = await ownerFresh.postJson('/api/admin/events', {
+      title: '明示指定テスト48', date: '2027-01-14', startTime: '10:00', endTime: '11:00', restrictBooking: true,
+      blockStartTime: '09:00', blockEndTime: '12:30'
+    });
+    const explicitRow = db.prepare('SELECT * FROM events WHERE id = ?').get(rExplicit.body.eventId);
+    assert(explicitRow.block_start_time === '09:00' && explicitRow.block_end_time === '12:30',
+      '呼び出し側がblock_start_time/block_end_timeを明示指定した場合はその値がそのまま優先される');
+    db.prepare('DELETE FROM events WHERE id = ?').run(rExplicit.body.eventId);
+
+    // 予約ブロックしない行事は自動計算の対象外
+    const rNoRestrict = await ownerFresh.postJson('/api/admin/events', {
+      title: 'ブロックなしテスト48', date: '2027-01-15', startTime: '10:00', endTime: '11:00', restrictBooking: false
+    });
+    const noRestrictRow = db.prepare('SELECT * FROM events WHERE id = ?').get(rNoRestrict.body.eventId);
+    assert(noRestrictRow.block_start_time === null && noRestrictRow.block_end_time === null, '予約ブロックしない行事はblock_start_time/block_end_timeを計算・保存しない');
+    db.prepare('DELETE FROM events WHERE id = ?').run(rNoRestrict.body.eventId);
+  }
+
+  // ---- ③ 行事の編集機能（PUT /api/admin/events/:id）でもバッファが再計算される ----
+  {
+    const r = await ownerFresh.putJson(`/api/admin/events/${timed48Id}`, {
+      title: '時間指定バッファテスト48（編集後）', date: '2027-01-12', startTime: '13:00', endTime: '14:30', restrictBooking: true
+    });
+    const row = db.prepare('SELECT * FROM events WHERE id = ?').get(timed48Id);
+    assert(r.status === 200 && row.title === '時間指定バッファテスト48（編集後）' && row.start_time === '13:00' && row.end_time === '14:30' &&
+      row.block_start_time === '11:30' && row.block_end_time === '15:30',
+      '編集（PUT）でも時間帯を変えればblock_start_time/block_end_timeが新しい値で再計算される');
+
+    const rOff = await ownerFresh.putJson(`/api/admin/events/${timed48Id}`, {
+      title: '時間指定バッファテスト48（編集後）', date: '2027-01-12', startTime: '13:00', endTime: '14:30', restrictBooking: false
+    });
+    const rowOff = db.prepare('SELECT * FROM events WHERE id = ?').get(timed48Id);
+    assert(rOff.status === 200 && rowOff.restrict_booking === 0 && rowOff.block_start_time === null && rowOff.block_end_time === null,
+      '編集で予約ブロックをOFFにすると、block_start_time/block_end_timeもnullに戻る');
+
+    const rNotFound = await ownerFresh.putJson('/api/admin/events/999999', { title: 'x', date: '2027-01-12', startTime: '10:00', endTime: '11:00', restrictBooking: true });
+    assert(rNotFound.status === 404, '存在しないイベントIDの編集は404');
+    const rStaffEdit = await hanako.putJson(`/api/admin/events/${timed48Id}`, { title: 'x', date: '2027-01-12', startTime: '10:00', endTime: '11:00', restrictBooking: true });
+    assert(rStaffEdit.status === 401, '一般スタッフは行事を編集できない（オーナー専用、既存の権限は維持）');
+  }
+
+  // ---- ④ 画面（settings.htmlの種別ラジオボタン・編集ボタン）の導線 ----
+  {
+    const page = await fetch(BASE + '/admin/settings.html').then((r) => r.text());
+    assert(page.includes('name="evType"') && page.includes('value="closed"') && page.includes('value="allday_open"') && page.includes('value="timed"'),
+      '休業日・特別イベントパネルに行事の種別（終日休み／終日の行事／時間を指定）を選ぶラジオボタンがある');
+    assert(page.includes('90分前') && page.includes('60分後'), '時間を指定タイプの説明に、前後の自動ブロック時間（90分前・60分後）の案内がある');
+    assert(page.includes("data-act=edit") && page.includes('evCancelEditBtn') && page.includes('変更を保存する'),
+      '行事一覧の各行に編集ボタンがあり、編集モード（変更を保存する・編集をキャンセル）に切り替えられる');
+  }
+
+  // ---- 後片付け ----
+  db.prepare('DELETE FROM events WHERE id IN (?, ?, ?)').run(closed48Id, alldayOpen48Id, timed48Id);
+
   // ---- ログアウト・連続失敗ロック（ロックすると以降の管理者ログインが15分できないため最後に行う）----
   {
     await admin46.postJson('/api/auth/logout', {});
