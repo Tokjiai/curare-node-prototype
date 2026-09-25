@@ -131,25 +131,36 @@ function seedData() {
   insertZone.run({ store_id: storeId, zone_key: 'pm', label: '午後', start_time: '13:00', end_time: '15:45', fixed_target: 0, fixed_start: '', fixed_interval_min: 0 });
   insertZone.run({ store_id: storeId, zone_key: 'ev', label: '夜',   start_time: '17:00', end_time: '22:30', fixed_target: 1, fixed_start: '19:30', fixed_interval_min: 90 });
 
-  // --- メニューマスタ：それまでpublic/index.htmlに直接ハードコードされていた4件を初期データとして投入 ---
+  // --- メニューマスタ：GAS版本番スプレッドシート（curare-system-db「メニューマスタ」シート、
+  //   2026-09-26時点）の実データをそのまま投入する ---
   // ★2026-09-24追加：ここで投入する行は「初期メニュー」（is_initial=1）。名称・カテゴリは管理者のみ変更可
+  // ★2026-09-26修正：これまでここに投入していた8件（「フェイシャル(60分)」等）は開発時の仮データで、
+  //   実際にクラーレ寿で使われているメニューとはかけ離れていた（社長ご指摘）。GAS版のスプレッドシートを
+  //   直接確認し、実データ9件に差し替えた（README 63章参照）。エイジングケア（施術系オプション、
+  //   社長判断によりGAS版・Node版とも廃止済み）は投入しない。
+  //   メニュー名1〜5番は表記上「(50分)」だが、所要時間(分)の実データ値は90分または70分になっている
+  //   （GAS版スプレッドシート上の表記ゆれで、元のデータがそうなっている）。実際の予約枠計算は
+  //   所要時間(分)の実データ値を使うのがGAS版の現在の実際の動作のため、表記には手を入れず実データ値を
+  //   そのまま採用している。
   const insertMenu = db.prepare(`
     INSERT INTO menu_items (store_id, category, name, duration_min, price, target, is_active, display_order, is_initial)
     VALUES (?, ?, ?, ?, ?, ?, 1, ?, 1)
   `);
-  insertMenu.run(storeId, 'メインメニュー', 'フェイシャル(60分)', 60, 6000, '全員', 1);
-  insertMenu.run(storeId, 'メインメニュー', 'フェイシャル(90分)', 90, 8500, '全員', 2);
-  insertMenu.run(storeId, 'メインメニュー', 'ボディ(90分)', 90, 9000, '全員', 3);
-  insertMenu.run(storeId, 'メインメニュー', 'ハンド(45分)', 45, 4500, '全員', 4);
-  // ★2026-09-20追加：オプションメニュー（メインメニューとは別枠で複数追加できる項目）の
-  //   サンプルを投入。お客様予約フォーム側でチェックボックス表示・合計金額計算の
-  //   デモができるようにするため
-  insertMenu.run(storeId, '施術系オプション', 'かっさオプション', 15, 1650, '全員', 5);
-  insertMenu.run(storeId, 'オプション', 'ハンドパック', 10, 1000, '全員', 6);
-  // ★2026-09-23追加：GAS版getCustomerMenuList_のtgt列（'初回'／'キープメンバー'）による
-  //   出し分けを、お客様予約フォームで実際にテストできるようにするためのサンプルメニュー
-  insertMenu.run(storeId, 'メインメニュー', '初回限定フェイシャル体験(60分)', 60, 3900, '初回', 7);
-  insertMenu.run(storeId, 'メインメニュー', 'メンバーコース(90分)', 90, 7000, 'キープメンバー', 8);
+  insertMenu.run(storeId, 'メインメニュー', '初回限定 お試しコース（50分）', 90, 3300, '初回', 1);
+  insertMenu.run(storeId, 'メインメニュー', 'メンバーコース（50分）', 70, 3300, '全員', 2);
+  insertMenu.run(storeId, 'メインメニュー', 'ビジターコース・エンペリエ（50分）', 70, 12100, '全員', 3);
+  insertMenu.run(storeId, 'メインメニュー', 'ビジターコース・イルネージュ（50分）', 70, 8800, '全員', 4);
+  insertMenu.run(storeId, 'メインメニュー', 'ビジターコース・TK（50分）', 70, 5500, '全員', 5);
+  // ★2026-09-26追加：施術系オプション。スタッフマスタのopt_support（施術系オプション対応）が
+  //   trueのスタッフだけに担当者選択が絞り込まれる対象（README 63章参照）
+  insertMenu.run(storeId, '施術系オプション', 'スペシャルケア', 20, 1650, '全員', 6);
+  insertMenu.run(storeId, 'オプション', '各種パック（1,650〜6,600円）', 15, 1650, '全員', 7);
+  // ★2026-09-26追加：GAS版スプレッドシート上は「有効=FALSE」（表示期間限定・現在は非表示）のため、
+  //   is_activeは0で投入する
+  insertMenu.run(storeId, 'オプション', 'AIカウンセリング（表示期間限定）', 30, 0, '初回', 8);
+  db.prepare(`UPDATE menu_items SET is_active = 0 WHERE store_id = ? AND name = 'AIカウンセリング（表示期間限定）'`).run(storeId);
+  // ★2026-09-26追加：社長依頼の新メニュー（GAS版スプレッドシートに追加済み・表示順10→Node側は9）
+  insertMenu.run(storeId, 'メインメニュー', 'リシアルコース（50分）', 50, 6600, '全員', 9);
 
   // --- 日付ヘルパー -----------------------------------------------------------
   const fmt = (d) => {

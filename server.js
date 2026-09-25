@@ -285,7 +285,11 @@ app.get('/api/store', (req, res) => {
   const menuItems = menuItemsRaw
     .filter((item) => menuTargetMatches_(item.target, custTarget) || (item.target === 'キープメンバー' && custTarget === 'visitor'))
     .map((item) => {
-      const isMemberOnly = item.target === 'キープメンバー' || (item.name || '').indexOf('メンバーコース') >= 0;
+      // ★2026-09-26修正：以前は名前に「メンバーコース」を含むかどうかの名前一致も
+      //   フォールバックにしていたが、GAS版本番データの実際のメニュー名に「メンバーコース（50分）」
+      //   （target='全員'・誰でも選べる通常メニュー）が存在し、名前だけで誤ってメンバー限定
+      //   扱いになってしまうため撤去した。target列だけで判定する（README 63章参照）。
+      const isMemberOnly = item.target === 'キープメンバー';
       return {
         ...item,
         isFeatured: custTarget === 'new' && item.target === '初回',
@@ -2422,10 +2426,16 @@ app.put('/api/admin/staff/:id', requireOwnerSession, (req, res) => {
     }
 
     let pinClause = '';
+    // ★2026-09-26修正：optSupport（施術系オプション対応）は、これまで項目を送らない更新では
+    //   無条件にfalseへ戻ってしまっていた（colorやisSharedTerminalと違って「未指定なら現在値を
+    //   保持する」処理が無かったため）。施術系オプションのスタッフ絞り込み機能でopt_supportが
+    //   実際の予約可否に影響するようになったため、他の項目と同じく未指定時は現在値を保持するよう修正した
+    //   （README 63章参照）。
+    const optSupport = Object.prototype.hasOwnProperty.call(data, 'optSupport') ? !!data.optSupport : !!existing.opt_support;
     const params = {
       id, store_id: storeId,
       name: data.name.trim(), nickname: data.nickname || '', role: data.role || 'スタッフ',
-      opt_support: data.optSupport ? 1 : 0, night_restrict: data.nightRestrict ? 1 : 0,
+      opt_support: optSupport ? 1 : 0, night_restrict: data.nightRestrict ? 1 : 0,
       show_in_booking: data.showInBooking === false ? 0 : 1,
       is_active: data.isActive === false ? 0 : 1, is_owner: data.isOwner ? 1 : 0
     };
