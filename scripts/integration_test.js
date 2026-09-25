@@ -2047,14 +2047,22 @@ async function main() {
   //     getRule2Notices_ / submitCustomerBooking_body_ の移植。2026-09-23追加）
   //     seed済みテストデータ：C0006=キープメンバー（前回担当:花子・来店15回）、
   //     C0007=初めての方（来店0回）、C0008=既存客・キープ以外（来店3回）
+  //     ★2026-09-26追加：63章のメニューマスタGAS版同期により、db/init.jsの実データには
+  //     target='キープメンバー'のメニューが無くなった（GAS版本番にも現在は存在しないため）。
+  //     target別の出し分け機能自体は引き続き有効な機能なので、この章の間だけテスト用の
+  //     キープメンバー限定メニューを直接投入し、章の終わりで削除する。
   // --------------------------------------------------------------------------
   console.log('--- 35. お客様予約フォームのキープ／初回／既存客の出し分け ---');
+  const memberOnlyMenu35 = db.prepare(`
+    INSERT INTO menu_items (store_id, category, name, duration_min, price, target, is_active, display_order, is_initial)
+    VALUES (1, 'メインメニュー', 'メンバーコース(90分)', 90, 7000, 'キープメンバー', 1, 999, 0)
+  `).run().lastInsertRowid;
   {
     const r = await fetch(BASE + '/api/store?store=1&cid=C0006').then((res) => res.json());
     assert(r.customer.target === 'keep' && r.customer.theme === 'pink', 'C0006（キープメンバー）はtarget:keep・theme:pinkになる');
     assert(r.customer.menuStaffName === '花子', 'キープメンバーの前回担当スタッフ名（menuStaffName）が返る');
     assert(r.menuItems.some((m) => m.name === 'メンバーコース(90分)'), 'キープメンバーにはメンバー限定メニューが表示される');
-    assert(!r.menuItems.some((m) => m.name === '初回限定フェイシャル体験(60分)'), 'キープメンバーには初回限定メニューは表示されない');
+    assert(!r.menuItems.some((m) => m.name === '初回限定 お試しコース（50分）'), 'キープメンバーには初回限定メニューは表示されない');
     const memberItem = r.menuItems.find((m) => m.name === 'メンバーコース(90分)');
     assert(memberItem && memberItem.isMemberOnly === true, 'メンバー限定メニューにはisMemberOnly:trueが付与される');
     assert(r.notices.some((t) => t.includes('メンバー特典')), 'キープメンバーには「リピーター」向けの注意書きが表示される');
@@ -2069,9 +2077,9 @@ async function main() {
     //   本名は空欄・LINE表示名のみ設定）。found:trueだが本名（realname）は空のままであることを確認
     assert(r.customer.found === true && r.customer.realname === '' && r.customer.lineName === 'あやか',
       'C0007はLINE友だち追加のみ・本名未確定（realname空欄・lineNameのみ設定）の状態で見つかる');
-    assert(r.menuItems.some((m) => m.name === '初回限定フェイシャル体験(60分)'), '初めての方には初回限定メニューが表示される');
+    assert(r.menuItems.some((m) => m.name === '初回限定 お試しコース（50分）'), '初めての方には初回限定メニューが表示される');
     assert(!r.menuItems.some((m) => m.name === 'メンバーコース(90分)'), '初めての方にはメンバー限定メニューは表示されない');
-    const featuredItem = r.menuItems.find((m) => m.name === '初回限定フェイシャル体験(60分)');
+    const featuredItem = r.menuItems.find((m) => m.name === '初回限定 お試しコース（50分）');
     assert(featuredItem && featuredItem.isFeatured === true, '初回限定メニューにはisFeatured:trueが付与される');
     assert(r.notices.some((t) => t.includes('初めてご来店')), '初めての方には「初回」向けの注意書きが表示される');
     assert(!r.notices.some((t) => t.includes('メンバー特典')), '初めての方には「リピーター」向けの注意書きは表示されない');
@@ -2079,7 +2087,7 @@ async function main() {
   {
     const r = await fetch(BASE + '/api/store?store=1&cid=C0008').then((res) => res.json());
     assert(r.customer.target === 'visitor' && r.customer.theme === 'green', 'C0008（既存客・キープ以外）はtarget:visitor・theme:greenになる');
-    assert(!r.menuItems.some((m) => m.name === '初回限定フェイシャル体験(60分)'),
+    assert(!r.menuItems.some((m) => m.name === '初回限定 お試しコース（50分）'),
       '既存客・キープ以外には初回限定メニューは表示されない');
     // ★2026-09-23同日修正：GAS版customer_form.htmlのbuildKeepUpgradeCard/selectKeepUpgrade
     //   移植に伴う仕様変更。既存客・キープ以外にもメンバー限定メニューは「見えるが選択には
@@ -2134,7 +2142,7 @@ async function main() {
     const r = await fetch(BASE + '/api/reservations', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        store: '1', realname: '統合テスト初回太郎', staffName: '花子', menu: '初回限定フェイシャル体験(60分)',
+        store: '1', realname: '統合テスト初回太郎', staffName: '花子', menu: '初回限定 お試しコース（50分）',
         date: '2026-12-24', time: '17:00'
       })
     }).then((res) => res.json());
@@ -2277,6 +2285,9 @@ async function main() {
     const afterVal = !!after.body.customers.find((x) => x.customer_id === 'C0008').is_keep_member;
     assert(afterVal === true, '編集モーダル経由のキープメンバー変更も正しく保存される（既存の2経路が両方使える確認）');
   }
+
+  // ★35章冒頭で投入したテスト用キープメンバー限定メニューを後片付け
+  db.prepare('DELETE FROM menu_items WHERE id = ?').run(memberOnlyMenu35);
 
   // --------------------------------------------------------------------------
   // 38. 社長の本番実機テスト（2026-09-23）で発覚した3点への追加対応の確認
@@ -3068,17 +3079,17 @@ async function main() {
   {
     const lo = await owner46.get('/api/admin/settings/menu');
     const la = await admin46.get('/api/admin/settings/menu');
-    const init = (lo.body.items || []).find((m) => m.name === 'フェイシャル(60分)');
+    const init = (lo.body.items || []).find((m) => m.name === 'メンバーコース（50分）');
     assert(lo.body.canEditInitialNameCategory === false && la.body.canEditInitialNameCategory === true, 'メニュー一覧APIは管理者のときだけ初期メニューの名称・カテゴリ編集可を返す');
-    const seeded = (lo.body.items || []).filter((m) => m.id <= 8);
+    const seeded = (lo.body.items || []).filter((m) => m.id <= 9);
     const ownerAdded = (lo.body.items || []).filter((m) => m.name === '統合テストメニュー（改）');
-    assert(!!init && seeded.length === 8 && seeded.every((m) => m.is_initial === 1) && ownerAdded.length === 1 && ownerAdded[0].is_initial === 0,
-      'シードで投入した8件は初期メニュー（is_initial=1）、オーナーが画面から追加したメニューは初期メニューではない（0）');
+    assert(!!init && seeded.length === 9 && seeded.every((m) => m.is_initial === 1) && ownerAdded.length === 1 && ownerAdded[0].is_initial === 0,
+      'シードで投入した9件（GAS版本番と同じ実データ）は初期メニュー（is_initial=1）、オーナーが画面から追加したメニューは初期メニューではない（0）');
     const base = { category: init.category, name: init.name, durationMin: init.duration_min, price: init.price, target: init.target, isActive: true };
     const rName = await owner46.putJson(`/api/admin/settings/menu/${init.id}`, Object.assign({}, base, { name: 'オーナー改名46' }));
     const rCat = await owner46.putJson(`/api/admin/settings/menu/${init.id}`, Object.assign({}, base, { category: 'オプション' }));
     const after = db.prepare('SELECT name, category FROM menu_items WHERE id = ?').get(init.id);
-    assert(rName.status === 403 && rCat.status === 403 && after.name === 'フェイシャル(60分)' && after.category === 'メインメニュー',
+    assert(rName.status === 403 && rCat.status === 403 && after.name === 'メンバーコース（50分）' && after.category === 'メインメニュー',
       'オーナーは初期メニューの名称・カテゴリを変更できない（403・DBも変わらない）');
     const rOk = await owner46.putJson(`/api/admin/settings/menu/${init.id}`, Object.assign({}, base, { durationMin: 65, price: 6500, target: '初回', isActive: false }));
     const after2 = db.prepare('SELECT duration_min, price, target, is_active FROM menu_items WHERE id = ?').get(init.id);
@@ -3092,7 +3103,7 @@ async function main() {
     const rAdm = await admin46.putJson(`/api/admin/settings/menu/${init.id}`, Object.assign({}, base, { name: '管理者改名46', category: '施術系オプション' }));
     const after3 = db.prepare('SELECT name, category FROM menu_items WHERE id = ?').get(init.id);
     assert(rAdm.status === 200 && after3.name === '管理者改名46' && after3.category === '施術系オプション', '管理者は初期メニューの名称・カテゴリも変更できる');
-    db.prepare(`UPDATE menu_items SET name = 'フェイシャル(60分)', category = 'メインメニュー', duration_min = 60, price = 6000, target = '全員', is_active = 1 WHERE id = ?`).run(init.id);
+    db.prepare(`UPDATE menu_items SET name = 'メンバーコース（50分）', category = 'メインメニュー', duration_min = 70, price = 3300, target = '全員', is_active = 1 WHERE id = ?`).run(init.id);
     db.prepare('DELETE FROM menu_items WHERE id = ?').run(add.body.menuItemId);
     const page = await fetch(BASE + '/admin/settings.html').then((r) => r.text());
     assert(page.includes('canEditInitialNameCategory') && page.includes('nameInput.disabled = lockNameCat'), '設定画面は通常のオーナーログインでは初期メニューの名称・カテゴリ欄をロックする');
@@ -3181,11 +3192,11 @@ async function main() {
     db.prepare('UPDATE customers SET memo = ?, total_visits = ? WHERE id = ?').run(cust46.memo, cust46.total_visits, cust46.id);
   }
   {
-    const menuRow = db.prepare(`SELECT id FROM menu_items WHERE store_id = 1 AND name = 'ハンドパック'`).get();
+    const menuRow = db.prepare(`SELECT id FROM menu_items WHERE store_id = 1 AND name = '各種パック（1,650〜6,600円）'`).get();
     const r = await admin46.putJson(`/api/admin/db-viewer/menu_items/${menuRow.id}`, { changes: { price: '1200', is_active: '0' } });
     const row = db.prepare('SELECT price, is_active, updated_at FROM menu_items WHERE id = ?').get(menuRow.id);
     assert(r.status === 200 && row.price === 1200 && row.is_active === 0, '整数・フラグの値は正しい型に変換して保存される（メニューの料金・表示）');
-    db.prepare('UPDATE menu_items SET price = 1000, is_active = 1 WHERE id = ?').run(menuRow.id);
+    db.prepare('UPDATE menu_items SET price = 1650, is_active = 1 WHERE id = ?').run(menuRow.id);
     const page = await fetch(BASE + '/admin/db-viewer.html').then((r2) => r2.text());
     assert(page.includes('この内容で保存しますか') && page.includes('confirmSaveBtn') && page.includes('expected'),
       'DB一覧ビューアの画面は保存前に変更内容（旧値→新値）の確認ダイアログを必ず挟む');
@@ -3478,6 +3489,82 @@ async function main() {
 
   // ---- 後片付け ----
   db.prepare('DELETE FROM events WHERE id IN (?, ?, ?)').run(closed48Id, alldayOpen48Id, timed48Id);
+
+  // --------------------------------------------------------------------------
+  // 49. メニューマスタのGAS版同期＋施術系オプションのスタッフ絞り込み（README 63章）
+  // --------------------------------------------------------------------------
+  console.log('--- 49. メニューマスタのGAS版同期＋施術系オプションのスタッフ絞り込み ---');
+
+  // ---- ① メニューマスタの実データ内容（GAS版本番スプレッドシート・2026-09-26時点の9件） ----
+  {
+    // ★display_order<=9でシード投入分（GAS版本番の実データ9件）だけに絞る。他章のテストで
+    //   追加したメニュー（オーナー追加分は既存のMAX(display_order)+1で採番される）と混同しないため
+    const rows = db.prepare('SELECT * FROM menu_items WHERE store_id = 1 AND display_order <= 9 ORDER BY display_order ASC').all();
+    assert(rows.length === 9, 'store_id=1のシード投入メニューはGAS版本番と同じ9件（エイジングケアは投入しない）');
+    assert(rows.filter((m) => m.is_active === 1).length === 8, '有効なメニューは8件（AIカウンセリングのみ有効=FALSEで投入）');
+
+    const byName = (name) => rows.find((m) => m.name === name);
+    const first = byName('初回限定 お試しコース（50分）');
+    assert(!!first && first.category === 'メインメニュー' && first.duration_min === 90 && first.price === 3300 && first.target === '初回' && first.display_order === 1,
+      '表示順1「初回限定 お試しコース（50分）」：メニュー名の表記は50分だが、所要時間(分)の実データ値（90分）をそのまま採用している');
+    const member = byName('メンバーコース（50分）');
+    assert(!!member && member.duration_min === 70 && member.price === 3300 && member.target === '全員' && member.display_order === 2,
+      '表示順2「メンバーコース（50分）」：所要時間(分)の実データ値（70分）・対象は全員（GAS版に合わせ、キープメンバー限定ではない）');
+    assert(!!byName('ビジターコース・エンペリエ（50分）') && byName('ビジターコース・エンペリエ（50分）').price === 12100, '表示順3「ビジターコース・エンペリエ（50分）」の料金が正しい');
+    assert(!!byName('ビジターコース・イルネージュ（50分）') && byName('ビジターコース・イルネージュ（50分）').price === 8800, '表示順4「ビジターコース・イルネージュ（50分）」の料金が正しい');
+    assert(!!byName('ビジターコース・TK（50分）') && byName('ビジターコース・TK（50分）').price === 5500, '表示順5「ビジターコース・TK（50分）」の料金が正しい');
+    const special = byName('スペシャルケア');
+    assert(!!special && special.category === '施術系オプション' && special.duration_min === 20 && special.price === 1650 && special.display_order === 6,
+      '表示順6「スペシャルケア」：施術系オプションとして正しい内容で投入されている');
+    const pack = byName('各種パック（1,650〜6,600円）');
+    assert(!!pack && pack.category === 'オプション' && pack.price === 1650 && pack.display_order === 7, '表示順7「各種パック」が正しい内容で投入されている');
+    const ai = byName('AIカウンセリング（表示期間限定）');
+    assert(!!ai && ai.category === 'オプション' && ai.is_active === 0 && ai.display_order === 8, '表示順8「AIカウンセリング」はGAS版スプレッドシート通りis_active=0（無効）で投入される');
+    const richial = byName('リシアルコース（50分）');
+    assert(!!richial && richial.category === 'メインメニュー' && richial.duration_min === 50 && richial.price === 6600 && richial.target === '全員' && richial.display_order === 9,
+      '社長依頼の新メニュー「リシアルコース（50分）」が表示順9で正しく投入されている');
+    assert(!rows.some((m) => m.name.includes('エイジングケア')), 'エイジングケア（社長判断により廃止）はシードデータに含まれない');
+    assert(rows.every((m) => m.is_initial === 1), 'シードで投入した9件はすべて初期メニュー（is_initial=1）として扱われる（59章の権限分岐の対象）');
+  }
+
+  // ---- ② お客様予約フォーム用API（/api/store）にも実データが正しく反映される ----
+  {
+    const r = await fetch(BASE + '/api/store?store=1').then((res) => res.json());
+    assert(r.menuItems.length === 8, '公開の/api/storeにはtarget:newで見える8件が返る（初回限定1件＋全員7件、AIカウンセリングは無効のため含まれない）');
+    assert(!r.menuItems.some((m) => m.name === 'AIカウンセリング（表示期間限定）'), '無効化されたAIカウンセリングは公開APIの一覧に出ない');
+    const featured = r.menuItems.find((m) => m.name === '初回限定 お試しコース（50分）');
+    assert(!!featured && featured.isFeatured === true, '初めての方（target:new）には初回限定メニューにisFeatured:trueが付く');
+    // ★59-2章のバグ修正確認：以前は「メンバーコース」という名前を含むだけでisMemberOnly:trueに
+    //   なってしまう名前一致のフォールバックがあったが、GAS版本番の「メンバーコース（50分）」は
+    //   target='全員'の通常メニューのため、isMemberOnly:falseでなければならない
+    const member = r.menuItems.find((m) => m.name === 'メンバーコース（50分）');
+    assert(!!member && member.isMemberOnly === false && !member.requiresKeepUpgrade,
+      '名前に「メンバーコース」を含んでいても、target=全員のメニューはisMemberOnly:falseになる（名前一致の誤判定を修正済み）');
+  }
+
+  // ---- ③ 施術系オプション選択時のスタッフ絞り込み：データ側の準備（optSupport） ----
+  {
+    const r = await fetch(BASE + '/api/store?store=1').then((res) => res.json());
+    const staffByName = (name) => (r.staffList || []).find((s) => s.realName === name);
+    assert(staffByName('寿子') && staffByName('寿子').optSupport === true, '公開の/api/storeのスタッフ一覧に、施術系オプション対応スタッフ（寿子）のoptSupport:trueが含まれる');
+    assert(staffByName('花子') && staffByName('花子').optSupport === true, '花子もoptSupport:true（施術系オプション対応）');
+    assert(staffByName('美咲') && staffByName('美咲').optSupport === false, '美咲はoptSupport:false（施術系オプション非対応）');
+  }
+
+  // ---- ④ 施術系オプション選択時のスタッフ絞り込み：フロント側（public/app.js）の実装確認 ----
+  {
+    const appJs = await fetch(BASE + '/app.js').then((r) => r.text());
+    assert(appJs.includes('function renderStaffOptions') && appJs.includes('function hasOptSupportMenuSelected'),
+      'app.jsにGAS版rebuildStaffForOptMenu相当のスタッフ絞り込み関数（renderStaffOptions・hasOptSupportMenuSelected）が実装されている');
+    assert(appJs.includes("m.category === '施術系オプション'") && appJs.includes('s.optSupport'),
+      '絞り込みの発火条件は「施術系オプションカテゴリのメニューが選択されているか」で判定し、対象スタッフはoptSupportで絞り込む');
+    assert(appJs.includes("renderStaffOptions();") && /checkbox\.addEventListener\('change', \(\) => \{[\s\S]{0,300}renderStaffOptions\(\);/.test(appJs),
+      'オプションのチェックボックスを変更するたびにスタッフ選択肢が再計算される（絞り込みが動的に反映される）');
+    assert(appJs.includes('nopref') && /stillAvailable/.test(appJs),
+      '絞り込みで選択中のスタッフが対象外になった場合は、選択が自動的に「指名なし」へ解除される仕組みがある（GAS版と同じ挙動）');
+    assert(!appJs.includes('スタッフ絞り込みは行っていない'),
+      '旧コメント「スタッフ絞り込みは行っていない」（README未対応の明記）は今回の対応で更新され、もう残っていない');
+  }
 
   // ---- ログアウト・連続失敗ロック（ロックすると以降の管理者ログインが15分できないため最後に行う）----
   {

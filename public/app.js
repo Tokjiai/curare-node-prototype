@@ -12,6 +12,9 @@ const state = {
   mainMenuItems: [],
   optionMenuItems: [],
   selectedOptionIds: new Set(),
+  // ★2026-09-26追加：GAS版rebuildStaffForOptMenu相当のスタッフ絞り込みのため、
+  //   サーバーから届いたスタッフ一覧（各要素にoptSupportを含む）をそのまま保持する
+  staffList: [],
   // ★2026-09-22追加：GAS版customer_form.htmlのcid連携（URLの?cid=顧客IDで
   //   本人特定・受付拒否チェックを行う仕組み）。詳細はloadStoreInfo参照
   customerId: null,
@@ -130,23 +133,17 @@ async function loadStoreInfo() {
     });
     keepCheck.dataset.bound = '1';
   }
+  // ★2026-09-26追加：GAS版rebuildStaffForOptMenu相当のスタッフ絞り込み（施術系オプション選択時、
+  //   opt_support対応スタッフのみに絞る）に対応するため、スタッフ一覧の描画をrenderStaffOptions()へ
+  //   切り出した（詳細は同関数のコメント参照）。
+  state.staffList = data.staffList || [];
   const sel = document.getElementById('staffSelect');
-  sel.innerHTML = '';
-  const optAny = document.createElement('option');
-  optAny.value = 'nopref';
-  optAny.textContent = '指名なし（おまかせ）';
-  sel.appendChild(optAny);
-  data.staffList.forEach((s) => {
-    const opt = document.createElement('option');
-    opt.value = s.id;
-    opt.textContent = s.name + (s.role === 'オーナー' ? '（オーナー）' : '');
-    sel.appendChild(opt);
-  });
+  renderStaffOptions();
   // ★2026-09-23追加：GAS版の「前回担当スタッフの利便的な事前選択」相当（キープメンバーの
   //   場合のみサーバー側から menuStaffName が届く。updateLastStaff_ 相当の値）。
   //   一致するスタッフが選択肢にいれば、指名なしの代わりにそれを初期選択にする。
   if (data.customer && data.customer.menuStaffName) {
-    const match = data.staffList.find((s) => s.realName === data.customer.menuStaffName);
+    const match = state.staffList.find((s) => s.realName === data.customer.menuStaffName);
     if (match) sel.value = match.id;
   }
 
@@ -215,10 +212,11 @@ async function loadStoreInfo() {
 // ★2026-09-20追加：オプションメニュー（GAS版customer_form.htmlのbuildAddOptionsHtml/
 //   buildOptionCard/selectOptionGroup相当）。「施術系オプション」「オプション」カテゴリの
 //   メニューをチェックボックス形式で複数選択できるようにし、選択中の合計金額を表示する。
-//   【GAS版からの簡略化】GAS版は「施術系オプション」はラジオ形式で1つのみ選択・スタッフの
-//   対応可否によって選択肢を絞り込む（rebuildStaffForOptMenu）が、このプロトタイプでは
-//   カテゴリを区別せずすべてチェックボックス（複数選択可）に統一し、スタッフ絞り込みは
-//   行っていない（README_PROTOTYPE.mdに明記）。
+//   【GAS版からの簡略化】GAS版は「施術系オプション」はラジオ形式で1つのみ選択だが、このプロトタイプは
+//   カテゴリを区別せずすべてチェックボックス（複数選択可）に統一している（この点は変更しない）。
+//   ★2026-09-26追加：スタッフの対応可否による絞り込み（rebuildStaffForOptMenu相当）は
+//   renderStaffOptions()で行うようにした（README_PROTOTYPE.mdの旧記載「スタッフ絞り込みは
+//   行っていない」は対応済みのため更新した）。
 function renderOptionMenu() {
   const wrap = document.getElementById('optionMenuWrap');
   const list = document.getElementById('optionMenuList');
@@ -247,10 +245,43 @@ function renderOptionMenu() {
         item.classList.remove('checked');
       }
       updateTotalPrice();
+      renderStaffOptions();
     });
     list.appendChild(item);
   });
   updateTotalPrice();
+}
+
+// ★2026-09-26追加：GAS版customer_form.htmlのrebuildStaffForOptMenu相当。
+//   「施術系オプション」カテゴリのメニュー（現状はスペシャルケアのみ）が1つでも選択されている間は、
+//   担当スタッフの選択肢をスタッフマスタのopt_support（施術系オプション対応）がtrueの
+//   スタッフだけに絞り込む。選択されていなければ従来通り全員を表示する。
+function hasOptSupportMenuSelected() {
+  return state.optionMenuItems.some((m) => m.category === '施術系オプション' && state.selectedOptionIds.has(m.id));
+}
+function renderStaffOptions() {
+  const sel = document.getElementById('staffSelect');
+  if (!sel) return;
+  const prevValue = sel.value;
+  const restrict = hasOptSupportMenuSelected();
+  const visibleStaff = restrict ? state.staffList.filter((s) => s.optSupport) : state.staffList;
+
+  sel.innerHTML = '';
+  const optAny = document.createElement('option');
+  optAny.value = 'nopref';
+  optAny.textContent = '指名なし（おまかせ）';
+  sel.appendChild(optAny);
+  visibleStaff.forEach((s) => {
+    const opt = document.createElement('option');
+    opt.value = s.id;
+    opt.textContent = s.name + (s.role === 'オーナー' ? '（オーナー）' : '');
+    sel.appendChild(opt);
+  });
+
+  // ★GAS版と同じく、絞り込みによってそれまで選択（または「前回担当」で自動選択）していた
+  //   スタッフが対象外になった場合は、選択を自動的に解除する（「指名なし」に戻す）
+  const stillAvailable = prevValue === 'nopref' || visibleStaff.some((s) => String(s.id) === prevValue);
+  sel.value = stillAvailable ? prevValue : 'nopref';
 }
 
 // ★2026-09-23追加：GAS版selectKeepUpgradeの移植。「キープメンバーへの変更を希望する」
